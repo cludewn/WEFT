@@ -1,0 +1,1 @@
+A simple Discord bot for small servers.
