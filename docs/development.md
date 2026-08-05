@@ -1,0 +1,647 @@
+# WEFT Development Guide
+
+## Purpose
+
+This document defines the approved architecture, implementation order, and repository workflow for WEFT.
+
+Product behavior is defined in `docs/specification.md`.
+
+When this document conflicts with the product specification, the product specification takes precedence for product behavior.
+
+## Architecture
+
+WEFT uses a modular-monolith architecture.
+
+The initial runtime consists of:
+
+- one Node.js application process,
+- one PostgreSQL service,
+- one Discord bot application,
+- Docker Compose for local and self-hosted deployment.
+
+All application functionality runs in one Node.js process.
+
+PostgreSQL runs as a separate Docker Compose service.
+
+Do not split application modules into network services without a demonstrated requirement and explicit approval.
+
+Do not introduce Redis, additional runtime services, or a web interface without an approved specification change.
+
+## Code organization
+
+Organize the code around clear feature and infrastructure boundaries.
+
+The implementation is expected to include responsibilities for:
+
+- application startup and shutdown,
+- Discord commands and event handling,
+- guild configuration,
+- thread management,
+- managed messages,
+- persistent scheduling,
+- audit recording,
+- Discord integration,
+- PostgreSQL access,
+- job execution,
+- structured logging.
+
+The exact directory structure is not fixed in advance.
+
+When introducing or changing the structure:
+
+- prefer the smallest structure that clearly separates responsibilities,
+- organize closely related feature code together where practical,
+- keep substantial business logic out of Discord command and event handlers,
+- keep Discord API details out of rules that do not require Discord,
+- keep database queries out of Discord handlers,
+- avoid generic `utils`, `common`, or `shared` modules unless multiple concrete callers justify them,
+- do not create empty directories or placeholder modules,
+- do not introduce an interface unless it provides a real architectural or testing boundary,
+- do not create layers only to match an architectural pattern,
+- explain significant structural decisions before implementing them,
+- evolve the structure from implemented use cases rather than anticipated future features.
+
+The first implementation must establish only the structure required for the project foundation and the current vertical slice.
+
+## Responsibility boundaries
+
+### Discord handlers
+
+Discord command and event handlers:
+
+- parse Discord-specific input,
+- validate the interaction or event context,
+- invoke application operations,
+- format Discord responses.
+
+They must not contain substantial business logic.
+
+A handler may perform Discord-specific validation, but product decisions should remain independently testable where practical.
+
+### Application operations
+
+Application-level code coordinates a use case across:
+
+- authorization,
+- persistent storage,
+- Discord operations,
+- scheduled jobs,
+- audit recording.
+
+Do not require every operation to use a class or formal service abstraction.
+
+Use the smallest design that keeps the use case understandable and testable.
+
+### Domain rules
+
+Rules that do not require direct Discord API or database access should remain independent of those systems.
+
+Examples include:
+
+- closed-prefix normalization,
+- lifecycle-state decisions,
+- activity classification,
+- schedule replacement rules,
+- revision and concurrency decisions.
+
+Do not create a separate domain layer when the behavior is too small to justify one.
+
+### Discord integration
+
+Discord-specific code performs Discord API operations.
+
+Keep discord.js details near the Discord integration boundary.
+
+Application rules should not depend unnecessarily on concrete discord.js objects.
+
+Introduce an interface or adapter only when it provides meaningful isolation, testability, or replaceability.
+
+Do not create wrapper interfaces that merely duplicate discord.js without adding a real boundary.
+
+### Database access
+
+Keep database queries out of Discord handlers and independent product rules.
+
+Group related persistence operations so that:
+
+- transaction boundaries are visible,
+- constraints are intentional,
+- tests can exercise database behavior,
+- schema changes remain traceable to product requirements.
+
+A formal repository interface is not mandatory for every table or feature.
+
+Introduce one only when it provides a useful application or testing boundary.
+
+### Job execution
+
+A persistent job worker must:
+
+1. load the persistent action state,
+2. verify that the action is still active,
+3. load the current target state,
+4. revalidate relevant permissions,
+5. execute the action,
+6. persist the result,
+7. record audit and failure information.
+
+Workers must not assume that a job is delivered or attempted only once.
+
+## State ownership
+
+Discord is authoritative for:
+
+- whether a Discord resource currently exists,
+- the current thread title,
+- the current archived and locked values,
+- current Discord permissions,
+- whether a Discord message currently exists.
+
+PostgreSQL is authoritative for:
+
+- WEFT guild configuration,
+- WEFT management policies,
+- intended scheduled actions,
+- managed-message metadata,
+- audit history,
+- retry and failure state,
+- WEFT's last-known management state.
+
+WEFT must reconcile these categories rather than assuming that either system contains the complete truth.
+
+Stored state must not be used to overwrite legitimate manual Discord changes unless an approved active policy explicitly requires enforcement.
+
+## Data conventions
+
+- Represent Discord snowflake IDs as strings in TypeScript.
+- Store Discord snowflake IDs as `TEXT` or an equivalent lossless string representation in PostgreSQL.
+- Never represent a Discord snowflake as a JavaScript `number`.
+- Store absolute timestamps with PostgreSQL `TIMESTAMPTZ`.
+- Store scheduling timezones as IANA timezone identifiers.
+- Use database transactions where multiple database changes must succeed or fail together.
+- Use uniqueness constraints, optimistic revisions, or equivalent controls where concurrent operations can conflict.
+- Validate persisted structured payloads at application boundaries.
+- Do not create the complete future database schema before the corresponding behavior is implemented.
+- Add schema fields and tables in response to approved use cases, constraints, and query requirements.
+
+## Scheduling architecture
+
+Use pg-boss for persistent job execution.
+
+Do not implement persistent scheduling with in-memory `setTimeout` calls.
+
+The initial scheduled action categories are:
+
+- `CLOSE_THREAD`
+- `SEND_MESSAGE`
+
+Automatic inactivity closing uses a periodic database-driven sweep rather than one delayed job per message.
+
+Workers must assume that a job can be delivered or attempted more than once.
+
+Each worker must therefore perform appropriate state and idempotency checks.
+
+Discord API effects and PostgreSQL updates cannot be committed as one transaction.
+
+The scheduling implementation must reduce duplicate external effects, but it must not claim strict exactly-once delivery.
+
+## Startup and shutdown
+
+Startup must initialize components in a controlled order.
+
+The intended sequence is:
+
+1. load and validate application configuration,
+2. initialize structured logging,
+3. connect to PostgreSQL,
+4. run or verify database migrations according to the approved migration strategy,
+5. initialize pg-boss when scheduling is implemented,
+6. initialize the Discord client,
+7. register workers and event handlers,
+8. perform startup reconciliation,
+9. begin normal operation.
+
+Startup code must not print secret values.
+
+Shutdown must:
+
+1. stop accepting new application work where practical,
+2. stop or pause job consumption safely,
+3. destroy the Discord client,
+4. close database and job-system connections,
+5. report shutdown failures,
+6. exit without silently abandoning in-process state.
+
+The exact migration and command-registration strategies must be selected during their implementation phases.
+
+## Error handling
+
+Errors must be classified sufficiently to distinguish:
+
+- validation failure,
+- authorization failure,
+- missing Discord resource,
+- missing WEFT permission,
+- transient Discord API failure,
+- permanent Discord API failure,
+- database failure,
+- scheduling failure,
+- configuration failure,
+- concurrency conflict.
+
+User-facing errors must not expose:
+
+- internal stack traces,
+- database implementation details,
+- secrets,
+- inaccessible channel names,
+- inaccessible message content.
+
+Application operations should expose failures in a form that Discord handlers can translate into appropriate user responses and logs.
+
+Do not introduce an elaborate error hierarchy before concrete failure cases require it.
+
+## Logging
+
+Use structured Pino logs.
+
+Include relevant metadata when available:
+
+- event name,
+- guild ID,
+- Discord resource ID,
+- actor user ID,
+- scheduled-action ID,
+- correlation ID,
+- outcome,
+- error classification.
+
+Do not log message content by default.
+
+Do not log:
+
+- secrets,
+- Discord tokens,
+- database passwords,
+- webhook URLs,
+- complete credential-bearing connection strings,
+- raw environment dumps.
+
+Logs intended for operators and audit records intended to describe administrative actions are separate concerns.
+
+## Testing strategy
+
+Use Vitest.
+
+Testing should include, when relevant:
+
+- pure rule tests,
+- application-operation tests,
+- Discord boundary fakes or mocks,
+- PostgreSQL integration tests,
+- authorization and validation failures,
+- idempotent repeated execution,
+- concurrency conflicts,
+- partial Discord failures,
+- scheduled-action cancellation races,
+- restart and overdue-job behavior.
+
+Ordinary automated tests must not require:
+
+- a live Discord bot,
+- a production Discord guild,
+- production credentials,
+- the real `.env` file.
+
+Use a real PostgreSQL test instance when correctness depends on:
+
+- PostgreSQL constraints,
+- transactions,
+- locking,
+- query semantics,
+- migrations,
+- pg-boss behavior.
+
+Do not mock PostgreSQL when the test is specifically intended to verify PostgreSQL behavior.
+
+The exact test-database mechanism must be selected during project-foundation implementation.
+
+## Standard verification
+
+The project must provide these commands:
+
+    pnpm lint
+    pnpm typecheck
+    pnpm test
+    pnpm build
+
+Infrastructure changes must also validate the Docker Compose configuration.
+
+A task is not complete merely because code was generated.
+
+Relevant checks must be run, and their results must be reviewed.
+
+A failed or skipped check must be reported accurately.
+
+## Source-of-truth order
+
+Use the following order:
+
+1. `docs/specification.md`
+2. the accepted GitHub Issue and its acceptance criteria
+3. automated tests
+4. implementation
+
+An Issue may narrow an implementation task, but it must not contradict the approved product specification without an explicit specification change.
+
+Tests demonstrate intended and implemented behavior, but an outdated test does not override an approved specification.
+
+If these sources conflict, identify the conflict before changing behavior.
+
+## GitHub Issues
+
+Use GitHub Issues for non-trivial:
+
+- features,
+- bugs,
+- technical improvements,
+- investigations,
+- documentation work.
+
+An Issue should normally define work that fits within one reviewable Pull Request.
+
+Do not create an Issue for every:
+
+- individual line,
+- import,
+- variable rename,
+- formatting change,
+- trivial mechanical edit.
+
+Do not combine multiple independent features into one Issue merely to reduce the number of Issues.
+
+A typical Issue should contain:
+
+    ## Summary
+
+    ## Specification references
+
+    ## Scope
+
+    ## Out of scope
+
+    ## Acceptance criteria
+
+    ## Verification
+
+Repository initialization and trivial mechanical maintenance do not require an Issue when an Issue would provide no review or tracking value.
+
+## Branches
+
+Use short English branch names.
+
+Examples:
+
+- `docs/initial-specification`
+- `chore/project-foundation`
+- `feat/discord-bootstrap`
+- `feat/guild-settings`
+- `feat/thread-close`
+- `feat/thread-open`
+- `feat/scheduled-thread-close`
+- `fix/duplicate-closed-prefix`
+
+A branch should normally correspond to one Issue or one independently reviewable task.
+
+## Commits
+
+Follow the Conventional Commits policy in `AGENTS.md`.
+
+A commit should contain one logical and independently understandable change.
+
+Do not combine unrelated implementation, formatting, dependency, and documentation changes into one commit when separating them would materially improve reviewability.
+
+Do not split every minor edit into its own commit when the edits form one logical change.
+
+Formatting-only changes should use the `style` type only when runtime behavior does not change.
+
+## Pull Requests
+
+After the project foundation is stable, use Pull Requests for functional changes.
+
+A Pull Request should include:
+
+- a concise summary,
+- the linked Issue when one exists,
+- relevant specification references,
+- implementation notes,
+- verification results,
+- known limitations or unresolved matters.
+
+A Pull Request must not claim that tests passed unless the listed commands were actually executed successfully.
+
+The maintainer must inspect the complete diff before merging.
+
+## Codex workflow
+
+For a non-trivial implementation task:
+
+1. Create or select a GitHub Issue.
+2. Create a task branch.
+3. Start Codex from the repository root with appropriate permissions.
+4. Ask Codex to read:
+   - `AGENTS.md`,
+   - `docs/specification.md`,
+   - `docs/development.md`,
+   - the relevant Issue.
+5. Ask Codex to inspect the relevant files and produce a plan before editing.
+6. Review the plan for:
+   - scope,
+   - architecture,
+   - security,
+   - licensing,
+   - unnecessary abstractions,
+   - unsupported assumptions.
+7. Authorize implementation only within the defined scope.
+8. Inspect `git status` and the complete `git diff`.
+9. Run the relevant verification commands independently.
+10. Ask Codex to correct identified defects.
+11. Review the final diff.
+12. Commit the logical change.
+13. Open and review a Pull Request when the workflow requires one.
+
+Treat Codex output as untrusted proposed code.
+
+The human maintainer remains responsible for:
+
+- product decisions,
+- architecture,
+- correctness,
+- security,
+- licensing,
+- dependency choices,
+- commits,
+- merges,
+- releases.
+
+## Codex context management
+
+Use one focused Codex session per task where practical.
+
+Reference repository documents rather than repeatedly pasting the complete specification.
+
+Limit exploration to relevant code unless broader investigation is justified.
+
+Separate planning from implementation for non-trivial work.
+
+Do not request vague repository-wide improvement work.
+
+End or restart a session when unrelated context has accumulated enough to reduce clarity.
+
+Do not omit necessary context merely to reduce usage.
+
+Ambiguous tasks usually create more corrective work than precise tasks.
+
+## Implementation order
+
+### Phase 0: Repository and project foundation
+
+- Add the initial repository documentation.
+- Add `AGENTS.md`.
+- Configure pnpm.
+- Configure Node.js 24 LTS.
+- Configure TypeScript with ECMAScript modules and strict mode.
+- Configure linting and formatting.
+- Configure Vitest.
+- Configure Pino.
+- Configure Zod environment validation.
+- Add or update `.env.example` without reading `.env`.
+- Add a Dockerfile.
+- Add Docker Compose.
+- Add the PostgreSQL development service.
+- Configure Drizzle ORM and migrations.
+- Add controlled startup and graceful shutdown.
+- Provide passing `lint`, `typecheck`, `test`, and `build` commands.
+
+The initial code structure must include only what this phase requires.
+
+### Phase 1: Discord bootstrap
+
+- Initialize the Discord client.
+- Use only the required gateway intents.
+- Add structured startup and shutdown logs.
+- Implement graceful Discord-client destruction.
+- Select and implement the command-registration strategy.
+- Implement a minimal `/ping` command.
+- Add tests that do not require a live Discord connection.
+
+Reassess the code organization after this phase. Do not assume that the initial foundation structure is final.
+
+### Phase 2: Guild configuration
+
+- Implement the initial guild-settings schema.
+- Add database migrations.
+- Implement focused guild-settings persistence.
+- Store the guild timezone and closed prefix.
+- Implement default-settings creation.
+- Require `ManageGuild` for configuration operations.
+- Add PostgreSQL integration tests.
+
+Introduce only the persistence boundaries justified by this use case.
+
+### Phase 3: Immediate thread lifecycle
+
+First vertical slice:
+
+- Implement `/thread close`.
+- Validate the supported thread context.
+- Require `ManageThreads`.
+- Validate WEFT's own permissions.
+- Normalize and add the closed prefix.
+- Lock and archive the thread.
+- Persist managed state.
+- Record audit data.
+- Test idempotency, authorization, and partial failures.
+
+Second vertical slice:
+
+- Implement `/thread open`.
+- Unarchive and unlock the thread.
+- Remove one managed leading prefix.
+- Persist managed state.
+- Record audit data.
+- Test idempotency, authorization, and partial failures.
+
+After both vertical slices, review whether the current physical structure still reflects the actual feature and infrastructure boundaries.
+
+### Phase 4: Persistent scheduling foundation
+
+- Integrate pg-boss.
+- Implement scheduled-action persistence.
+- Implement worker startup and shutdown.
+- Define transient and permanent failure classification.
+- Implement startup reconciliation.
+- Test cancellation and execution races.
+- Test restart recovery.
+
+Do not create scheduling abstractions for unsupported future action types.
+
+### Phase 5: Scheduled thread closing
+
+- Implement `/thread close-after`.
+- Enforce one active scheduled close per guild and thread.
+- Replace an existing scheduled close by default.
+- Implement `/thread cancel-close`.
+- Recover applicable overdue closes after restart.
+- Record schedule and execution audit events.
+
+### Phase 6: Automatic thread closing
+
+- Implement managed parent-channel policies.
+- Track qualifying message activity.
+- Implement per-thread exclusions.
+- Implement the five-minute database sweep.
+- Re-fetch Discord state before closing.
+- Implement `/thread track`, `/thread untrack`, and `/thread status` as required by the approved behavior.
+- Add policy, idempotency, and reconciliation tests.
+
+### Phase 7: Managed messages
+
+- Implement `/message send`.
+- Persist managed-message metadata.
+- Suppress mentions by default.
+- Implement `/message edit`.
+- Add revision-based conflict detection.
+- Record before-and-after audit data.
+- Detect manually deleted Discord messages.
+- Add authorization and concurrency tests.
+
+### Phase 8: Scheduled messages
+
+Before implementation, decide:
+
+- the overdue grace period,
+- retry count and backoff parameters,
+- the recurring-schedule input format.
+
+Then:
+
+- implement one-time scheduled messages,
+- persist resulting Discord message IDs,
+- implement recurring messages,
+- skip missed recurring occurrences after downtime,
+- implement cancellation,
+- add retry, race, and restart-recovery tests.
+
+### Phase 9: MVP hardening
+
+- Review Discord permissions.
+- Finalize operational health checks.
+- Implement audit retention.
+- Document backup and restore procedures.
+- Document migration operations.
+- Review Discord rate-limit behavior.
+- Review runtime dependencies and licenses.
+- Prepare the first public release.
+
+Deferred ideas must not be implemented during these phases without an approved specification change.

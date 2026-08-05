@@ -1,0 +1,456 @@
+# WEFT Specification
+
+## Status
+
+This document is the authoritative product specification for the currently approved WEFT scope.
+
+A behavior described here may not be implemented yet. Implementation progress is tracked through GitHub Issues and the repository history.
+
+Do not infer unapproved implementation details from this document.
+
+## Product definition
+
+WEFT is a self-hosted Discord bot focused on:
+
+- Discord thread lifecycle management,
+- persistent one-time and recurring scheduled actions,
+- managed messages sent by the bot,
+- authorization and auditability for administrative operations.
+
+WEFT must remain practical to deploy and operate with Docker Compose.
+
+## Target deployment
+
+The initial supported deployment consists of:
+
+- one WEFT application instance,
+- one PostgreSQL instance,
+- one Discord bot application,
+- Docker Compose.
+
+The initial design does not include:
+
+- Redis,
+- microservices,
+- a web administration interface,
+- multiple active WEFT application instances,
+- a high-availability cluster.
+
+## Required technology
+
+- Node.js 24 LTS
+- TypeScript
+- ECMAScript modules
+- TypeScript strict mode
+- pnpm
+- discord.js
+- PostgreSQL 18
+- Drizzle ORM
+- pg-boss
+- Zod
+- Vitest
+- Pino
+- Docker
+- Docker Compose
+
+## Terminology
+
+### Guild
+
+A Discord guild is what the Discord user interface commonly calls a server.
+
+Use `guild` in source code, database fields, and technical documentation when it corresponds to Discord API terminology.
+
+### Managed thread
+
+A Discord thread for which WEFT records management state or applies a configured management policy.
+
+### Managed message
+
+A Discord message sent by WEFT and recorded in PostgreSQL so that authorized administrators can manage it through WEFT.
+
+### Scheduled action
+
+A persistent instruction for WEFT to execute a supported action once or repeatedly.
+
+## Product principles
+
+1. Thread management and persistent scheduling are the product core.
+2. Administrative operations must be explicit and auditable.
+3. Scheduled work must not be silently lost when WEFT restarts.
+4. Current Discord state and permissions must be revalidated when execution depends on them.
+5. Operations should be idempotent where practical.
+6. Potentially sensitive features must use restrictive defaults.
+7. Extensibility must come from clear module boundaries, not from accumulating unrelated utility commands.
+
+## MVP scope
+
+### Application foundation
+
+WEFT must:
+
+- start and stop cleanly,
+- connect to Discord,
+- connect to PostgreSQL,
+- validate required environment variables,
+- emit structured logs,
+- run database migrations,
+- shut down gracefully,
+- reconcile persistent scheduling state after startup.
+
+### Guild configuration
+
+WEFT must store configuration separately for each guild.
+
+Initial guild configuration includes:
+
+- an IANA timezone identifier,
+- the closed-thread title prefix,
+- an optional audit-log destination,
+- settings required by implemented features.
+
+The default closed prefix is:
+
+```text
+[CLOSED]
+```
+
+### Thread command structure
+
+Thread operations are subcommands of the top-level `/thread` slash command.
+
+The intended command surface is:
+
+```text
+/thread close
+/thread open
+/thread close-after
+/thread cancel-close
+/thread track
+/thread untrack
+/thread status
+```
+
+These commands may be implemented incrementally.
+
+### Thread close
+
+Closing a thread means:
+
+1. adding the configured closed prefix to the beginning of the thread title,
+2. locking the thread,
+3. archiving the thread.
+
+Requirements:
+
+- The invoking user must have the Discord `ManageThreads` permission.
+- WEFT must verify its own required permissions.
+- The current Discord state must be inspected before modification.
+- The configured prefix must not be duplicated.
+- Repeated close operations must be idempotent.
+- WEFT-managed state must be persisted.
+- An active scheduled close for the same thread must be cancelled.
+- The operation and its outcome must be audited.
+
+The title prefix is a user-visible indicator. It is not the authoritative source of state.
+
+### Thread open
+
+Opening a thread means:
+
+1. unarchiving the thread,
+2. unlocking the thread,
+3. removing one WEFT-managed closed prefix from the beginning of the title.
+
+Requirements:
+
+- The invoking user must have the Discord `ManageThreads` permission.
+- WEFT must verify its own required permissions.
+- The current Discord state must be inspected before modification.
+- Repeated open operations must be idempotent.
+- Only the managed leading prefix may be removed.
+- A previously stored title must not overwrite later manual title edits.
+- WEFT-managed state must be persisted.
+- The operation and its outcome must be audited.
+
+### Supported thread resources
+
+The intended supported resources are:
+
+- public threads,
+- private threads that WEFT can access,
+- forum posts represented by Discord as threads.
+
+Unsupported contexts must receive a clear ephemeral error.
+
+### Partial failures
+
+Discord operations and PostgreSQL updates cannot be committed as one transaction.
+
+If a request fails after only some effects have succeeded, WEFT must:
+
+- avoid reporting complete success,
+- classify and record the failure,
+- preserve enough information for later reconciliation,
+- perform compensation only when it is safe and predictable,
+- reconcile the stored state with Discord later when necessary.
+
+### Scheduled thread closing
+
+WEFT must support scheduling one future close for a thread.
+
+Requirements:
+
+- Only one active scheduled close may exist for the same guild and thread.
+- Creating a new scheduled close replaces the existing active schedule by default.
+- Cancelling a scheduled close is idempotent.
+- An overdue scheduled close is executed after restart when it remains applicable.
+- Discord state and permissions are revalidated immediately before execution.
+- Creation, replacement, cancellation, execution, retry, and failure are audited.
+
+### Automatic thread closing
+
+WEFT must support policy-based closing of inactive managed threads.
+
+The initial policy supports:
+
+- an allowlist of managed parent channels,
+- an inactivity duration,
+- per-thread exclusion,
+- whether bot messages count as activity.
+
+By default, activity includes messages sent by human users.
+
+By default, activity excludes:
+
+- WEFT messages,
+- messages from other bots,
+- reactions,
+- title changes,
+- thread setting changes,
+- WEFT configuration changes.
+
+Bot messages do not count as activity by default.
+
+Automatic closing uses a periodic database-driven sweep rather than replacing a delayed job after every message.
+
+The initial sweep interval is five minutes.
+
+Immediately before closing, WEFT must re-fetch the thread and revalidate its current state and permissions.
+
+### Thread maintenance commands
+
+The thread maintenance commands manage automatic-close participation.
+
+Their intended responsibilities are:
+
+- `/thread track`: include the current thread in WEFT management where applicable,
+- `/thread untrack`: exclude the current thread from automatic management,
+- `/thread status`: show the current WEFT management and scheduled-close state.
+
+The exact command options and response presentation will be decided during implementation.
+
+### Managed message command structure
+
+Managed-message operations are subcommands of the top-level `/message` slash command.
+
+The MVP includes:
+
+```text
+/message send
+/message edit
+```
+
+### Managed message send
+
+WEFT sends the message as the WEFT bot.
+
+A successful operation must record:
+
+- guild ID,
+- channel ID,
+- Discord message ID,
+- creator user ID,
+- current revision,
+- creation timestamp,
+- lifecycle status.
+
+User-provided content must not generate mentions by default.
+
+Long-form content should be entered through a Discord modal rather than being forced into a single slash-command text option.
+
+### Managed message edit
+
+An authorized administrator may edit a managed message through WEFT even when that administrator did not create the original message.
+
+A successful edit must record:
+
+- the previous value,
+- the new value,
+- the editor user ID,
+- the new revision,
+- the edit timestamp,
+- the related audit event.
+
+Concurrent edits must not silently overwrite each other.
+
+If the Discord message no longer exists, WEFT must detect that condition, update the stored management state, and return a clear error.
+
+### Managed message authorization
+
+Managed-message operations require the Discord `ManageMessages` permission in the MVP.
+
+WEFT must also verify its own permission to send or edit the target message.
+
+### Managed message content
+
+The MVP supports:
+
+- plain text,
+- normal URLs,
+- Discord embeds.
+
+The MVP does not include persistent attachment storage.
+
+WEFT must not imitate individual users through webhook names or avatars.
+
+### Scheduled messages
+
+WEFT must support:
+
+- one-time scheduled managed messages,
+- recurring managed messages.
+
+Requirements:
+
+- Schedules are persisted in PostgreSQL.
+- Jobs are executed through pg-boss.
+- Absolute timestamps are stored with timezone information.
+- Recurring schedules use IANA timezone identifiers.
+- Transient failures use bounded retries.
+- Permanent failures are recorded explicitly.
+- Recurring messages do not replay every missed occurrence after downtime.
+- Overdue one-time messages execute once only when they remain within the configured grace period.
+- Successful scheduled sends persist the resulting Discord message ID.
+- Schedule creation, modification, cancellation, execution, retry, and failure are audited.
+
+The exact overdue grace period and retry parameters must be decided before scheduled-message implementation.
+
+Scheduled-message administration requires the Discord `ManageMessages` permission in the MVP.
+
+A schedule remains active if its creator later loses a role or leaves the guild unless an administrator explicitly disables or deletes it.
+
+### Scheduling guarantees
+
+Discord API effects and PostgreSQL updates cannot be committed as one transaction.
+
+WEFT must reduce duplicate execution using:
+
+- persistent execution state,
+- stable action identifiers,
+- uniqueness constraints,
+- pre-execution state checks,
+- recorded Discord message IDs,
+- Discord-supported duplicate-reduction mechanisms where applicable.
+
+WEFT does not claim mathematically strict exactly-once delivery.
+
+### Authorization
+
+The MVP uses direct Discord permission checks.
+
+- Bot configuration requires `ManageGuild`.
+- Thread lifecycle operations require `ManageThreads`.
+- Managed-message operations require `ManageMessages`.
+- Scheduled-message administration requires `ManageMessages`.
+
+WEFT must also check its own relevant Discord permissions before execution.
+
+WEFT must not require the Discord `Administrator` permission.
+
+A custom capability-to-role system is not part of the initial MVP.
+
+### Audit
+
+WEFT must record administrative state changes.
+
+Audit records should include, when applicable:
+
+- guild ID,
+- actor user ID,
+- action,
+- target type,
+- target Discord ID,
+- before value,
+- after value,
+- optional reason,
+- correlation ID,
+- timestamp,
+- outcome.
+
+Audit coverage includes:
+
+- thread close and open,
+- automatic and scheduled thread closing,
+- schedule changes and executions,
+- managed-message creation and editing,
+- guild configuration changes,
+- authorization-related configuration changes,
+- failed administrative operations.
+
+The initial default audit retention period is 90 days.
+
+Retention cleanup must not delete state required to recover active schedules.
+
+Whether retention is configurable per guild remains unresolved.
+
+### Message safety
+
+Messages containing user-provided content must suppress mentions by default.
+
+The default behavior is equivalent to Discord `allowed_mentions` with no automatic parsing.
+
+User-facing errors must not expose:
+
+- secrets,
+- stack traces,
+- database details,
+- inaccessible channel names,
+- inaccessible message content.
+
+## Deferred ideas
+
+The following ideas are outside the MVP and do not yet have an approved implementation design:
+
+- Discord message-link previews,
+- polls,
+- reaction-role assignment,
+- monitoring message edits and deletions,
+- bulk thread closing,
+- reaction-based solved state.
+
+Do not implement or document detailed designs for these features until they are explicitly approved.
+
+## Non-goals
+
+WEFT is not intended to:
+
+- impersonate human users,
+- support direct-message use in the initial version,
+- provide arbitrary user-defined code execution,
+- become a general-purpose workflow platform,
+- replace Discord's complete moderation system,
+- use microservices without a demonstrated requirement,
+- guarantee strict exactly-once Discord delivery.
+
+## Unresolved decisions
+
+The following decisions must be made before their corresponding implementation work:
+
+- the default guild timezone,
+- the default automatic-close inactivity duration,
+- the exact overdue grace period for one-time scheduled messages,
+- retry count and backoff parameters,
+- the command input format for recurring schedules,
+- the final embed creation and editing interface,
+- whether audit retention will be configurable per guild.
