@@ -277,6 +277,39 @@ describe("thread lifecycle", () => {
     });
   });
 
+  it("closes again after a successful automatic open reconciliation", async () => {
+    const fixture = createFixture();
+
+    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(fixture.thread).toMatchObject({ name: "[CLOSED] Topic", archived: true });
+    expect(fixture.state?.lifecycleState).toBe("CLOSED");
+
+    fixture.thread.archived = false;
+    await expect(fixture.service.autoOpen(GUILD_ID, THREAD_ID)).resolves.toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(fixture.thread).toMatchObject({ name: "Topic", archived: false });
+    expect(fixture.state?.lifecycleState).toBe("OPEN");
+
+    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(fixture.thread).toMatchObject({ name: "[CLOSED] Topic", archived: true });
+    expect(fixture.state?.lifecycleState).toBe("CLOSED");
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({ action: "CLOSE", outcome: "SUCCESS" }),
+      expect.objectContaining({ action: "AUTO_OPEN", outcome: "SUCCESS" }),
+      expect.objectContaining({ action: "CLOSE", outcome: "SUCCESS" }),
+    ]);
+    expect(fixture.discord.renameThread).toHaveBeenCalledTimes(3);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps closed state after automatic open failure and can retry", async () => {
     const fixture = createFixture({
       threadName: "[CLOSED] Topic",

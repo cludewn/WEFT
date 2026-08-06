@@ -5,7 +5,11 @@ import {
   SlashCommandBuilder,
 } from "discord.js";
 
-import type { ChatInputCommandInteraction, InteractionReplyOptions } from "discord.js";
+import type {
+  ChatInputCommandInteraction,
+  InteractionEditReplyOptions,
+  InteractionReplyOptions,
+} from "discord.js";
 
 import type {
   ThreadFailureCode,
@@ -28,6 +32,11 @@ export const threadCommandDefinition = new SlashCommandBuilder()
 const ephemeralReply = (content: string): InteractionReplyOptions => ({
   content,
   flags: MessageFlags.Ephemeral,
+  allowedMentions: { parse: [] },
+});
+
+const editReply = (content: string): InteractionEditReplyOptions => ({
+  content,
   allowedMentions: { parse: [] },
 });
 
@@ -55,8 +64,8 @@ async function replyWithResult(
   result: ThreadLifecycleResult,
   operation: "closed" | "opened",
 ): Promise<void> {
-  await interaction.reply(
-    ephemeralReply(
+  await interaction.editReply(
+    editReply(
       result.ok
         ? result.changed
           ? `Thread ${operation}.`
@@ -71,10 +80,17 @@ export async function handleThreadCommand(
   lifecycle: ThreadLifecycleService,
 ): Promise<void> {
   if (!interaction.inGuild() || interaction.channelId === null) {
-    await interaction.reply(
-      ephemeralReply("This command can only be used in a supported active thread."),
-    );
+    const response = "This command can only be used in a supported active thread.";
+    if (interaction.deferred || interaction.replied) {
+      await interaction.editReply(editReply(response));
+    } else {
+      await interaction.reply(ephemeralReply(response));
+    }
     return;
+  }
+
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   }
 
   const subcommand = interaction.options.getSubcommand();
