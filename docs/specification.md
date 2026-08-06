@@ -138,14 +138,15 @@ These commands may be implemented incrementally.
 Closing a thread means:
 
 1. adding the configured closed prefix to the beginning of the thread title,
-2. locking the thread,
-3. archiving the thread.
+2. archiving the thread without locking it.
 
 Requirements:
 
 - The invoking user must have the Discord `ManageThreads` permission.
 - WEFT must verify its own required permissions.
 - The current Discord state must be inspected before modification.
+- WEFT must not change the thread's locked state as part of close.
+- A locked thread must be rejected with a clear error instead of being modified.
 - The configured prefix must not be duplicated.
 - Repeated close operations must be idempotent.
 - WEFT-managed state must be persisted.
@@ -158,20 +159,24 @@ The title prefix is a user-visible indicator. It is not the authoritative source
 
 Opening a thread means:
 
-1. unarchiving the thread,
-2. unlocking the thread,
-3. removing one WEFT-managed closed prefix from the beginning of the title.
+1. reconciling an active thread as open after Discord has unarchived it,
+2. removing one WEFT-managed closed prefix from the beginning of the title.
 
 Requirements:
 
 - The invoking user must have the Discord `ManageThreads` permission.
 - WEFT must verify its own required permissions.
 - The current Discord state must be inspected before modification.
+- WEFT must not change the thread's locked state as part of open.
 - Repeated open operations must be idempotent.
 - Only the managed leading prefix may be removed.
 - A previously stored title must not overwrite later manual title edits.
 - WEFT-managed state must be persisted.
 - The operation and its outcome must be audited.
+
+Discord may unarchive an unlocked thread when a user creates an interaction in it. WEFT must
+reconcile an unlocked archived-to-active transition with its managed state. This reconciliation
+must be serialized with explicit thread lifecycle commands for the same thread.
 
 ### Supported thread resources
 

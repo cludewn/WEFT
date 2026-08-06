@@ -558,7 +558,8 @@ First vertical slice:
 - Require `ManageThreads`.
 - Validate WEFT's own permissions.
 - Normalize and add the closed prefix.
-- Lock and archive the thread.
+- Archive the thread without changing its locked state.
+- Reject already locked threads instead of modifying them.
 - Persist managed state.
 - Record audit data.
 - Test idempotency, authorization, and partial failures.
@@ -566,7 +567,7 @@ First vertical slice:
 Second vertical slice:
 
 - Implement `/thread open`.
-- Unarchive and unlock the thread.
+- Reconcile the thread after Discord unarchives it without changing its locked state.
 - Remove one managed leading prefix.
 - Persist managed state.
 - Record audit data.
