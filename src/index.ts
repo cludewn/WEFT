@@ -2,6 +2,7 @@ import pino from "pino";
 
 import { ConfigurationError, loadConfig } from "./config.js";
 import { createDatabase } from "./database.js";
+import { createDiscordClient, DiscordStartupAbortedError, startDiscordClient } from "./discord.js";
 import { createShutdown, getErrorName } from "./shutdown.js";
 
 async function main(): Promise<void> {
@@ -18,9 +19,18 @@ async function main(): Promise<void> {
 
   const logger = pino({ level: config.logLevel });
   const database = createDatabase(config.database);
-  const shutdown = createShutdown(() => database.close(), logger);
+  const discord = createDiscordClient(logger);
+  const startupAbortController = new AbortController();
+  const shutdown = createShutdown(
+    [
+      { name: "discord", close: () => discord.destroy() },
+      { name: "database", close: () => database.close() },
+    ],
+    logger,
+  );
 
   const handleSignal = (signal: NodeJS.Signals): void => {
+    startupAbortController.abort();
     void shutdown(signal).catch(() => {
       process.exitCode = 1;
     });
@@ -33,8 +43,19 @@ async function main(): Promise<void> {
     logger.info({ event: "application_starting" }, "Application startup started");
     await database.verifyConnection();
     logger.info({ event: "database_connected" }, "PostgreSQL connection verified");
+    await startDiscordClient(discord, config.discord.token, startupAbortController.signal);
+    logger.info({ event: "discord_ready" }, "Discord client is ready");
     logger.info({ event: "application_ready" }, "Application startup completed");
   } catch (error) {
+    if (error instanceof DiscordStartupAbortedError) {
+      try {
+        await shutdown("startup_aborted");
+      } catch {
+        process.exitCode = 1;
+      }
+      return;
+    }
+
     logger.error(
       { event: "startup_failed", errorName: getErrorName(error) },
       "Application startup failed",

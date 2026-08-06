@@ -21,21 +21,38 @@ Install dependencies through the pnpm version pinned in `package.json`:
 corepack pnpm install --frozen-lockfile
 ```
 
-Copy `.env.example` to `.env` for local Docker Compose use, then replace the example password. Do not commit `.env` files.
+Copy `.env.example` to `.env` for local Docker Compose use, then replace the example passwords and Discord placeholders. Normal application startup requires `DISCORD_TOKEN` and `DISCORD_APPLICATION_ID`. Deploying commands to the default development guild also requires `DISCORD_GUILD_ID`. Do not commit `.env` files.
 
 Commands run directly on the host do not load `.env` automatically. Provide the same variables through the local shell or environment-management tool before running the application, Drizzle Kit, or PostgreSQL integration tests.
 
 ## Environment variables
 
-| Name                | Required | Description                                                            |
-| ------------------- | -------- | ---------------------------------------------------------------------- |
-| `DATABASE_HOST`     | Yes      | PostgreSQL host                                                        |
-| `DATABASE_PORT`     | Yes      | PostgreSQL port between 1 and 65535                                    |
-| `DATABASE_NAME`     | Yes      | PostgreSQL database name                                               |
-| `DATABASE_USER`     | Yes      | PostgreSQL user                                                        |
-| `DATABASE_PASSWORD` | Yes      | PostgreSQL password                                                    |
-| `DATABASE_SSL`      | No       | Set to `true` to require certificate-verified TLS; defaults to `false` |
-| `LOG_LEVEL`         | No       | Pino log level; defaults to `info`                                     |
+| Name                     | Required               | Description                                                            |
+| ------------------------ | ---------------------- | ---------------------------------------------------------------------- |
+| `DATABASE_HOST`          | Yes                    | PostgreSQL host                                                        |
+| `DATABASE_PORT`          | Yes                    | PostgreSQL port between 1 and 65535                                    |
+| `DATABASE_NAME`          | Yes                    | PostgreSQL database name                                               |
+| `DATABASE_USER`          | Yes                    | PostgreSQL user                                                        |
+| `DATABASE_PASSWORD`      | Yes                    | PostgreSQL password                                                    |
+| `DATABASE_SSL`           | No                     | Set to `true` to require certificate-verified TLS; defaults to `false` |
+| `LOG_LEVEL`              | No                     | Pino log level; defaults to `info`                                     |
+| `DISCORD_TOKEN`          | Yes                    | Discord bot token; never logged or format-validated                    |
+| `DISCORD_APPLICATION_ID` | Yes                    | Discord application ID                                                 |
+| `DISCORD_GUILD_ID`       | For command deployment | Development guild used by the default command deployment mode          |
+
+## Discord commands
+
+Normal application startup does not register application commands. Deploy commands explicitly to the configured development guild:
+
+```sh
+corepack pnpm commands:deploy
+```
+
+Global deployment must be selected explicitly:
+
+```sh
+corepack pnpm commands:deploy -- --global
+```
 
 PostgreSQL integration tests use a separate set of required variables and never fall back to the application database settings:
 

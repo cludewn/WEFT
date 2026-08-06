@@ -8,6 +8,8 @@ const validEnvironment = {
   DATABASE_NAME: "weft_test",
   DATABASE_USER: "weft",
   DATABASE_PASSWORD: "local-test-password",
+  DISCORD_TOKEN: "local-test-token",
+  DISCORD_APPLICATION_ID: "123456789012345678",
 };
 
 describe("loadConfig", () => {
@@ -21,8 +23,32 @@ describe("loadConfig", () => {
         password: "local-test-password",
         ssl: false,
       },
+      discord: {
+        token: "local-test-token",
+        applicationId: "123456789012345678",
+      },
       logLevel: "info",
     });
+  });
+
+  it("loads an optional development guild without validating token format", () => {
+    const config = loadConfig({
+      ...validEnvironment,
+      DISCORD_TOKEN: "opaque-token-value",
+      DISCORD_GUILD_ID: "234567890123456789",
+    });
+
+    expect(config.discord).toEqual({
+      token: "opaque-token-value",
+      applicationId: "123456789012345678",
+      guildId: "234567890123456789",
+    });
+  });
+
+  it("treats an empty optional guild setting as absent", () => {
+    const config = loadConfig({ ...validEnvironment, DISCORD_GUILD_ID: "" });
+
+    expect(config.discord.guildId).toBeUndefined();
   });
 
   it("supports explicit SSL and log-level settings", () => {
@@ -52,6 +78,16 @@ describe("loadConfig", () => {
       expect((error as ConfigurationError).variables).toEqual(["DATABASE_PORT"]);
       expect(String(error)).not.toContain(secret);
     }
+  });
+
+  it("reports missing Discord settings without exposing other values", () => {
+    expect(() =>
+      loadConfig({
+        ...validEnvironment,
+        DISCORD_APPLICATION_ID: undefined,
+        DISCORD_TOKEN: undefined,
+      }),
+    ).toThrowError(new ConfigurationError(["DISCORD_APPLICATION_ID", "DISCORD_TOKEN"]));
   });
 });
 
