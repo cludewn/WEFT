@@ -40,10 +40,12 @@ export function createDiscordClient(
       guildSettings: dependencies.guildSettings,
       managedThreads: dependencies.managedThreads,
       audits: dependencies.audits,
+      logger,
     });
   const commandDependencies: CommandDependencies = {
     guildSettings: dependencies.guildSettings,
     threadLifecycle,
+    logger,
   };
 
   client.on(Events.InteractionCreate, (interaction) => {

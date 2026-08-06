@@ -27,7 +27,7 @@ const discordDependencies = {
 } as unknown as DiscordDependencies;
 
 function createLogger(): Logger {
-  return { error: vi.fn() } as unknown as Logger;
+  return { debug: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Logger;
 }
 
 describe("Discord client", () => {
@@ -41,7 +41,10 @@ describe("Discord client", () => {
   it("logs only the event and command name for an unknown command", async () => {
     const warn = vi.fn();
     const error = vi.fn();
-    const client = createDiscordClient({ warn, error } as unknown as Logger, discordDependencies);
+    const client = createDiscordClient(
+      { debug: vi.fn(), warn, error } as unknown as Logger,
+      discordDependencies,
+    );
     const reply = vi.fn();
     const interaction = {
       commandName: "unknown",
@@ -65,7 +68,10 @@ describe("Discord client", () => {
   it("handles reply failures without logging interaction content", async () => {
     const warn = vi.fn();
     const error = vi.fn();
-    const client = createDiscordClient({ warn, error } as unknown as Logger, discordDependencies);
+    const client = createDiscordClient(
+      { debug: vi.fn(), warn, error } as unknown as Logger,
+      discordDependencies,
+    );
     const reply = vi.fn(() => Promise.reject(new Error("reply failed")));
     const interaction = {
       commandName: "ping",
@@ -94,7 +100,7 @@ describe("Discord client", () => {
       autoOpen: vi.fn(),
     } as unknown as ThreadLifecycleService;
     const client = createDiscordClient(
-      { warn, error } as unknown as Logger,
+      { debug: vi.fn(), warn, error } as unknown as Logger,
       discordDependencies,
       lifecycle,
     );
@@ -106,7 +112,8 @@ describe("Discord client", () => {
       channelId: "thread-id",
       deferred: false,
       replied: false,
-      deferReply: vi.fn(() => Promise.reject(new Error("sensitive raw detail"))),
+      options: { getSubcommand: () => "close" },
+      reply: vi.fn(() => Promise.reject(new Error("sensitive raw detail"))),
     } as unknown as ChatInputCommandInteraction;
 
     client.emit(Events.InteractionCreate, interaction);

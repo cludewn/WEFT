@@ -3,8 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ChatInputCommandInteraction } from "discord.js";
 
-import { handleThreadCommand, threadCommandDefinition } from "../../src/thread-command.js";
+import { OperationTimeoutError } from "../../src/operation-timeout.js";
+import {
+  DEFAULT_INTERACTION_IO_TIMEOUT_MS,
+  handleThreadCommand,
+  threadCommandDefinition,
+} from "../../src/thread-command.js";
 import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
+
+const logger = { debug: vi.fn(), warn: vi.fn() };
 
 describe("thread command", () => {
   it("defines guild-only close and open subcommands with ManageThreads permission", () => {
@@ -15,11 +22,12 @@ describe("thread command", () => {
       PermissionFlagsBits.ManageThreads.toString(),
     );
     expect(definition.options?.map((option) => option.name)).toEqual(["close", "open"]);
+    expect(DEFAULT_INTERACTION_IO_TIMEOUT_MS).toBe(2_500);
   });
 
   it("rejects non-guild contexts ephemerally", async () => {
     const { interaction, reply } = createInteraction({ inGuild: false });
-    await handleThreadCommand(interaction, createLifecycle());
+    await handleThreadCommand(interaction, createLifecycle(), logger);
     expect(reply).toHaveBeenCalledWith(
       ephemeral("This command can only be used in a supported active thread."),
     );
@@ -33,6 +41,7 @@ describe("thread command", () => {
       createLifecycle({
         close: vi.fn(() => Promise.resolve({ ok: false, code: "UNSUPPORTED_CONTEXT" } as const)),
       }),
+      logger,
     );
     await handleThreadCommand(
       denied.interaction,
@@ -41,6 +50,7 @@ describe("thread command", () => {
           Promise.resolve({ ok: false, code: "ACTOR_PERMISSION_MISSING" } as const),
         ),
       }),
+      logger,
     );
     expect(unsupported.editReply).toHaveBeenCalledWith(
       edited("This command can only be used in a supported active thread."),
@@ -50,7 +60,7 @@ describe("thread command", () => {
     );
   });
 
-  it("defers ephemerally before lifecycle work and edits the deferred success reply", async () => {
+  it("replies ephemerally before lifecycle work and edits the initial response", async () => {
     const order: string[] = [];
     const lifecycle = createLifecycle({
       close: vi.fn(() => {
@@ -59,18 +69,18 @@ describe("thread command", () => {
       }),
     });
     const close = createInteraction({
-      deferReply: vi.fn(() => {
-        order.push("defer");
+      reply: vi.fn(() => {
+        order.push("reply");
         return Promise.resolve();
       }),
     });
 
-    await handleThreadCommand(close.interaction, lifecycle);
+    await handleThreadCommand(close.interaction, lifecycle, logger);
 
-    expect(order).toEqual(["defer", "lifecycle"]);
-    expect(close.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(order).toEqual(["reply", "lifecycle"]);
+    expect(close.reply).toHaveBeenCalledWith(ephemeral("Closing thread…"));
+    expect(close.deferReply).not.toHaveBeenCalled();
     expect(close.editReply).toHaveBeenCalledWith(edited("Thread closed."));
-    expect(close.reply).not.toHaveBeenCalled();
   });
 
   it("routes close and open for the current thread only", async () => {
@@ -78,13 +88,30 @@ describe("thread command", () => {
     const close = createInteraction({ subcommand: "close" });
     const open = createInteraction({ subcommand: "open" });
 
-    await handleThreadCommand(close.interaction, lifecycle);
-    await handleThreadCommand(open.interaction, lifecycle);
+    await handleThreadCommand(close.interaction, lifecycle, logger);
+    await handleThreadCommand(open.interaction, lifecycle, logger);
 
     expect(lifecycle.close).toHaveBeenCalledWith("guild-id", "thread-id", "actor-id");
     expect(lifecycle.open).toHaveBeenCalledWith("guild-id", "thread-id", "actor-id");
+    expect(close.reply).toHaveBeenCalledWith(ephemeral("Closing thread…"));
+    expect(open.reply).toHaveBeenCalledWith(ephemeral("Opening thread…"));
     expect(close.editReply).toHaveBeenCalledWith(edited("Thread closed."));
     expect(open.editReply).toHaveBeenCalledWith(edited("Thread opened."));
+  });
+
+  it("edits the initial response with unchanged close and open results", async () => {
+    const lifecycle = createLifecycle({
+      close: vi.fn(() => Promise.resolve({ ok: true, changed: false } as const)),
+      open: vi.fn(() => Promise.resolve({ ok: true, changed: false } as const)),
+    });
+    const close = createInteraction({ subcommand: "close" });
+    const open = createInteraction({ subcommand: "open" });
+
+    await handleThreadCommand(close.interaction, lifecycle, logger);
+    await handleThreadCommand(open.interaction, lifecycle, logger);
+
+    expect(close.editReply).toHaveBeenCalledWith(edited("Thread is already closed."));
+    expect(open.editReply).toHaveBeenCalledWith(edited("Thread is already opened."));
   });
 
   it("returns safe lifecycle failures ephemerally", async () => {
@@ -93,7 +120,7 @@ describe("thread command", () => {
     });
     const { interaction, editReply } = createInteraction();
 
-    await handleThreadCommand(interaction, lifecycle);
+    await handleThreadCommand(interaction, lifecycle, logger);
 
     expect(editReply).toHaveBeenCalledWith(
       edited("WEFT cannot manage this thread with its current permissions."),
@@ -106,24 +133,75 @@ describe("thread command", () => {
     });
     const { interaction, editReply } = createInteraction();
 
-    await handleThreadCommand(interaction, lifecycle);
+    await handleThreadCommand(interaction, lifecycle, logger);
 
     expect(editReply).toHaveBeenCalledWith(
       edited("A locked thread cannot be soft-closed. Unlock it manually before retrying."),
     );
   });
 
-  it("does not start lifecycle work when deferReply fails", async () => {
+  it("does not start lifecycle work when the initial reply fails", async () => {
     const lifecycle = createLifecycle();
     const failure = new Error("opaque failure");
     const { interaction, editReply } = createInteraction({
-      deferReply: vi.fn(() => Promise.reject(failure)),
+      reply: vi.fn(() => Promise.reject(failure)),
     });
 
-    await expect(handleThreadCommand(interaction, lifecycle)).rejects.toBe(failure);
+    await expect(handleThreadCommand(interaction, lifecycle, logger)).rejects.toBe(failure);
 
     expect(lifecycle.close).not.toHaveBeenCalled();
     expect(editReply).not.toHaveBeenCalled();
+  });
+
+  it("does not start lifecycle work when the initial reply times out", async () => {
+    const lifecycle = createLifecycle();
+    const { interaction, editReply } = createInteraction({
+      reply: vi.fn(() => new Promise(() => undefined)),
+    });
+
+    await expect(handleThreadCommand(interaction, lifecycle, logger, 5)).rejects.toBeInstanceOf(
+      OperationTimeoutError,
+    );
+
+    expect(lifecycle.close).not.toHaveBeenCalled();
+    expect(editReply).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        boundary: "initial_response",
+        failureCode: "INTERACTION_INITIAL_RESPONSE_TIMEOUT",
+      }),
+      "Thread interaction boundary failed",
+    );
+  });
+
+  it("warns the user when a lifecycle write outcome is unknown", async () => {
+    const lifecycle = createLifecycle({
+      close: vi.fn(() =>
+        Promise.resolve({ ok: false, code: "DISCORD_ARCHIVE_OUTCOME_UNKNOWN" } as const),
+      ),
+    });
+    const { interaction, editReply } = createInteraction();
+
+    await handleThreadCommand(interaction, lifecycle, logger);
+
+    expect(editReply).toHaveBeenCalledWith(
+      edited(
+        "WEFT could not confirm the final outcome. Check the current thread state before retrying.",
+      ),
+    );
+  });
+
+  it("reports an already pending Discord mutation safely", async () => {
+    const lifecycle = createLifecycle({
+      close: vi.fn(() => Promise.resolve({ ok: false, code: "DISCORD_MUTATION_PENDING" } as const)),
+    });
+    const { interaction, editReply } = createInteraction();
+
+    await handleThreadCommand(interaction, lifecycle, logger);
+
+    expect(editReply).toHaveBeenCalledWith(
+      edited("A Discord update is still pending for this thread. Please wait before retrying."),
+    );
   });
 
   it("acknowledges before a delayed lifecycle result", async () => {
@@ -134,9 +212,9 @@ describe("thread command", () => {
     const lifecycle = createLifecycle({ close: vi.fn(() => lifecycleResult) });
     const fixture = createInteraction();
 
-    const handling = handleThreadCommand(fixture.interaction, lifecycle);
+    const handling = handleThreadCommand(fixture.interaction, lifecycle, logger);
     await vi.waitFor(() => {
-      expect(fixture.deferReply).toHaveBeenCalledOnce();
+      expect(fixture.reply).toHaveBeenCalledWith(ephemeral("Closing thread…"));
       expect(lifecycle.close).toHaveBeenCalledOnce();
     });
     expect(fixture.editReply).not.toHaveBeenCalled();
@@ -150,12 +228,46 @@ describe("thread command", () => {
     for (const state of [{ deferred: true }, { replied: true }]) {
       const fixture = createInteraction(state);
 
-      await handleThreadCommand(fixture.interaction, createLifecycle());
+      await handleThreadCommand(fixture.interaction, createLifecycle(), logger);
 
       expect(fixture.deferReply).not.toHaveBeenCalled();
       expect(fixture.reply).not.toHaveBeenCalled();
-      expect(fixture.editReply).toHaveBeenCalledWith(edited("Thread closed."));
+      expect(fixture.editReply).toHaveBeenNthCalledWith(1, edited("Closing thread…"));
+      expect(fixture.editReply).toHaveBeenNthCalledWith(2, edited("Thread closed."));
     }
+  });
+
+  it("classifies a timed-out final edit as unknown and consumes its delayed success", async () => {
+    let completeEdit: (() => void) | undefined;
+    const fixture = createInteraction({
+      editReply: vi.fn(
+        () =>
+          new Promise<void>((resolve) => {
+            completeEdit = resolve;
+          }),
+      ),
+    });
+
+    await expect(
+      handleThreadCommand(fixture.interaction, createLifecycle(), logger, 5),
+    ).rejects.toBeInstanceOf(OperationTimeoutError);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "thread_interaction_boundary_failed",
+        guildId: "guild-id",
+        threadId: "thread-id",
+        operation: "CLOSE",
+        boundary: "final_response",
+        failureCode: "INTERACTION_FINAL_RESPONSE_OUTCOME_UNKNOWN",
+      }),
+      "Thread interaction boundary failed",
+    );
+    const loggedFields: unknown = logger.warn.mock.calls.at(-1)?.[0];
+    expect(loggedFields).toHaveProperty("durationMs", expect.any(Number));
+
+    completeEdit?.();
+    await vi.waitFor(() => expect(fixture.editReply).toHaveBeenCalledOnce());
   });
 });
 
@@ -174,23 +286,27 @@ function createInteraction({
   subcommand = "close",
   deferred = false,
   replied = false,
+  reply: replyOverride,
   deferReply: deferReplyOverride,
+  editReply: editReplyOverride,
 }: {
   inGuild?: boolean;
   isThread?: boolean;
   subcommand?: string;
   deferred?: boolean;
   replied?: boolean;
+  reply?: ReturnType<typeof vi.fn<() => Promise<void>>>;
   deferReply?: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  editReply?: ReturnType<typeof vi.fn>;
 } = {}): {
   interaction: ChatInputCommandInteraction;
   reply: ReturnType<typeof vi.fn>;
   deferReply: ReturnType<typeof vi.fn<() => Promise<void>>>;
   editReply: ReturnType<typeof vi.fn>;
 } {
-  const reply = vi.fn(() => Promise.resolve());
+  const reply = replyOverride ?? vi.fn(() => Promise.resolve());
   const deferReply = deferReplyOverride ?? vi.fn(() => Promise.resolve());
-  const editReply = vi.fn(() => Promise.resolve());
+  const editReply = editReplyOverride ?? vi.fn(() => Promise.resolve());
   const interaction = {
     guildId: inGuild ? "guild-id" : null,
     channelId: inGuild ? "thread-id" : null,

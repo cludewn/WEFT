@@ -1,6 +1,7 @@
 import { MessageFlags, SlashCommandBuilder } from "discord.js";
 
 import type { ChatInputCommandInteraction } from "discord.js";
+import type { Logger } from "pino";
 
 import { configCommandDefinition, handleConfigCommand } from "./config-command.js";
 import type { GuildSettingsStore } from "./guild-settings.js";
@@ -16,6 +17,7 @@ export const commandDefinitions = [
 export type CommandDependencies = {
   guildSettings: GuildSettingsStore;
   threadLifecycle: ThreadLifecycleService;
+  logger: Logger;
 };
 
 export async function handleCommand(
@@ -33,7 +35,7 @@ export async function handleCommand(
   }
 
   if (interaction.commandName === "thread") {
-    await handleThreadCommand(interaction, dependencies.threadLifecycle);
+    await handleThreadCommand(interaction, dependencies.threadLifecycle, dependencies.logger);
     return true;
   }
 
