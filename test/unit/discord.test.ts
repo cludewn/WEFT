@@ -85,6 +85,43 @@ describe("Discord client", () => {
     await client.destroy();
   });
 
+  it("logs a thread handler exception without raw error details", async () => {
+    const warn = vi.fn();
+    const error = vi.fn();
+    const lifecycle = {
+      close: vi.fn(),
+      open: vi.fn(),
+      autoOpen: vi.fn(),
+    } as unknown as ThreadLifecycleService;
+    const client = createDiscordClient(
+      { warn, error } as unknown as Logger,
+      discordDependencies,
+      lifecycle,
+    );
+    const interaction = {
+      commandName: "thread",
+      isChatInputCommand: () => true,
+      inGuild: () => true,
+      guildId: "guild-id",
+      channelId: "thread-id",
+      deferred: false,
+      replied: false,
+      deferReply: vi.fn(() => Promise.reject(new Error("sensitive raw detail"))),
+    } as unknown as ChatInputCommandInteraction;
+
+    client.emit(Events.InteractionCreate, interaction);
+
+    await vi.waitFor(() => {
+      expect(error).toHaveBeenCalledWith(
+        { event: "command_failed", commandName: "thread", errorName: "Error" },
+        "Discord command failed",
+      );
+    });
+    expect(lifecycle.close).not.toHaveBeenCalled();
+    expect(JSON.stringify(error.mock.calls)).not.toContain("sensitive raw detail");
+    await client.destroy();
+  });
+
   it("reconciles only unlocked archived-to-active thread updates", async () => {
     const autoOpen = vi.fn(() => Promise.resolve({ ok: true, changed: true } as const));
     const lifecycle = {

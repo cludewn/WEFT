@@ -42,13 +42,35 @@ describe("thread command", () => {
         ),
       }),
     );
-    expect(unsupported.reply).toHaveBeenCalledWith(
-      ephemeral("This command can only be used in a supported active thread."),
+    expect(unsupported.editReply).toHaveBeenCalledWith(
+      edited("This command can only be used in a supported active thread."),
     );
-    const { reply } = denied;
-    expect(reply).toHaveBeenCalledWith(
-      ephemeral("You need the Manage Threads permission to use this command."),
+    expect(denied.editReply).toHaveBeenCalledWith(
+      edited("You need the Manage Threads permission to use this command."),
     );
+  });
+
+  it("defers ephemerally before lifecycle work and edits the deferred success reply", async () => {
+    const order: string[] = [];
+    const lifecycle = createLifecycle({
+      close: vi.fn(() => {
+        order.push("lifecycle");
+        return Promise.resolve({ ok: true, changed: true } as const);
+      }),
+    });
+    const close = createInteraction({
+      deferReply: vi.fn(() => {
+        order.push("defer");
+        return Promise.resolve();
+      }),
+    });
+
+    await handleThreadCommand(close.interaction, lifecycle);
+
+    expect(order).toEqual(["defer", "lifecycle"]);
+    expect(close.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(close.editReply).toHaveBeenCalledWith(edited("Thread closed."));
+    expect(close.reply).not.toHaveBeenCalled();
   });
 
   it("routes close and open for the current thread only", async () => {
@@ -61,20 +83,20 @@ describe("thread command", () => {
 
     expect(lifecycle.close).toHaveBeenCalledWith("guild-id", "thread-id", "actor-id");
     expect(lifecycle.open).toHaveBeenCalledWith("guild-id", "thread-id", "actor-id");
-    expect(close.reply).toHaveBeenCalledWith(ephemeral("Thread closed."));
-    expect(open.reply).toHaveBeenCalledWith(ephemeral("Thread opened."));
+    expect(close.editReply).toHaveBeenCalledWith(edited("Thread closed."));
+    expect(open.editReply).toHaveBeenCalledWith(edited("Thread opened."));
   });
 
   it("returns safe lifecycle failures ephemerally", async () => {
     const lifecycle = createLifecycle({
       close: vi.fn(() => Promise.resolve({ ok: false, code: "BOT_PERMISSION_MISSING" } as const)),
     });
-    const { interaction, reply } = createInteraction();
+    const { interaction, editReply } = createInteraction();
 
     await handleThreadCommand(interaction, lifecycle);
 
-    expect(reply).toHaveBeenCalledWith(
-      ephemeral("WEFT cannot manage this thread with its current permissions."),
+    expect(editReply).toHaveBeenCalledWith(
+      edited("WEFT cannot manage this thread with its current permissions."),
     );
   });
 
@@ -82,13 +104,58 @@ describe("thread command", () => {
     const lifecycle = createLifecycle({
       close: vi.fn(() => Promise.resolve({ ok: false, code: "THREAD_LOCKED" } as const)),
     });
-    const { interaction, reply } = createInteraction();
+    const { interaction, editReply } = createInteraction();
 
     await handleThreadCommand(interaction, lifecycle);
 
-    expect(reply).toHaveBeenCalledWith(
-      ephemeral("A locked thread cannot be soft-closed. Unlock it manually before retrying."),
+    expect(editReply).toHaveBeenCalledWith(
+      edited("A locked thread cannot be soft-closed. Unlock it manually before retrying."),
     );
+  });
+
+  it("does not start lifecycle work when deferReply fails", async () => {
+    const lifecycle = createLifecycle();
+    const failure = new Error("opaque failure");
+    const { interaction, editReply } = createInteraction({
+      deferReply: vi.fn(() => Promise.reject(failure)),
+    });
+
+    await expect(handleThreadCommand(interaction, lifecycle)).rejects.toBe(failure);
+
+    expect(lifecycle.close).not.toHaveBeenCalled();
+    expect(editReply).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges before a delayed lifecycle result", async () => {
+    let resolveLifecycle: ((result: { ok: true; changed: true }) => void) | undefined;
+    const lifecycleResult = new Promise<{ ok: true; changed: true }>((resolve) => {
+      resolveLifecycle = resolve;
+    });
+    const lifecycle = createLifecycle({ close: vi.fn(() => lifecycleResult) });
+    const fixture = createInteraction();
+
+    const handling = handleThreadCommand(fixture.interaction, lifecycle);
+    await vi.waitFor(() => {
+      expect(fixture.deferReply).toHaveBeenCalledOnce();
+      expect(lifecycle.close).toHaveBeenCalledOnce();
+    });
+    expect(fixture.editReply).not.toHaveBeenCalled();
+
+    resolveLifecycle?.({ ok: true, changed: true });
+    await handling;
+    expect(fixture.editReply).toHaveBeenCalledWith(edited("Thread closed."));
+  });
+
+  it("does not acknowledge twice when the interaction is already deferred or replied", async () => {
+    for (const state of [{ deferred: true }, { replied: true }]) {
+      const fixture = createInteraction(state);
+
+      await handleThreadCommand(fixture.interaction, createLifecycle());
+
+      expect(fixture.deferReply).not.toHaveBeenCalled();
+      expect(fixture.reply).not.toHaveBeenCalled();
+      expect(fixture.editReply).toHaveBeenCalledWith(edited("Thread closed."));
+    }
   });
 });
 
@@ -105,15 +172,25 @@ function createInteraction({
   inGuild = true,
   isThread = true,
   subcommand = "close",
+  deferred = false,
+  replied = false,
+  deferReply: deferReplyOverride,
 }: {
   inGuild?: boolean;
   isThread?: boolean;
   subcommand?: string;
+  deferred?: boolean;
+  replied?: boolean;
+  deferReply?: ReturnType<typeof vi.fn<() => Promise<void>>>;
 } = {}): {
   interaction: ChatInputCommandInteraction;
   reply: ReturnType<typeof vi.fn>;
+  deferReply: ReturnType<typeof vi.fn<() => Promise<void>>>;
+  editReply: ReturnType<typeof vi.fn>;
 } {
   const reply = vi.fn(() => Promise.resolve());
+  const deferReply = deferReplyOverride ?? vi.fn(() => Promise.resolve());
+  const editReply = vi.fn(() => Promise.resolve());
   const interaction = {
     guildId: inGuild ? "guild-id" : null,
     channelId: inGuild ? "thread-id" : null,
@@ -122,9 +199,20 @@ function createInteraction({
     memberPermissions: { has: () => true },
     options: { getSubcommand: () => subcommand },
     user: { id: "actor-id" },
+    deferred,
+    replied,
+    deferReply,
+    editReply,
     reply,
   } as unknown as ChatInputCommandInteraction;
-  return { interaction, reply };
+  return { interaction, reply, deferReply, editReply };
+}
+
+function edited(content: string) {
+  return {
+    content,
+    allowedMentions: { parse: [] },
+  };
 }
 
 function ephemeral(content: string) {
