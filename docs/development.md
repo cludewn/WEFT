@@ -636,6 +636,7 @@ Then:
 ### Phase 9: MVP hardening
 
 - Review Discord permissions.
+- Implement and validate the optional audit-log destination guild setting.
 - Finalize operational health checks.
 - Implement audit retention.
 - Document backup and restore procedures.

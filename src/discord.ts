@@ -2,7 +2,7 @@ import { Client, Events, GatewayIntentBits } from "discord.js";
 
 import type { Logger } from "pino";
 
-import { handleCommand } from "./commands.js";
+import { handleCommand, type CommandDependencies } from "./commands.js";
 
 export type DiscordStartupClient = {
   login: (token: string) => Promise<string>;
@@ -17,7 +17,10 @@ export class DiscordStartupAbortedError extends Error {
   }
 }
 
-export function createDiscordClient(logger: Logger): Client {
+export function createDiscordClient(
+  logger: Logger,
+  commandDependencies: CommandDependencies,
+): Client {
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
   client.on(Events.InteractionCreate, (interaction) => {
@@ -25,7 +28,7 @@ export function createDiscordClient(logger: Logger): Client {
       return;
     }
 
-    void handleCommand(interaction)
+    void handleCommand(interaction, commandDependencies)
       .then((handled) => {
         if (!handled) {
           logger.warn(

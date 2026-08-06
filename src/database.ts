@@ -2,6 +2,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
 import type { DatabaseConfig } from "./config.js";
+import { guildSettings } from "./guild-settings.js";
 
 export function createDatabase(config: DatabaseConfig) {
   const pool = new Pool({
@@ -14,7 +15,7 @@ export function createDatabase(config: DatabaseConfig) {
     application_name: "weft",
   });
 
-  const client = drizzle(pool);
+  const client = drizzle(pool, { schema: { guildSettings } });
 
   return {
     client,
@@ -26,3 +27,5 @@ export function createDatabase(config: DatabaseConfig) {
     },
   };
 }
+
+export type DatabaseClient = ReturnType<typeof createDatabase>["client"];

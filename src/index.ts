@@ -3,6 +3,7 @@ import pino from "pino";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { createDatabase } from "./database.js";
 import { createDiscordClient, DiscordStartupAbortedError, startDiscordClient } from "./discord.js";
+import { createGuildSettingsStore } from "./guild-settings.js";
 import { createShutdown, getErrorName } from "./shutdown.js";
 
 async function main(): Promise<void> {
@@ -19,7 +20,8 @@ async function main(): Promise<void> {
 
   const logger = pino({ level: config.logLevel });
   const database = createDatabase(config.database);
-  const discord = createDiscordClient(logger);
+  const guildSettings = createGuildSettingsStore(database.client);
+  const discord = createDiscordClient(logger, { guildSettings });
   const startupAbortController = new AbortController();
   const shutdown = createShutdown(
     [

@@ -9,6 +9,15 @@ import {
   type DiscordStartupClient,
   startDiscordClient,
 } from "../../src/discord.js";
+import type { CommandDependencies } from "../../src/commands.js";
+
+const commandDependencies = {
+  guildSettings: {
+    getOrCreate: vi.fn(),
+    setTimezone: vi.fn(),
+    setClosedPrefix: vi.fn(),
+  },
+} as unknown as CommandDependencies;
 
 function createLogger(): Logger {
   return { error: vi.fn() } as unknown as Logger;
@@ -16,7 +25,7 @@ function createLogger(): Logger {
 
 describe("Discord client", () => {
   it("requests only the Guilds gateway intent", async () => {
-    const client = createDiscordClient(createLogger());
+    const client = createDiscordClient(createLogger(), commandDependencies);
 
     expect(client.options.intents.bitfield).toBe(GatewayIntentBits.Guilds);
     await client.destroy();
@@ -25,7 +34,7 @@ describe("Discord client", () => {
   it("logs only the event and command name for an unknown command", async () => {
     const warn = vi.fn();
     const error = vi.fn();
-    const client = createDiscordClient({ warn, error } as unknown as Logger);
+    const client = createDiscordClient({ warn, error } as unknown as Logger, commandDependencies);
     const reply = vi.fn();
     const interaction = {
       commandName: "unknown",
@@ -49,7 +58,7 @@ describe("Discord client", () => {
   it("handles reply failures without logging interaction content", async () => {
     const warn = vi.fn();
     const error = vi.fn();
-    const client = createDiscordClient({ warn, error } as unknown as Logger);
+    const client = createDiscordClient({ warn, error } as unknown as Logger, commandDependencies);
     const reply = vi.fn(() => Promise.reject(new Error("reply failed")));
     const interaction = {
       commandName: "ping",
