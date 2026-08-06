@@ -3,6 +3,16 @@ import { Client, Events, GatewayIntentBits } from "discord.js";
 import type { Logger } from "pino";
 
 import { handleCommand, type CommandDependencies } from "./commands.js";
+import { createThreadLifecycleDiscord, isSupportedThreadType } from "./thread-discord.js";
+import { createThreadLifecycleService } from "./thread-lifecycle.js";
+import type { GuildSettingsStore } from "./guild-settings.js";
+import type { ManagedThreadStore, ThreadAuditStore } from "./thread-persistence.js";
+
+export type DiscordDependencies = {
+  guildSettings: GuildSettingsStore;
+  managedThreads: ManagedThreadStore;
+  audits: ThreadAuditStore;
+};
 
 export type DiscordStartupClient = {
   login: (token: string) => Promise<string>;
@@ -19,9 +29,22 @@ export class DiscordStartupAbortedError extends Error {
 
 export function createDiscordClient(
   logger: Logger,
-  commandDependencies: CommandDependencies,
+  dependencies: DiscordDependencies,
+  threadLifecycleOverride?: ReturnType<typeof createThreadLifecycleService>,
 ): Client {
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  const threadLifecycle =
+    threadLifecycleOverride ??
+    createThreadLifecycleService({
+      discord: createThreadLifecycleDiscord(client),
+      guildSettings: dependencies.guildSettings,
+      managedThreads: dependencies.managedThreads,
+      audits: dependencies.audits,
+    });
+  const commandDependencies: CommandDependencies = {
+    guildSettings: dependencies.guildSettings,
+    threadLifecycle,
+  };
 
   client.on(Events.InteractionCreate, (interaction) => {
     if (!interaction.isChatInputCommand()) {
@@ -47,6 +70,31 @@ export function createDiscordClient(
           "Discord command failed",
         );
       });
+  });
+
+  client.on(Events.ThreadUpdate, (oldThread, newThread) => {
+    if (
+      oldThread.archived !== true ||
+      newThread.archived !== false ||
+      newThread.locked === true ||
+      !isSupportedThreadType(newThread.type)
+    ) {
+      return;
+    }
+
+    void threadLifecycle.autoOpen(newThread.guildId, newThread.id).then((result) => {
+      if (!result.ok) {
+        logger.error(
+          {
+            event: "automatic_thread_open_failed",
+            guildId: newThread.guildId,
+            threadId: newThread.id,
+            failureCode: result.code,
+          },
+          "Automatic thread open reconciliation failed",
+        );
+      }
+    });
   });
 
   return client;

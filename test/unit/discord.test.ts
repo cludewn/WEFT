@@ -1,23 +1,30 @@
-import { Events, GatewayIntentBits } from "discord.js";
-import type { ChatInputCommandInteraction } from "discord.js";
+import { ChannelType, Events, GatewayIntentBits } from "discord.js";
+import type { AnyThreadChannel, ChatInputCommandInteraction } from "discord.js";
 import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
 import {
   createDiscordClient,
+  type DiscordDependencies,
   DiscordStartupAbortedError,
   type DiscordStartupClient,
   startDiscordClient,
 } from "../../src/discord.js";
-import type { CommandDependencies } from "../../src/commands.js";
+import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
 
-const commandDependencies = {
+const discordDependencies = {
   guildSettings: {
     getOrCreate: vi.fn(),
     setTimezone: vi.fn(),
     setClosedPrefix: vi.fn(),
   },
-} as unknown as CommandDependencies;
+  managedThreads: {
+    find: vi.fn(),
+    saveClosed: vi.fn(),
+    markOpen: vi.fn(),
+  },
+  audits: { record: vi.fn() },
+} as unknown as DiscordDependencies;
 
 function createLogger(): Logger {
   return { error: vi.fn() } as unknown as Logger;
@@ -25,7 +32,7 @@ function createLogger(): Logger {
 
 describe("Discord client", () => {
   it("requests only the Guilds gateway intent", async () => {
-    const client = createDiscordClient(createLogger(), commandDependencies);
+    const client = createDiscordClient(createLogger(), discordDependencies);
 
     expect(client.options.intents.bitfield).toBe(GatewayIntentBits.Guilds);
     await client.destroy();
@@ -34,7 +41,7 @@ describe("Discord client", () => {
   it("logs only the event and command name for an unknown command", async () => {
     const warn = vi.fn();
     const error = vi.fn();
-    const client = createDiscordClient({ warn, error } as unknown as Logger, commandDependencies);
+    const client = createDiscordClient({ warn, error } as unknown as Logger, discordDependencies);
     const reply = vi.fn();
     const interaction = {
       commandName: "unknown",
@@ -58,7 +65,7 @@ describe("Discord client", () => {
   it("handles reply failures without logging interaction content", async () => {
     const warn = vi.fn();
     const error = vi.fn();
-    const client = createDiscordClient({ warn, error } as unknown as Logger, commandDependencies);
+    const client = createDiscordClient({ warn, error } as unknown as Logger, discordDependencies);
     const reply = vi.fn(() => Promise.reject(new Error("reply failed")));
     const interaction = {
       commandName: "ping",
@@ -75,6 +82,45 @@ describe("Discord client", () => {
       );
     });
     expect(warn).not.toHaveBeenCalled();
+    await client.destroy();
+  });
+
+  it("reconciles only unlocked archived-to-active thread updates", async () => {
+    const autoOpen = vi.fn(() => Promise.resolve({ ok: true, changed: true } as const));
+    const lifecycle = {
+      close: vi.fn(),
+      open: vi.fn(),
+      autoOpen,
+    } as unknown as ThreadLifecycleService;
+    const client = createDiscordClient(createLogger(), discordDependencies, lifecycle);
+    const activeThread = {
+      id: "thread-id",
+      guildId: "guild-id",
+      type: ChannelType.PublicThread,
+      archived: false,
+      locked: false,
+    } as unknown as AnyThreadChannel;
+
+    client.emit(
+      Events.ThreadUpdate,
+      { ...activeThread, archived: true } as unknown as AnyThreadChannel,
+      activeThread,
+    );
+    client.emit(
+      Events.ThreadUpdate,
+      { ...activeThread, archived: false } as unknown as AnyThreadChannel,
+      activeThread,
+    );
+    client.emit(
+      Events.ThreadUpdate,
+      { ...activeThread, archived: true } as unknown as AnyThreadChannel,
+      { ...activeThread, locked: true } as unknown as AnyThreadChannel,
+    );
+
+    await vi.waitFor(() => {
+      expect(autoOpen).toHaveBeenCalledOnce();
+    });
+    expect(autoOpen).toHaveBeenCalledWith("guild-id", "thread-id");
     await client.destroy();
   });
 

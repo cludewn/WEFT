@@ -12,11 +12,16 @@ const dependencies = {
     setTimezone: vi.fn(),
     setClosedPrefix: vi.fn(),
   },
+  threadLifecycle: {
+    close: vi.fn(),
+    open: vi.fn(),
+    autoOpen: vi.fn(),
+  },
 } as unknown as CommandDependencies;
 
 describe("Discord commands", () => {
   it("shares the ping command definition", () => {
-    expect(commandDefinitions).toHaveLength(2);
+    expect(commandDefinitions).toHaveLength(3);
     expect(commandDefinitions[0]?.name).toBe("ping");
     expect(commandDefinitions[0]?.description).toBe("Check whether WEFT is responding");
   });

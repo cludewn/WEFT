@@ -5,6 +5,7 @@ import { createDatabase } from "./database.js";
 import { createDiscordClient, DiscordStartupAbortedError, startDiscordClient } from "./discord.js";
 import { createGuildSettingsStore } from "./guild-settings.js";
 import { createShutdown, getErrorName } from "./shutdown.js";
+import { createManagedThreadStore, createThreadAuditStore } from "./thread-persistence.js";
 
 async function main(): Promise<void> {
   let config;
@@ -21,7 +22,9 @@ async function main(): Promise<void> {
   const logger = pino({ level: config.logLevel });
   const database = createDatabase(config.database);
   const guildSettings = createGuildSettingsStore(database.client);
-  const discord = createDiscordClient(logger, { guildSettings });
+  const managedThreads = createManagedThreadStore(database.client);
+  const audits = createThreadAuditStore(database.client);
+  const discord = createDiscordClient(logger, { guildSettings, managedThreads, audits });
   const startupAbortController = new AbortController();
   const shutdown = createShutdown(
     [
