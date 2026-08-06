@@ -20,6 +20,7 @@
     "test": "vitest run test/unit",
     "test:watch": "vitest test/unit",
     "test:integration": "vitest run test/integration",
+    "commands:deploy": "tsx src/deploy-commands.ts",
     "db:generate": "drizzle-kit generate",
     "db:check": "drizzle-kit check",
     "db:migrate": "drizzle-kit migrate --config=drizzle.migrate.config.ts"

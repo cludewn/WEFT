@@ -13,7 +13,7 @@ function createLogger(): Logger {
 describe("createShutdown", () => {
   it("closes resources only once when shutdown is requested repeatedly", async () => {
     const closeResources = vi.fn(() => Promise.resolve());
-    const shutdown = createShutdown(closeResources, createLogger());
+    const shutdown = createShutdown([{ name: "database", close: closeResources }], createLogger());
 
     await Promise.all([shutdown("SIGTERM"), shutdown("SIGINT")]);
 
@@ -22,8 +22,39 @@ describe("createShutdown", () => {
 
   it("propagates resource cleanup failures", async () => {
     const failure = new Error("cleanup failed");
-    const shutdown = createShutdown(async () => Promise.reject(failure), createLogger());
+    const shutdown = createShutdown(
+      [{ name: "database", close: async () => Promise.reject(failure) }],
+      createLogger(),
+    );
 
-    await expect(shutdown("SIGTERM")).rejects.toBe(failure);
+    await expect(shutdown("SIGTERM")).rejects.toEqual(
+      expect.objectContaining({ errors: [failure] }),
+    );
+  });
+
+  it("attempts Discord destruction before database closure and continues after failure", async () => {
+    const calls: string[] = [];
+    const discordFailure = new Error("Discord destruction failed");
+    const shutdown = createShutdown(
+      [
+        {
+          name: "discord",
+          close: () => {
+            calls.push("discord");
+            throw discordFailure;
+          },
+        },
+        {
+          name: "database",
+          close: () => {
+            calls.push("database");
+          },
+        },
+      ],
+      createLogger(),
+    );
+
+    await expect(shutdown("SIGTERM")).rejects.toBeInstanceOf(AggregateError);
+    expect(calls).toEqual(["discord", "database"]);
   });
 });

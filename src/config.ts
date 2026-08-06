@@ -19,6 +19,12 @@ const logLevelSchema = z
   .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
   .default("info");
 
+const requiredStringSchema = z.string().trim().min(1);
+const optionalStringSchema = z.preprocess(
+  (value) => (value === "" ? undefined : value),
+  requiredStringSchema.optional(),
+);
+
 const productionDatabaseVariables = {
   host: "DATABASE_HOST",
   port: "DATABASE_PORT",
@@ -41,8 +47,15 @@ type DatabaseVariableNames = typeof productionDatabaseVariables | typeof testDat
 
 export type DatabaseConfig = z.output<typeof databaseSchema>;
 
+export type DiscordConfig = {
+  token: string;
+  applicationId: string;
+  guildId?: string;
+};
+
 export type AppConfig = {
   database: DatabaseConfig;
+  discord: DiscordConfig;
   logLevel: z.output<typeof logLevelSchema>;
 };
 
@@ -58,6 +71,7 @@ export class ConfigurationError extends Error {
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
   const database = parseDatabaseConfig(environment, productionDatabaseVariables, true);
+  const discord = loadDiscordConfig(environment);
   const logLevelResult = logLevelSchema.safeParse(environment.LOG_LEVEL);
 
   if (!logLevelResult.success) {
@@ -66,7 +80,49 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
 
   return {
     database,
+    discord,
     logLevel: logLevelResult.data,
+  };
+}
+
+export function loadDiscordConfig(environment: NodeJS.ProcessEnv = process.env): DiscordConfig {
+  const result = z
+    .object({
+      token: z.string().min(1),
+      applicationId: requiredStringSchema,
+      guildId: optionalStringSchema,
+    })
+    .safeParse({
+      token: environment.DISCORD_TOKEN,
+      applicationId: environment.DISCORD_APPLICATION_ID,
+      guildId: environment.DISCORD_GUILD_ID,
+    });
+
+  if (!result.success) {
+    const variables = {
+      token: "DISCORD_TOKEN",
+      applicationId: "DISCORD_APPLICATION_ID",
+      guildId: "DISCORD_GUILD_ID",
+    } as const;
+    const invalidVariables = [
+      ...new Set(
+        result.error.issues.flatMap((issue) => {
+          const field = issue.path[0];
+
+          return typeof field === "string" && field in variables
+            ? [variables[field as keyof typeof variables]]
+            : [];
+        }),
+      ),
+    ].sort();
+
+    throw new ConfigurationError(invalidVariables);
+  }
+
+  return {
+    token: result.data.token,
+    applicationId: result.data.applicationId,
+    ...(result.data.guildId === undefined ? {} : { guildId: result.data.guildId }),
   };
 }
 
