@@ -22,20 +22,17 @@ describe("Discord thread support", () => {
   it("renames and archives with direct channel mutations", async () => {
     const patch = vi.fn(() => Promise.resolve({}));
     const discord = createThreadLifecycleDiscord({ rest: { patch } } as unknown as Client);
-    const controller = new AbortController();
 
-    await discord.renameThread("guild-id", "thread-id", "Renamed thread", controller.signal);
-    await discord.archiveThread("guild-id", "thread-id", "Closed thread", controller.signal);
+    await discord.renameThread("guild-id", "thread-id", "Renamed thread");
+    await discord.archiveThread("guild-id", "thread-id", "Closed thread");
 
     expect(patch).toHaveBeenNthCalledWith(1, Routes.channel("thread-id"), {
       body: { name: "Renamed thread" },
       reason: "WEFT thread lifecycle update",
-      signal: controller.signal,
     });
     expect(patch).toHaveBeenNthCalledWith(2, Routes.channel("thread-id"), {
       body: { name: "Closed thread", archived: true },
       reason: "WEFT soft close",
-      signal: controller.signal,
     });
   });
 });

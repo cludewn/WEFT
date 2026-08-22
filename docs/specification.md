@@ -200,6 +200,23 @@ If a request fails after only some effects have succeeded, WEFT must:
 - perform compensation only when it is safe and predictable,
 - reconcile the stored state with Discord later when necessary.
 
+A Discord mutation may remain pending after the command stops waiting synchronously for its
+result. Normal discord.js rate-limit queueing is not a failure or an unknown outcome solely
+because it exceeds the caller wait budget. In this case, WEFT must:
+
+- tell the caller that Discord is still processing the update, that rate limiting thread-name changes
+  can be one cause without asserting it is the cause, and that completion may take several minutes,
+- continue tracking the raw mutation without aborting it because the caller wait budget expired,
+- prevent another Discord mutation for the same thread until mutation finalization completes,
+- treat a later successful Discord response as confirmed success without an extra Discord fetch,
+- reconcile current Discord state after a rejected raw mutation,
+- keep background reconciliation boundaries single-flight and wait for each raw operation to
+  settle before retrying it,
+- retry transient reconciliation failures with backoff while retaining the per-thread guard,
+- record the final success or failure audit only after the outcome and managed state are confirmed.
+
+Returning a pending result must not create a failure or outcome-unknown audit.
+
 ### Scheduled thread closing
 
 WEFT must support scheduling one future close for a thread.

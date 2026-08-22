@@ -177,7 +177,7 @@ describe("thread command", () => {
   it("warns the user when a lifecycle write outcome is unknown", async () => {
     const lifecycle = createLifecycle({
       close: vi.fn(() =>
-        Promise.resolve({ ok: false, code: "DISCORD_ARCHIVE_OUTCOME_UNKNOWN" } as const),
+        Promise.resolve({ ok: false, code: "STATE_WRITE_OUTCOME_UNKNOWN" } as const),
       ),
     });
     const { interaction, editReply } = createInteraction();
@@ -191,17 +191,23 @@ describe("thread command", () => {
     );
   });
 
-  it("reports an already pending Discord mutation safely", async () => {
+  it("reports pending close and open mutations without encouraging retries", async () => {
     const lifecycle = createLifecycle({
-      close: vi.fn(() => Promise.resolve({ ok: false, code: "DISCORD_MUTATION_PENDING" } as const)),
+      close: vi.fn(() => Promise.resolve({ ok: false, pending: true } as const)),
+      open: vi.fn(() => Promise.resolve({ ok: false, pending: true } as const)),
     });
-    const { interaction, editReply } = createInteraction();
+    const close = createInteraction({ subcommand: "close" });
+    const open = createInteraction({ subcommand: "open" });
 
-    await handleThreadCommand(interaction, lifecycle, logger);
+    await handleThreadCommand(close.interaction, lifecycle, logger);
+    await handleThreadCommand(open.interaction, lifecycle, logger);
 
-    expect(editReply).toHaveBeenCalledWith(
-      edited("A Discord update is still pending for this thread. Please wait before retrying."),
-    );
+    const pendingMessage =
+      "Discord is still processing this thread update. This can happen when Discord rate-limits thread name changes, and completion may take several minutes.";
+    expect(close.editReply).toHaveBeenCalledWith(edited(pendingMessage));
+    expect(open.editReply).toHaveBeenCalledWith(edited(pendingMessage));
+    expect(pendingMessage).not.toContain("retry");
+    expect(pendingMessage).not.toContain("Discord is rate-limiting this thread name change");
   });
 
   it("acknowledges before a delayed lifecycle result", async () => {

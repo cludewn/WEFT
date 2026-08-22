@@ -83,18 +83,16 @@ export function createThreadLifecycleDiscord(client: Client): ThreadLifecycleDis
       }
       return hasRequiredPermissions(guildId, threadId, client.user.id);
     },
-    async renameThread(_guildId, threadId, name, signal) {
+    async renameThread(_guildId, threadId, name) {
       await client.rest.patch(Routes.channel(threadId), {
         body: { name },
         reason: "WEFT thread lifecycle update",
-        signal,
       });
     },
-    async archiveThread(_guildId, threadId, name, signal) {
+    async archiveThread(_guildId, threadId, name) {
       await client.rest.patch(Routes.channel(threadId), {
         body: { name, archived: true },
         reason: "WEFT soft close",
-        signal,
       });
     },
   };

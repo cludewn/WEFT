@@ -45,12 +45,7 @@ const editReply = (content: string): InteractionEditReplyOptions => ({
 });
 
 function failureMessage(code: ThreadFailureCode): string {
-  if (
-    code === "STATE_WRITE_OUTCOME_UNKNOWN" ||
-    code === "DISCORD_RENAME_OUTCOME_UNKNOWN" ||
-    code === "DISCORD_ARCHIVE_OUTCOME_UNKNOWN" ||
-    code === "AUDIT_WRITE_OUTCOME_UNKNOWN"
-  ) {
+  if (code === "STATE_WRITE_OUTCOME_UNKNOWN" || code === "AUDIT_WRITE_OUTCOME_UNKNOWN") {
     return "WEFT could not confirm the final outcome. Check the current thread state before retrying.";
   }
   if (code === "ACTOR_PERMISSION_MISSING") {
@@ -64,9 +59,6 @@ function failureMessage(code: ThreadFailureCode): string {
   }
   if (code === "THREAD_LOCKED") {
     return "A locked thread cannot be soft-closed. Unlock it manually before retrying.";
-  }
-  if (code === "DISCORD_MUTATION_PENDING") {
-    return "A Discord update is still pending for this thread. Please wait before retrying.";
   }
   if (code === "INVALID_THREAD_NAME") {
     return "The configured closed prefix cannot form a valid thread name.";
@@ -181,14 +173,18 @@ export async function handleThreadCommand(
       ? result.changed
         ? "Thread closed."
         : "Thread is already closed."
-      : failureMessage(result.code);
+      : result.pending
+        ? "Discord is still processing this thread update. This can happen when Discord rate-limits thread name changes, and completion may take several minutes."
+        : failureMessage(result.code);
   } else {
     result = await lifecycle.open(interaction.guildId, interaction.channelId, interaction.user.id);
     finalContent = result.ok
       ? result.changed
         ? "Thread opened."
         : "Thread is already opened."
-      : failureMessage(result.code);
+      : result.pending
+        ? "Discord is still processing this thread update. This can happen when Discord rate-limits thread name changes, and completion may take several minutes."
+        : failureMessage(result.code);
   }
 
   await runInteractionBoundary(interaction, logger, operation, "final_response", timeoutMs, () =>

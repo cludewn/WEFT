@@ -1,5 +1,3 @@
-import { randomUUID } from "node:crypto";
-
 import { and, eq } from "drizzle-orm";
 import { check, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
@@ -75,6 +73,7 @@ export type ManagedThreadStore = {
 };
 
 export type ThreadAuditRecord = {
+  id: string;
   guildId: string;
   threadId: string;
   action: ThreadAuditAction;
@@ -87,6 +86,13 @@ export type ThreadAuditRecord = {
 export type ThreadAuditStore = {
   record: (audit: ThreadAuditRecord) => Promise<void>;
 };
+
+export class ThreadAuditConflictError extends Error {
+  constructor() {
+    super("An audit ID already exists with a different payload");
+    this.name = "ThreadAuditConflictError";
+  }
+}
 
 export function createManagedThreadStore(database: DatabaseClient): ManagedThreadStore {
   return {
@@ -130,16 +136,41 @@ export function createManagedThreadStore(database: DatabaseClient): ManagedThrea
 export function createThreadAuditStore(database: DatabaseClient): ThreadAuditStore {
   return {
     async record(audit) {
-      await database.insert(threadAudits).values({
-        id: randomUUID(),
-        guildId: audit.guildId,
-        threadId: audit.threadId,
-        action: audit.action,
-        actorType: audit.actorType,
-        ...(audit.actorId === undefined ? {} : { actorId: audit.actorId }),
-        outcome: audit.outcome,
-        ...(audit.failureCode === undefined ? {} : { failureCode: audit.failureCode }),
-      });
+      const inserted = await database
+        .insert(threadAudits)
+        .values({
+          id: audit.id,
+          guildId: audit.guildId,
+          threadId: audit.threadId,
+          action: audit.action,
+          actorType: audit.actorType,
+          ...(audit.actorId === undefined ? {} : { actorId: audit.actorId }),
+          outcome: audit.outcome,
+          ...(audit.failureCode === undefined ? {} : { failureCode: audit.failureCode }),
+        })
+        .onConflictDoNothing({ target: threadAudits.id })
+        .returning({ id: threadAudits.id });
+      if (inserted.length > 0) {
+        return;
+      }
+
+      const [existing] = await database
+        .select()
+        .from(threadAudits)
+        .where(eq(threadAudits.id, audit.id))
+        .limit(1);
+      if (
+        existing === undefined ||
+        existing.guildId !== audit.guildId ||
+        existing.threadId !== audit.threadId ||
+        existing.action !== audit.action ||
+        existing.actorType !== audit.actorType ||
+        existing.actorId !== (audit.actorId ?? null) ||
+        existing.outcome !== audit.outcome ||
+        existing.failureCode !== (audit.failureCode ?? null)
+      ) {
+        throw new ThreadAuditConflictError();
+      }
     },
   };
 }

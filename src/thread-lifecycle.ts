@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { ChannelType } from "discord.js";
 import type { Logger } from "pino";
 
@@ -12,7 +14,9 @@ import type {
 
 export const DISCORD_THREAD_NAME_LIMIT = 100;
 export const DEFAULT_THREAD_LIFECYCLE_DEADLINE_MS = 15_000;
-export const DEFAULT_DISCORD_MUTATION_TIMEOUT_MS = 5_000;
+export const DEFAULT_DISCORD_MUTATION_WAIT_MS = 5_000;
+const DEFAULT_RECONCILIATION_RETRY_BASE_MS = 1_000;
+const DEFAULT_RECONCILIATION_RETRY_MAX_MS = 60_000;
 
 export const THREAD_FAILURE_CODES = [
   "UNSUPPORTED_CONTEXT",
@@ -35,10 +39,7 @@ export const THREAD_FAILURE_CODES = [
   "STATE_READ_TIMEOUT",
   "LIFECYCLE_DEADLINE_EXCEEDED",
   "STATE_WRITE_OUTCOME_UNKNOWN",
-  "DISCORD_RENAME_OUTCOME_UNKNOWN",
-  "DISCORD_ARCHIVE_OUTCOME_UNKNOWN",
   "AUDIT_WRITE_OUTCOME_UNKNOWN",
-  "DISCORD_MUTATION_PENDING",
 ] as const;
 export type ThreadFailureCode = (typeof THREAD_FAILURE_CODES)[number];
 
@@ -58,22 +59,19 @@ export type ThreadLifecycleDiscord = {
   fetchThread: (guildId: string, threadId: string) => Promise<ThreadSnapshot | undefined>;
   actorCanManage: (guildId: string, threadId: string, actorId: string) => Promise<boolean>;
   botCanManage: (guildId: string, threadId: string) => Promise<boolean>;
-  renameThread: (
-    guildId: string,
-    threadId: string,
-    name: string,
-    signal: AbortSignal,
-  ) => Promise<void>;
-  archiveThread: (
-    guildId: string,
-    threadId: string,
-    name: string,
-    signal: AbortSignal,
-  ) => Promise<void>;
+  renameThread: (guildId: string, threadId: string, name: string) => Promise<void>;
+  archiveThread: (guildId: string, threadId: string, name: string) => Promise<void>;
 };
 
+export type ThreadLifecycleCompletedResult = { ok: true; changed: boolean };
+export type ThreadLifecyclePendingResult = { ok: false; pending: true };
+export type ThreadLifecycleFailedResult = {
+  ok: false;
+  pending?: false;
+  code: ThreadFailureCode;
+};
 export type ThreadLifecycleResult =
-  { ok: true; changed: boolean } | { ok: false; code: ThreadFailureCode };
+  ThreadLifecycleCompletedResult | ThreadLifecyclePendingResult | ThreadLifecycleFailedResult;
 
 export class InvalidThreadNameError extends Error {
   constructor() {
@@ -121,7 +119,9 @@ type LifecycleDependencies = {
   audits: ThreadAuditStore;
   logger: Pick<Logger, "debug" | "warn">;
   deadlineMs?: number;
-  mutationTimeoutMs?: number;
+  mutationWaitMs?: number;
+  reconciliationRetryBaseMs?: number;
+  reconciliationRetryMaxMs?: number;
 };
 
 type Actor = { type: "USER"; id: string } | { type: "SYSTEM" };
@@ -142,6 +142,7 @@ type OperationContext = {
   guildId: string;
   threadId: string;
   operation: LifecycleOperation;
+  auditId: string;
   startedAt: number;
   deadlineAt: number;
 };
@@ -157,12 +158,14 @@ type PendingMutation = {
   promise: Promise<void>;
 };
 
-type CloseReconciliationIntent = {
+type CloseMutationIntent = {
   operation: "CLOSE";
   actor: { type: "USER"; id: string };
-  appliedPrefix?: string;
+  appliedPrefix: string;
+  intendedName: string;
+  auditId: string;
 };
-type OpenReconciliationIntent =
+type OpenIntent =
   | {
       operation: "OPEN";
       actor: { type: "USER"; id: string };
@@ -171,11 +174,27 @@ type OpenReconciliationIntent =
       operation: "AUTO_OPEN";
       actor: { type: "SYSTEM" };
     };
-type ReconciliationIntent = CloseReconciliationIntent | OpenReconciliationIntent;
-
-type ReconciliationAttempt = {
+type OpenMutationIntent = OpenIntent & {
+  appliedPrefix: string;
+  intendedName: string;
+  auditId: string;
+};
+type DiscordMutationIntent = CloseMutationIntent | OpenMutationIntent;
+type SettledDiscordMutation = {
   generation: number;
-  settledBoundary: DiscordMutationBoundary;
+  boundary: DiscordMutationBoundary;
+  outcome: "resolved" | "rejected";
+};
+type ManagedFinalState =
+  { lifecycleState: "CLOSED"; appliedPrefix: string } | { lifecycleState: "OPEN" };
+type FinalizationPlan = {
+  managedState: ManagedFinalState;
+  auditOutcome: "SUCCESS" | "FAILURE";
+  failureCode?: "DISCORD_RENAME_FAILED" | "DISCORD_ARCHIVE_FAILED";
+};
+type FinalizationJob = {
+  generation: number;
+  promise: Promise<void>;
 };
 
 export class PendingDiscordMutationGuard {
@@ -191,15 +210,6 @@ export class PendingDiscordMutationGuard {
     const generation = ++this.#generation;
     this.#pending.set(key, { generation, promise });
     return generation;
-  }
-
-  update(guildId: string, threadId: string, generation: number, promise: Promise<void>): boolean {
-    const key = this.key(guildId, threadId);
-    if (this.#pending.get(key)?.generation !== generation) {
-      return false;
-    }
-    this.#pending.set(key, { generation, promise });
-    return true;
   }
 
   isCurrent(guildId: string, threadId: string, generation: number): boolean {
@@ -231,25 +241,40 @@ class LifecycleFailure extends Error {
   }
 }
 
+class LifecyclePending extends Error {
+  constructor() {
+    super("Discord mutation is still pending");
+    this.name = "LifecyclePending";
+  }
+}
+
 export function createThreadLifecycleService(
   dependencies: LifecycleDependencies,
 ): ThreadLifecycleService {
   const { discord, guildSettings, managedThreads, audits, logger } = dependencies;
   const deadlineMs = dependencies.deadlineMs ?? DEFAULT_THREAD_LIFECYCLE_DEADLINE_MS;
-  const mutationTimeoutMs = dependencies.mutationTimeoutMs ?? DEFAULT_DISCORD_MUTATION_TIMEOUT_MS;
+  const mutationWaitMs = dependencies.mutationWaitMs ?? DEFAULT_DISCORD_MUTATION_WAIT_MS;
+  const reconciliationRetryBaseMs =
+    dependencies.reconciliationRetryBaseMs ?? DEFAULT_RECONCILIATION_RETRY_BASE_MS;
+  const reconciliationRetryMaxMs =
+    dependencies.reconciliationRetryMaxMs ?? DEFAULT_RECONCILIATION_RETRY_MAX_MS;
   const queuedOperations = new Map<string, QueuedOperation>();
   const pendingMutations = new PendingDiscordMutationGuard();
+  const finalizationJobs = new Map<string, FinalizationJob>();
+  const deferredAutoOpen = new Set<string>();
 
   function createContext(
     guildId: string,
     threadId: string,
     operation: LifecycleOperation,
+    auditId = randomUUID(),
   ): OperationContext {
     const startedAt = Date.now();
     return {
       guildId,
       threadId,
       operation,
+      auditId,
       startedAt,
       deadlineAt: startedAt + deadlineMs,
     };
@@ -303,8 +328,8 @@ export function createThreadLifecycleService(
     })();
     const queued = { target, result };
     queuedOperations.set(key, queued);
-    // The FIFO queue may be released after an unknown mutation outcome. The pending mutation
-    // guard remains until the raw Discord promise settles, preventing a retry from overlapping it.
+    // A caller may return PENDING while settlement handling continues. The mutation guard remains
+    // independent of this FIFO entry and prevents another same-thread mutation until finalization.
     void result
       .finally(() => {
         if (queuedOperations.get(key) === queued) {
@@ -321,7 +346,7 @@ export function createThreadLifecycleService(
     failureCode: ThreadFailureCode,
     timeoutCode: ThreadFailureCode,
     operation: () => Promise<T>,
-    timeoutOptions?: { timeoutMs: number; onTimeout: () => void },
+    timeoutOptions?: { timeoutMs: number; pendingOnTimeout?: boolean },
   ): Promise<T> {
     const startedAt = Date.now();
     logger.debug(
@@ -368,8 +393,22 @@ export function createThreadLifecycleService(
       );
       return result;
     } catch (error) {
-      if (error instanceof OperationTimeoutError) {
-        timeoutOptions?.onTimeout();
+      if (error instanceof LifecyclePending) {
+        throw error;
+      }
+      if (error instanceof OperationTimeoutError && timeoutOptions?.pendingOnTimeout === true) {
+        logger.debug(
+          {
+            event: "thread_lifecycle_boundary_pending",
+            guildId: context.guildId,
+            threadId: context.threadId,
+            operation: context.operation,
+            boundary,
+            durationMs: Date.now() - startedAt,
+          },
+          "Thread lifecycle boundary remains pending",
+        );
+        throw new LifecyclePending();
       }
       const code =
         error instanceof OperationTimeoutError
@@ -397,148 +436,337 @@ export function createThreadLifecycleService(
     context: OperationContext,
     boundary: DiscordMutationBoundary,
     failureCode: "DISCORD_RENAME_FAILED" | "DISCORD_ARCHIVE_FAILED",
-    timeoutCode: "DISCORD_RENAME_OUTCOME_UNKNOWN" | "DISCORD_ARCHIVE_OUTCOME_UNKNOWN",
-    intent: ReconciliationIntent,
-    operation: (signal: AbortSignal) => Promise<void>,
-    reconciliation?: ReconciliationAttempt,
+    intent: DiscordMutationIntent,
+    operation: () => Promise<void>,
   ): Promise<void> {
-    if (reconciliation?.settledBoundary === boundary) {
-      throw new LifecycleFailure(failureCode);
-    }
-    const controller = new AbortController();
-    let timedOut = false;
-    let generation = reconciliation?.generation;
-    await runBoundary(
-      context,
-      boundary,
-      failureCode,
-      timeoutCode,
-      () => {
-        if (
-          generation === undefined &&
-          pendingMutations.isPending(context.guildId, context.threadId)
-        ) {
-          throw new LifecycleFailure("DISCORD_MUTATION_PENDING");
-        }
-        const mutation = Promise.resolve().then(() => operation(controller.signal));
-        if (generation === undefined) {
-          generation = pendingMutations.track(context.guildId, context.threadId, mutation);
-        } else if (
-          !pendingMutations.update(context.guildId, context.threadId, generation, mutation)
-        ) {
-          throw new LifecycleFailure("DISCORD_MUTATION_PENDING");
-        }
-        const trackedGeneration = generation;
-        void mutation.then(
-          () =>
-            handleMutationSettlement(
-              context,
-              intent,
-              boundary,
-              trackedGeneration,
-              timedOut,
-              reconciliation !== undefined,
-            ),
-          () =>
-            handleMutationSettlement(
-              context,
-              intent,
-              boundary,
-              trackedGeneration,
-              timedOut,
-              reconciliation !== undefined,
-            ),
-        );
-        return mutation;
-      },
-      {
-        timeoutMs: mutationTimeoutMs,
-        onTimeout: () => {
-          timedOut = true;
-          controller.abort();
-        },
-      },
-    );
-  }
-
-  function requireNoPendingMutation(
-    context: OperationContext,
-    reconciliation?: ReconciliationAttempt,
-  ): void {
-    if (
-      pendingMutations.isPending(context.guildId, context.threadId) &&
-      (reconciliation === undefined ||
-        !pendingMutations.isCurrent(context.guildId, context.threadId, reconciliation.generation))
-    ) {
-      throw new LifecycleFailure("DISCORD_MUTATION_PENDING");
-    }
-  }
-
-  function handleMutationSettlement(
-    context: OperationContext,
-    intent: ReconciliationIntent,
-    boundary: DiscordMutationBoundary,
-    generation: number,
-    timedOut: boolean,
-    reconciling: boolean,
-  ): void {
-    if (timedOut) {
-      scheduleReconciliation(context.guildId, context.threadId, intent, {
-        generation,
-        settledBoundary: boundary,
+    let trackedGeneration: number | undefined;
+    let settlement: Promise<"resolved" | "rejected"> | undefined;
+    let settlementScheduled = false;
+    const scheduleSettlement = (outcome: "resolved" | "rejected"): void => {
+      if (settlementScheduled || trackedGeneration === undefined) {
+        return;
+      }
+      settlementScheduled = true;
+      void startFinalizationJob(context.guildId, context.threadId, intent, {
+        generation: trackedGeneration,
+        boundary,
+        outcome,
       });
-    } else if (!reconciling) {
-      pendingMutations.release(context.guildId, context.threadId, generation);
+    };
+
+    let settlementOutcome: Awaited<typeof settlement>;
+    try {
+      settlementOutcome = await runBoundary(
+        context,
+        boundary,
+        failureCode,
+        failureCode,
+        () => {
+          if (pendingMutations.isPending(context.guildId, context.threadId)) {
+            throw new LifecyclePending();
+          }
+          const mutation = Promise.resolve().then(operation);
+          trackedGeneration = pendingMutations.track(context.guildId, context.threadId, mutation);
+          settlement = mutation.then(
+            () => "resolved" as const,
+            () => "rejected" as const,
+          );
+          return settlement;
+        },
+        { timeoutMs: mutationWaitMs, pendingOnTimeout: true },
+      );
+    } catch (error) {
+      if (error instanceof LifecyclePending && settlement !== undefined) {
+        void settlement.then(scheduleSettlement);
+      }
+      throw error;
+    }
+
+    if (settlementOutcome === "rejected") {
+      scheduleSettlement("rejected");
+      throw new LifecyclePending();
+    }
+    if (trackedGeneration === undefined) {
+      throw new LifecyclePending();
+    }
+    const finalization = startFinalizationJob(context.guildId, context.threadId, intent, {
+      generation: trackedGeneration,
+      boundary,
+      outcome: "resolved",
+    });
+    const remainingMs = context.deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      throw new LifecyclePending();
+    }
+    try {
+      await withTimeout(finalization, remainingMs);
+    } catch (error) {
+      if (error instanceof OperationTimeoutError) {
+        throw new LifecyclePending();
+      }
+      throw new LifecyclePending();
     }
   }
 
-  function scheduleReconciliation(
+  function requireNoPendingMutation(context: OperationContext): void {
+    if (pendingMutations.isPending(context.guildId, context.threadId)) {
+      if (context.operation === "AUTO_OPEN") {
+        deferredAutoOpen.add(threadKey(context.guildId, context.threadId));
+      }
+      throw new LifecyclePending();
+    }
+  }
+
+  function startFinalizationJob(
     guildId: string,
     threadId: string,
-    intent: ReconciliationIntent,
-    reconciliation: ReconciliationAttempt,
-  ): void {
+    intent: DiscordMutationIntent,
+    settlement: SettledDiscordMutation,
+  ): Promise<void> {
+    const key = threadKey(guildId, threadId);
+    const existing = finalizationJobs.get(key);
+    if (existing?.generation === settlement.generation) {
+      return existing.promise;
+    }
+    if (!pendingMutations.isCurrent(guildId, threadId, settlement.generation)) {
+      return Promise.resolve();
+    }
+
     logger.debug(
       {
         event: "thread_lifecycle_reconciliation_scheduled",
         guildId,
         threadId,
         operation: intent.operation,
-        generation: reconciliation.generation,
+        generation: settlement.generation,
+        settlementOutcome: settlement.outcome,
       },
       "Thread lifecycle reconciliation scheduled",
     );
-    const target: LifecycleTarget = intent.operation === "CLOSE" ? "CLOSED" : "OPEN";
-    const result = serialize(
+    const promise = runFinalizationJob(guildId, threadId, intent, settlement);
+    const job = { generation: settlement.generation, promise };
+    finalizationJobs.set(key, job);
+    void promise.then(
+      () => {
+        if (finalizationJobs.get(key) === job) {
+          finalizationJobs.delete(key);
+          pendingMutations.release(guildId, threadId, settlement.generation);
+          scheduleDeferredAutoOpen(guildId, threadId);
+        }
+      },
+      (error: unknown) => {
+        logger.warn(
+          {
+            event: "thread_lifecycle_finalization_unexpected_failure",
+            guildId,
+            threadId,
+            operation: intent.operation,
+            generation: settlement.generation,
+            errorName: error instanceof Error ? error.name : "UnknownError",
+          },
+          "Thread lifecycle finalization stopped unexpectedly",
+        );
+      },
+    );
+    return promise;
+  }
+
+  async function runFinalizationJob(
+    guildId: string,
+    threadId: string,
+    intent: DiscordMutationIntent,
+    settlement: SettledDiscordMutation,
+  ): Promise<void> {
+    const plan =
+      settlement.outcome === "resolved"
+        ? resolvedFinalizationPlan(intent)
+        : await rejectedFinalizationPlan(guildId, threadId, intent, settlement);
+    await retryBackgroundBoundary(
       guildId,
       threadId,
       intent.operation,
-      target,
-      (context, precedingChangedSameTarget) => {
-        if (intent.operation === "CLOSE") {
-          return close(
-            context,
-            intent.actor.id,
-            precedingChangedSameTarget,
-            reconciliation,
-            intent,
-          );
-        }
-        return reconcileOpen(context, intent, precedingChangedSameTarget, reconciliation);
-      },
+      settlement.generation,
+      "managed_state_write",
+      () => applyManagedFinalState(guildId, threadId, plan.managedState),
     );
-    void result.then(
-      (reconciliationResult) => {
-        if (
-          reconciliationResult.ok ||
-          (reconciliationResult.code !== "DISCORD_RENAME_OUTCOME_UNKNOWN" &&
-            reconciliationResult.code !== "DISCORD_ARCHIVE_OUTCOME_UNKNOWN")
-        ) {
-          pendingMutations.release(guildId, threadId, reconciliation.generation);
-        }
-      },
-      () => pendingMutations.release(guildId, threadId, reconciliation.generation),
+    const auditRecord = {
+      id: intent.auditId,
+      guildId,
+      threadId,
+      action: intent.operation,
+      actorType: intent.actor.type,
+      ...(intent.actor.type === "USER" ? { actorId: intent.actor.id } : {}),
+      outcome: plan.auditOutcome,
+      ...(plan.failureCode === undefined ? {} : { failureCode: plan.failureCode }),
+    } as const;
+    await retryBackgroundBoundary(
+      guildId,
+      threadId,
+      intent.operation,
+      settlement.generation,
+      "audit_write",
+      () => audits.record(auditRecord),
     );
+  }
+
+  function resolvedFinalizationPlan(intent: DiscordMutationIntent): FinalizationPlan {
+    return {
+      managedState:
+        intent.operation === "CLOSE"
+          ? { lifecycleState: "CLOSED", appliedPrefix: intent.appliedPrefix }
+          : { lifecycleState: "OPEN" },
+      auditOutcome: "SUCCESS",
+    };
+  }
+
+  async function rejectedFinalizationPlan(
+    guildId: string,
+    threadId: string,
+    intent: DiscordMutationIntent,
+    settlement: SettledDiscordMutation,
+  ): Promise<FinalizationPlan> {
+    const thread = await retryBackgroundBoundary(
+      guildId,
+      threadId,
+      intent.operation,
+      settlement.generation,
+      "thread_fetch",
+      () => discord.fetchThread(guildId, threadId),
+    );
+    if (thread === undefined) {
+      logger.warn(
+        {
+          event: "thread_lifecycle_reconciliation_resource_unavailable",
+          guildId,
+          threadId,
+          operation: intent.operation,
+          generation: settlement.generation,
+          failureCode: "UNSUPPORTED_CONTEXT",
+        },
+        "Thread lifecycle reconciliation cannot confirm the Discord resource",
+      );
+      return new Promise<never>(() => undefined);
+    }
+    const intendedStateApplied =
+      intent.operation === "CLOSE"
+        ? thread.archived && !thread.locked && thread.name === intent.intendedName
+        : !thread.archived && thread.name === intent.intendedName;
+    const failureCode =
+      settlement.boundary === "thread_archive" ? "DISCORD_ARCHIVE_FAILED" : "DISCORD_RENAME_FAILED";
+    return {
+      managedState: thread.archived
+        ? { lifecycleState: "CLOSED", appliedPrefix: intent.appliedPrefix }
+        : { lifecycleState: "OPEN" },
+      auditOutcome: intendedStateApplied ? "SUCCESS" : "FAILURE",
+      ...(intendedStateApplied ? {} : { failureCode }),
+    };
+  }
+
+  function applyManagedFinalState(
+    guildId: string,
+    threadId: string,
+    state: ManagedFinalState,
+  ): Promise<ManagedThread> {
+    return state.lifecycleState === "CLOSED"
+      ? managedThreads.saveClosed(guildId, threadId, state.appliedPrefix)
+      : managedThreads.markOpen(guildId, threadId);
+  }
+
+  async function retryBackgroundBoundary<T>(
+    guildId: string,
+    threadId: string,
+    operation: LifecycleOperation,
+    generation: number,
+    boundary: "thread_fetch" | "managed_state_write" | "audit_write",
+    rawOperation: () => Promise<T>,
+  ): Promise<T> {
+    let retryAttempt = 0;
+    for (;;) {
+      const startedAt = Date.now();
+      logger.debug(
+        {
+          event: "thread_lifecycle_reconciliation_boundary_started",
+          guildId,
+          threadId,
+          operation,
+          generation,
+          boundary,
+          retryAttempt,
+        },
+        "Thread lifecycle reconciliation boundary started",
+      );
+      try {
+        const result = await Promise.resolve().then(rawOperation);
+        logger.debug(
+          {
+            event: "thread_lifecycle_reconciliation_boundary_completed",
+            guildId,
+            threadId,
+            operation,
+            generation,
+            boundary,
+            retryAttempt,
+            durationMs: Date.now() - startedAt,
+          },
+          "Thread lifecycle reconciliation boundary completed",
+        );
+        return result;
+      } catch (error) {
+        logger.warn(
+          {
+            event: "thread_lifecycle_reconciliation_boundary_rejected",
+            guildId,
+            threadId,
+            operation,
+            generation,
+            boundary,
+            retryAttempt,
+            errorName: error instanceof Error ? error.name : "UnknownError",
+            durationMs: Date.now() - startedAt,
+          },
+          "Thread lifecycle reconciliation boundary rejected",
+        );
+      }
+      retryAttempt += 1;
+      const exponentialDelay = reconciliationRetryBaseMs * 2 ** Math.min(retryAttempt - 1, 30);
+      const retryDelayMs = Math.min(exponentialDelay, reconciliationRetryMaxMs);
+      logger.warn(
+        {
+          event: "thread_lifecycle_reconciliation_retry_scheduled",
+          guildId,
+          threadId,
+          operation,
+          generation,
+          boundary,
+          retryAttempt,
+          retryDelayMs,
+        },
+        "Thread lifecycle reconciliation will be retried",
+      );
+      await new Promise<void>((resolve) => {
+        const retryTimer = setTimeout(resolve, retryDelayMs);
+        retryTimer.unref();
+      });
+    }
+  }
+
+  function scheduleDeferredAutoOpen(guildId: string, threadId: string): void {
+    const key = threadKey(guildId, threadId);
+    if (!deferredAutoOpen.delete(key)) {
+      return;
+    }
+    void serialize(guildId, threadId, "AUTO_OPEN", "OPEN", (context, precedingChangedSameTarget) =>
+      reconcileOpen(
+        context,
+        { operation: "AUTO_OPEN", actor: { type: "SYSTEM" } },
+        precedingChangedSameTarget,
+        true,
+      ),
+    );
+  }
+
+  function threadKey(guildId: string, threadId: string): string {
+    return `${guildId}:${threadId}`;
   }
 
   async function audit(
@@ -555,6 +783,7 @@ export function createThreadLifecycleService(
       "AUDIT_WRITE_OUTCOME_UNKNOWN",
       () =>
         audits.record({
+          id: context.auditId,
           guildId: context.guildId,
           threadId: context.threadId,
           action,
@@ -573,6 +802,19 @@ export function createThreadLifecycleService(
     error: unknown,
     fallback: ThreadFailureCode,
   ): Promise<ThreadLifecycleResult> {
+    if (error instanceof LifecyclePending) {
+      logger.debug(
+        {
+          event: "thread_lifecycle_pending",
+          guildId: context.guildId,
+          threadId: context.threadId,
+          operation: context.operation,
+          durationMs: Date.now() - context.startedAt,
+        },
+        "Thread lifecycle operation remains pending",
+      );
+      return { ok: false, pending: true };
+    }
     const code =
       error instanceof LifecycleFailure
         ? error.code
@@ -594,6 +836,9 @@ export function createThreadLifecycleService(
     if (outcomeUnknown) {
       return { ok: false, code };
     }
+    if (code === "AUDIT_WRITE_FAILED") {
+      return { ok: false, code };
+    }
     try {
       await audit(context, action, actor, "FAILURE", code);
     } catch (auditError) {
@@ -611,12 +856,7 @@ export function createThreadLifecycleService(
   }
 
   function isOutcomeUnknown(code: ThreadFailureCode): boolean {
-    return (
-      code === "STATE_WRITE_OUTCOME_UNKNOWN" ||
-      code === "DISCORD_RENAME_OUTCOME_UNKNOWN" ||
-      code === "DISCORD_ARCHIVE_OUTCOME_UNKNOWN" ||
-      code === "AUDIT_WRITE_OUTCOME_UNKNOWN"
-    );
+    return code === "STATE_WRITE_OUTCOME_UNKNOWN" || code === "AUDIT_WRITE_OUTCOME_UNKNOWN";
   }
 
   async function fetchSupported(context: OperationContext): Promise<ThreadSnapshot> {
@@ -662,15 +902,12 @@ export function createThreadLifecycleService(
     context: OperationContext,
     actorId: string,
     precedingChangedSameTarget: boolean,
-    reconciliation?: ReconciliationAttempt,
-    reconciliationIntent?: CloseReconciliationIntent,
   ): Promise<ThreadLifecycleResult> {
     const { guildId, threadId } = context;
     const actor = { type: "USER" as const, id: actorId };
-    let intent: CloseReconciliationIntent = reconciliationIntent ?? { operation: "CLOSE", actor };
     let fallback: ThreadFailureCode = "DISCORD_FETCH_FAILED";
     try {
-      requireNoPendingMutation(context, reconciliation);
+      requireNoPendingMutation(context);
       const initial = await fetchSupported(context);
       if (initial.locked) {
         throw new LifecycleFailure("THREAD_LOCKED");
@@ -694,9 +931,7 @@ export function createThreadLifecycleService(
         () => managedThreads.find(guildId, threadId),
       );
       const appliedPrefix =
-        intent.appliedPrefix ??
-        (existing?.lifecycleState === "CLOSED" ? existing.appliedPrefix : settings.closedPrefix);
-      intent = { ...intent, appliedPrefix };
+        existing?.lifecycleState === "CLOSED" ? existing.appliedPrefix : settings.closedPrefix;
 
       fallback = "DISCORD_FETCH_FAILED";
       const beforeStateWrite = await fetchSupported(context);
@@ -724,17 +959,23 @@ export function createThreadLifecycleService(
       await requirePermissions(context, actorId);
       const closedName = addClosedPrefix(beforeArchive.name, appliedPrefix);
       if (!beforeArchive.archived || closedName !== beforeArchive.name) {
+        const mutationIntent: CloseMutationIntent = {
+          operation: "CLOSE",
+          actor,
+          appliedPrefix,
+          intendedName: closedName,
+          auditId: context.auditId,
+        };
         fallback = "DISCORD_ARCHIVE_FAILED";
         await runDiscordMutation(
           context,
           "thread_archive",
           "DISCORD_ARCHIVE_FAILED",
-          "DISCORD_ARCHIVE_OUTCOME_UNKNOWN",
-          intent,
-          (signal) => discord.archiveThread(guildId, threadId, closedName, signal),
-          reconciliation,
+          mutationIntent,
+          () => discord.archiveThread(guildId, threadId, closedName),
         );
         changed = true;
+        return { ok: true, changed };
       }
 
       fallback = "AUDIT_WRITE_FAILED";
@@ -747,17 +988,20 @@ export function createThreadLifecycleService(
 
   async function reconcileOpen(
     context: OperationContext,
-    intent: OpenReconciliationIntent,
+    intent: OpenIntent,
     precedingChangedSameTarget: boolean,
-    reconciliation?: ReconciliationAttempt,
+    ignoreArchived = false,
   ): Promise<ThreadLifecycleResult> {
     const { guildId, threadId } = context;
     const { operation: action, actor } = intent;
     let fallback: ThreadFailureCode = "DISCORD_FETCH_FAILED";
     try {
-      requireNoPendingMutation(context, reconciliation);
+      requireNoPendingMutation(context);
       const initial = await fetchSupported(context);
       if (initial.archived) {
+        if (ignoreArchived) {
+          return { ok: true, changed: false };
+        }
         throw new LifecycleFailure("THREAD_NOT_ACTIVE");
       }
 
@@ -779,13 +1023,7 @@ export function createThreadLifecycleService(
       }
 
       await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
-      return await completeOpen(
-        context,
-        managed,
-        intent,
-        precedingChangedSameTarget,
-        reconciliation,
-      );
+      return await completeOpen(context, managed, intent, precedingChangedSameTarget);
     } catch (error) {
       return fail(context, action, actor, error, fallback);
     }
@@ -794,9 +1032,8 @@ export function createThreadLifecycleService(
   async function completeOpen(
     context: OperationContext,
     managed: ManagedThread,
-    intent: OpenReconciliationIntent,
+    intent: OpenIntent,
     precedingChangedSameTarget: boolean,
-    reconciliation?: ReconciliationAttempt,
   ): Promise<ThreadLifecycleResult> {
     const { operation: action, actor } = intent;
     let fallback: ThreadFailureCode = "DISCORD_FETCH_FAILED";
@@ -810,17 +1047,22 @@ export function createThreadLifecycleService(
       let changed = precedingChangedSameTarget;
       const openedName = removeClosedPrefix(beforeRename.name, managed.appliedPrefix);
       if (openedName !== beforeRename.name) {
+        const mutationIntent: OpenMutationIntent = {
+          ...intent,
+          appliedPrefix: managed.appliedPrefix,
+          intendedName: openedName,
+          auditId: context.auditId,
+        };
         fallback = "DISCORD_RENAME_FAILED";
         await runDiscordMutation(
           context,
           "thread_rename",
           "DISCORD_RENAME_FAILED",
-          "DISCORD_RENAME_OUTCOME_UNKNOWN",
-          intent,
-          (signal) => discord.renameThread(context.guildId, context.threadId, openedName, signal),
-          reconciliation,
+          mutationIntent,
+          () => discord.renameThread(context.guildId, context.threadId, openedName),
         );
         changed = true;
+        return { ok: true, changed };
       }
 
       if (managed.lifecycleState === "CLOSED") {

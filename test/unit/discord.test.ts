@@ -1,5 +1,5 @@
-import { ChannelType, Events, GatewayIntentBits } from "discord.js";
-import type { AnyThreadChannel, ChatInputCommandInteraction } from "discord.js";
+import { ChannelType, Events, GatewayIntentBits, RESTEvents } from "discord.js";
+import type { AnyThreadChannel, ChatInputCommandInteraction, RateLimitData } from "discord.js";
 import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
@@ -35,6 +35,81 @@ describe("Discord client", () => {
     const client = createDiscordClient(createLogger(), discordDependencies);
 
     expect(client.options.intents.bitfield).toBe(GatewayIntentBits.Guilds);
+    await client.destroy();
+  });
+
+  it("logs public REST rate-limit data without the request URL", async () => {
+    const debug = vi.fn();
+    const client = createDiscordClient(
+      { debug, warn: vi.fn(), error: vi.fn() } as unknown as Logger,
+      discordDependencies,
+    );
+    const rateLimit = {
+      global: false,
+      hash: "bucket-hash",
+      limit: 5,
+      majorParameter: "thread-id",
+      method: "PATCH",
+      retryAfter: 1_000,
+      route: "/channels/:id",
+      scope: "shared",
+      sublimitTimeout: 0,
+      timeToReset: 1_000,
+      url: "https://discord.com/api/v10/channels/thread-id",
+    } satisfies RateLimitData;
+
+    client.rest.emit(RESTEvents.RateLimited, rateLimit);
+
+    expect(debug).toHaveBeenCalledWith(
+      {
+        event: "discord_rest_rate_limited",
+        method: "PATCH",
+        route: "/channels/:id",
+        majorParameter: "thread-id",
+        hash: "bucket-hash",
+        limit: 5,
+        retryAfter: 1_000,
+        sublimitTimeout: 0,
+        timeToReset: 1_000,
+        scope: "shared",
+        global: false,
+      },
+      "Discord REST rate limited",
+    );
+    expect(JSON.stringify(debug.mock.calls)).not.toContain(rateLimit.url);
+    await client.destroy();
+  });
+
+  it("logs safe data from unexpected REST rate-limit debug output", async () => {
+    const debug = vi.fn();
+    const client = createDiscordClient(
+      { debug, warn: vi.fn(), error: vi.fn() } as unknown as Logger,
+      discordDependencies,
+    );
+    const requestUrl = "https://discord.com/api/v10/channels/thread-id";
+
+    client.rest.emit(
+      RESTEvents.Debug,
+      [
+        "[REST bucket-id] Encountered unexpected 429 rate limit",
+        "  Global         : false",
+        "  URL            : " + requestUrl,
+        "  Retry After    : 600000ms",
+        "  Sublimit       : 600000ms",
+      ].join("\n"),
+    );
+
+    expect(debug).toHaveBeenCalledWith(
+      {
+        event: "discord_rest_rate_limit_debug",
+        category: "unexpected_429",
+        global: false,
+        retryAfterMs: 600_000,
+        sublimitTimeoutMs: 600_000,
+      },
+      "Discord REST rate-limit debug",
+    );
+    expect(JSON.stringify(debug.mock.calls)).not.toContain(requestUrl);
     await client.destroy();
   });
 
@@ -165,6 +240,38 @@ describe("Discord client", () => {
       expect(autoOpen).toHaveBeenCalledOnce();
     });
     expect(autoOpen).toHaveBeenCalledWith("guild-id", "thread-id");
+    await client.destroy();
+  });
+
+  it("does not log a pending automatic reconciliation as a failure", async () => {
+    const error = vi.fn();
+    const autoOpen = vi.fn(() => Promise.resolve({ ok: false, pending: true } as const));
+    const lifecycle = {
+      close: vi.fn(),
+      open: vi.fn(),
+      autoOpen,
+    } as unknown as ThreadLifecycleService;
+    const client = createDiscordClient(
+      { debug: vi.fn(), warn: vi.fn(), error } as unknown as Logger,
+      discordDependencies,
+      lifecycle,
+    );
+    const activeThread = {
+      id: "thread-id",
+      guildId: "guild-id",
+      type: ChannelType.PublicThread,
+      archived: false,
+      locked: false,
+    } as unknown as AnyThreadChannel;
+
+    client.emit(
+      Events.ThreadUpdate,
+      { ...activeThread, archived: true } as unknown as AnyThreadChannel,
+      activeThread,
+    );
+
+    await vi.waitFor(() => expect(autoOpen).toHaveBeenCalledOnce());
+    expect(error).not.toHaveBeenCalled();
     await client.destroy();
   });
 

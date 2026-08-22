@@ -573,6 +573,17 @@ Second vertical slice:
 - Record audit data.
 - Test idempotency, authorization, and partial failures.
 
+Discord mutation handling must separate the caller wait budget from the lifetime of the raw
+discord.js REST request. Exceeding the caller wait budget returns a pending result without
+aborting the request. The per-thread mutation guard remains active through final settlement
+and finalization handling, including managed-state and final-audit persistence. A successful raw
+response confirms the mutation without an additional Discord fetch. A rejected raw mutation is
+reconciled against current Discord state. Background reconciliation waits for each raw external
+operation to settle before an actual rejection can start a backoff retry; observation deadlines
+must not create overlapping attempts. The final managed state and exactly one success or failure
+audit are persisted before the guard is released. Normal discord.js rate-limit queue waits are not
+failures or unknown outcomes solely because they exceed the caller wait budget.
+
 After both vertical slices, review whether the current physical structure still reflects the actual feature and infrastructure boundaries.
 
 ### Phase 4: Persistent scheduling foundation

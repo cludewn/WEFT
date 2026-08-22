@@ -8,6 +8,7 @@ import {
   createManagedThreadStore,
   createThreadAuditStore,
   managedThreads,
+  ThreadAuditConflictError,
   threadAudits,
 } from "../../src/thread-persistence.js";
 
@@ -47,15 +48,19 @@ describe("thread lifecycle persistence", () => {
   });
 
   it("stores success and classified failure audits with valid actors", async () => {
-    await auditStore.record({
+    const successAudit = {
+      id: "reconciliation-audit",
       guildId,
       threadId: threadIds[0],
       action: "CLOSE",
       actorType: "USER",
       actorId: "900000000000000001",
       outcome: "SUCCESS",
-    });
+    } as const;
+    await auditStore.record(successAudit);
+    await auditStore.record(successAudit);
     await auditStore.record({
+      id: "automatic-open-failure-audit",
       guildId,
       threadId: threadIds[1],
       action: "AUTO_OPEN",
@@ -80,6 +85,32 @@ describe("thread lifecycle persistence", () => {
         }),
       ]),
     );
+  });
+
+  it("rejects a conflicting payload for an existing audit ID", async () => {
+    const id = "conflicting-reconciliation-audit";
+    await auditStore.record({
+      id,
+      guildId,
+      threadId: threadIds[0],
+      action: "CLOSE",
+      actorType: "USER",
+      actorId: "900000000000000001",
+      outcome: "SUCCESS",
+    });
+
+    await expect(
+      auditStore.record({
+        id,
+        guildId,
+        threadId: threadIds[0],
+        action: "CLOSE",
+        actorType: "USER",
+        actorId: "900000000000000001",
+        outcome: "FAILURE",
+        failureCode: "DISCORD_ARCHIVE_FAILED",
+      }),
+    ).rejects.toBeInstanceOf(ThreadAuditConflictError);
   });
 
   it("enforces lifecycle and audit consistency constraints", async () => {
