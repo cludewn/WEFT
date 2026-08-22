@@ -1,4 +1,4 @@
-import { ChannelType, PermissionFlagsBits } from "discord.js";
+import { ChannelType, PermissionFlagsBits, Routes } from "discord.js";
 
 import type { Client, Guild, ThreadChannel } from "discord.js";
 
@@ -7,7 +7,6 @@ import type {
   ThreadLifecycleDiscord,
   ThreadSnapshot,
 } from "./thread-lifecycle.js";
-import { BotThreadPermissionError } from "./thread-lifecycle.js";
 
 const supportedTypes = new Set<ChannelType>([
   ChannelType.AnnouncementThread,
@@ -84,19 +83,17 @@ export function createThreadLifecycleDiscord(client: Client): ThreadLifecycleDis
       }
       return hasRequiredPermissions(guildId, threadId, client.user.id);
     },
-    async renameThread(guildId, threadId, name) {
-      const thread = await fetchRequiredThread(guildId, threadId);
-      if (client.user === null || !(await memberHasRequiredPermissions(thread, client.user.id))) {
-        throw new BotThreadPermissionError();
-      }
-      await thread.setName(name, "WEFT thread lifecycle update");
+    async renameThread(_guildId, threadId, name) {
+      await client.rest.patch(Routes.channel(threadId), {
+        body: { name },
+        reason: "WEFT thread lifecycle update",
+      });
     },
-    async archiveThread(guildId, threadId) {
-      const thread = await fetchRequiredThread(guildId, threadId);
-      if (client.user === null || !(await memberHasRequiredPermissions(thread, client.user.id))) {
-        throw new BotThreadPermissionError();
-      }
-      await thread.setArchived(true, "WEFT soft close");
+    async archiveThread(_guildId, threadId, name) {
+      await client.rest.patch(Routes.channel(threadId), {
+        body: { name, archived: true },
+        reason: "WEFT soft close",
+      });
     },
   };
 }

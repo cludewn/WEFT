@@ -138,14 +138,15 @@ These commands may be implemented incrementally.
 Closing a thread means:
 
 1. adding the configured closed prefix to the beginning of the thread title,
-2. locking the thread,
-3. archiving the thread.
+2. archiving the thread without locking it.
 
 Requirements:
 
 - The invoking user must have the Discord `ManageThreads` permission.
 - WEFT must verify its own required permissions.
 - The current Discord state must be inspected before modification.
+- WEFT must not change the thread's locked state as part of close.
+- A locked thread must be rejected with a clear error instead of being modified.
 - The configured prefix must not be duplicated.
 - Repeated close operations must be idempotent.
 - WEFT-managed state must be persisted.
@@ -158,20 +159,24 @@ The title prefix is a user-visible indicator. It is not the authoritative source
 
 Opening a thread means:
 
-1. unarchiving the thread,
-2. unlocking the thread,
-3. removing one WEFT-managed closed prefix from the beginning of the title.
+1. reconciling an active thread as open after Discord has unarchived it,
+2. removing one WEFT-managed closed prefix from the beginning of the title.
 
 Requirements:
 
 - The invoking user must have the Discord `ManageThreads` permission.
 - WEFT must verify its own required permissions.
 - The current Discord state must be inspected before modification.
+- WEFT must not change the thread's locked state as part of open.
 - Repeated open operations must be idempotent.
 - Only the managed leading prefix may be removed.
 - A previously stored title must not overwrite later manual title edits.
 - WEFT-managed state must be persisted.
 - The operation and its outcome must be audited.
+
+Discord may unarchive an unlocked thread when a user creates an interaction in it. WEFT must
+reconcile an unlocked archived-to-active transition with its managed state. This reconciliation
+must be serialized with explicit thread lifecycle commands for the same thread.
 
 ### Supported thread resources
 
@@ -194,6 +199,23 @@ If a request fails after only some effects have succeeded, WEFT must:
 - preserve enough information for later reconciliation,
 - perform compensation only when it is safe and predictable,
 - reconcile the stored state with Discord later when necessary.
+
+A Discord mutation may remain pending after the command stops waiting synchronously for its
+result. Normal discord.js rate-limit queueing is not a failure or an unknown outcome solely
+because it exceeds the caller wait budget. In this case, WEFT must:
+
+- tell the caller that Discord is still processing the update, that rate limiting thread-name changes
+  can be one cause without asserting it is the cause, and that completion may take several minutes,
+- continue tracking the raw mutation without aborting it because the caller wait budget expired,
+- prevent another Discord mutation for the same thread until mutation finalization completes,
+- treat a later successful Discord response as confirmed success without an extra Discord fetch,
+- reconcile current Discord state after a rejected raw mutation,
+- keep background reconciliation boundaries single-flight and wait for each raw operation to
+  settle before retrying it,
+- retry transient reconciliation failures with backoff while retaining the per-thread guard,
+- record the final success or failure audit only after the outcome and managed state are confirmed.
+
+Returning a pending result must not create a failure or outcome-unknown audit.
 
 ### Scheduled thread closing
 

@@ -17,6 +17,7 @@ const dependencies = {
     open: vi.fn(),
     autoOpen: vi.fn(),
   },
+  logger: { debug: vi.fn(), warn: vi.fn() },
 } as unknown as CommandDependencies;
 
 describe("Discord commands", () => {

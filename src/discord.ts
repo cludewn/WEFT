@@ -1,4 +1,4 @@
-import { Client, Events, GatewayIntentBits } from "discord.js";
+import { Client, Events, GatewayIntentBits, RESTEvents } from "discord.js";
 
 import type { Logger } from "pino";
 
@@ -27,6 +27,40 @@ export class DiscordStartupAbortedError extends Error {
   }
 }
 
+function parseRestRateLimitDebug(message: string):
+  | {
+      category: "unexpected_429";
+      global: boolean;
+      retryAfterMs: number;
+      sublimitTimeoutMs: number;
+    }
+  | { category: "queue_wait"; waitMs: number }
+  | undefined {
+  if (message.includes("Encountered unexpected 429 rate limit")) {
+    const global = /Global\s*:\s*(true|false)/.exec(message);
+    const retryAfter = /Retry After\s*:\s*(\d+)ms/.exec(message);
+    const sublimit = /Sublimit\s*:\s*(?:(\d+)ms|None)/.exec(message);
+
+    if (global && retryAfter && sublimit) {
+      return {
+        category: "unexpected_429",
+        global: global[1] === "true",
+        retryAfterMs: Number(retryAfter[1]),
+        sublimitTimeoutMs: sublimit[1] === undefined ? 0 : Number(sublimit[1]),
+      };
+    }
+
+    return undefined;
+  }
+
+  const wait = /(?:Waiting|requests for) (\d+)ms/.exec(message);
+  if (message.includes("rate limit") && wait) {
+    return { category: "queue_wait", waitMs: Number(wait[1]) };
+  }
+
+  return undefined;
+}
+
 export function createDiscordClient(
   logger: Logger,
   dependencies: DiscordDependencies,
@@ -40,11 +74,44 @@ export function createDiscordClient(
       guildSettings: dependencies.guildSettings,
       managedThreads: dependencies.managedThreads,
       audits: dependencies.audits,
+      logger,
     });
   const commandDependencies: CommandDependencies = {
     guildSettings: dependencies.guildSettings,
     threadLifecycle,
+    logger,
   };
+
+  client.rest.on(RESTEvents.RateLimited, (rateLimit) => {
+    logger.debug(
+      {
+        event: "discord_rest_rate_limited",
+        method: rateLimit.method,
+        route: rateLimit.route,
+        majorParameter: rateLimit.majorParameter,
+        hash: rateLimit.hash,
+        limit: rateLimit.limit,
+        retryAfter: rateLimit.retryAfter,
+        sublimitTimeout: rateLimit.sublimitTimeout,
+        timeToReset: rateLimit.timeToReset,
+        scope: rateLimit.scope,
+        global: rateLimit.global,
+      },
+      "Discord REST rate limited",
+    );
+  });
+
+  client.rest.on(RESTEvents.Debug, (message) => {
+    const rateLimitDebug = parseRestRateLimitDebug(message);
+    if (!rateLimitDebug) {
+      return;
+    }
+
+    logger.debug(
+      { event: "discord_rest_rate_limit_debug", ...rateLimitDebug },
+      "Discord REST rate-limit debug",
+    );
+  });
 
   client.on(Events.InteractionCreate, (interaction) => {
     if (!interaction.isChatInputCommand()) {
@@ -83,7 +150,7 @@ export function createDiscordClient(
     }
 
     void threadLifecycle.autoOpen(newThread.guildId, newThread.id).then((result) => {
-      if (!result.ok) {
+      if (!result.ok && !result.pending) {
         logger.error(
           {
             event: "automatic_thread_open_failed",
