@@ -12,6 +12,9 @@ const dependencies = {
     setTimezone: vi.fn(),
     setClosedPrefix: vi.fn(),
   },
+  scheduledThreadClose: {
+    schedule: vi.fn(),
+  },
   threadLifecycle: {
     close: vi.fn(),
     open: vi.fn(),
