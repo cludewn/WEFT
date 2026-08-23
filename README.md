@@ -77,13 +77,19 @@ PostgreSQL is published only on `127.0.0.1` at `DATABASE_PORT`. Its data is stor
 
 ## Migrations
 
-Migrations are not applied automatically when the application starts. Run the required command explicitly with database environment variables available to the process:
+WEFT-owned Drizzle migrations are not applied automatically when the application starts. Run the required command explicitly with database environment variables available to the process:
 
 ```sh
 corepack pnpm db:generate
 corepack pnpm db:check
 corepack pnpm db:migrate
 ```
+
+pg-boss owns a separate `pgboss` schema in the same PostgreSQL database. Its internal schema is
+created and migrated automatically when pg-boss starts; it is not managed by Drizzle. The
+configured database user must have the `CREATE` privilege on the database for this purpose.
+pg-boss uses the existing `DATABASE_*` settings and owns a connection pool separate from WEFT's
+application database pool.
 
 ## Development
 
