@@ -1,0 +1,4 @@
+ALTER TABLE "scheduled_actions" DROP CONSTRAINT "scheduled_actions_status_check";--> statement-breakpoint
+DROP INDEX "scheduled_actions_active_close_unique";--> statement-breakpoint
+CREATE UNIQUE INDEX "scheduled_actions_active_close_unique" ON "scheduled_actions" USING btree ("guild_id","target_id") WHERE "scheduled_actions"."action_type" = 'CLOSE_THREAD' and "scheduled_actions"."status" in ('ACTIVE', 'EXECUTING');--> statement-breakpoint
+ALTER TABLE "scheduled_actions" ADD CONSTRAINT "scheduled_actions_status_check" CHECK ("scheduled_actions"."status" in ('ACTIVE', 'EXECUTING', 'CANCELLED', 'COMPLETED', 'FAILED'));
