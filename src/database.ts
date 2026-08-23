@@ -3,6 +3,7 @@ import { Pool } from "pg";
 
 import type { DatabaseConfig } from "./config.js";
 import { guildSettings } from "./guild-settings.js";
+import { scheduledActions } from "./scheduled-action-persistence.js";
 import { managedThreads, threadAudits } from "./thread-persistence.js";
 
 export function createDatabase(config: DatabaseConfig) {
@@ -16,7 +17,9 @@ export function createDatabase(config: DatabaseConfig) {
     application_name: "weft",
   });
 
-  const client = drizzle(pool, { schema: { guildSettings, managedThreads, threadAudits } });
+  const client = drizzle(pool, {
+    schema: { guildSettings, managedThreads, scheduledActions, threadAudits },
+  });
 
   return {
     client,
