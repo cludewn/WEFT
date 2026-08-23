@@ -6,6 +6,7 @@ import type { DatabaseConfig } from "./config.js";
 import { getErrorName } from "./shutdown.js";
 
 export type PgBossRuntime = {
+  client: PgBoss;
   start: () => Promise<void>;
   stop: () => Promise<void>;
 };
@@ -30,6 +31,8 @@ export function createPgBossRuntime(config: DatabaseConfig, logger: Logger): PgB
   });
 
   return {
+    client: boss,
+
     async start(): Promise<void> {
       const startedAt = Date.now();
       logger.info({ event: "pg_boss_starting" }, "pg-boss startup started");

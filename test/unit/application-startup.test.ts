@@ -14,7 +14,9 @@ function createDependencies(): ApplicationStartupDependencies {
   return {
     verifyDatabaseConnection: vi.fn(() => Promise.resolve()),
     startPgBoss: vi.fn(() => Promise.resolve()),
+    ensureScheduledThreadCloseQueue: vi.fn(() => Promise.resolve()),
     startDiscord: vi.fn(() => Promise.resolve()),
+    startScheduledThreadCloseWorkers: vi.fn(() => Promise.resolve()),
     shutdown: vi.fn(() => Promise.resolve()),
   };
 }
@@ -37,12 +39,16 @@ afterEach(() => {
 });
 
 describe("application startup", () => {
-  it("starts pg-boss after database verification and Discord after pg-boss", async () => {
+  it("starts the queue before Discord and workers only after Discord is ready", async () => {
     const databaseVerified = createDeferred();
     const pgBossStarted = createDeferred();
+    const queueReady = createDeferred();
+    const discordStarted = createDeferred();
     const dependencies = createDependencies();
     vi.mocked(dependencies.verifyDatabaseConnection).mockReturnValue(databaseVerified.promise);
     vi.mocked(dependencies.startPgBoss).mockReturnValue(pgBossStarted.promise);
+    vi.mocked(dependencies.ensureScheduledThreadCloseQueue).mockReturnValue(queueReady.promise);
+    vi.mocked(dependencies.startDiscord).mockReturnValue(discordStarted.promise);
 
     const startup = runApplicationStartup(dependencies, createLogger());
     await Promise.resolve();
@@ -52,12 +58,23 @@ describe("application startup", () => {
     databaseVerified.resolve();
     await Promise.resolve();
     expect(dependencies.startPgBoss).toHaveBeenCalledOnce();
+    expect(dependencies.ensureScheduledThreadCloseQueue).not.toHaveBeenCalled();
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
 
     pgBossStarted.resolve();
+    await Promise.resolve();
+    expect(dependencies.ensureScheduledThreadCloseQueue).toHaveBeenCalledOnce();
+    expect(dependencies.startDiscord).not.toHaveBeenCalled();
+
+    queueReady.resolve();
+    await Promise.resolve();
+    expect(dependencies.startDiscord).toHaveBeenCalledOnce();
+    expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
+
+    discordStarted.resolve();
     await startup;
 
-    expect(dependencies.startDiscord).toHaveBeenCalledOnce();
+    expect(dependencies.startScheduledThreadCloseWorkers).toHaveBeenCalledOnce();
     expect(dependencies.shutdown).not.toHaveBeenCalled();
   });
 
@@ -70,7 +87,9 @@ describe("application startup", () => {
     await runApplicationStartup(dependencies, createLogger());
 
     expect(dependencies.startPgBoss).not.toHaveBeenCalled();
+    expect(dependencies.ensureScheduledThreadCloseQueue).not.toHaveBeenCalled();
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
+    expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });
@@ -84,13 +103,43 @@ describe("application startup", () => {
     await runApplicationStartup(dependencies, logger);
 
     expect(dependencies.verifyDatabaseConnection).toHaveBeenCalledOnce();
+    expect(dependencies.ensureScheduledThreadCloseQueue).not.toHaveBeenCalled();
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
+    expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledOnce();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(logger.error).toHaveBeenCalledWith(
       { event: "startup_failed", errorName: "Error" },
       "Application startup failed",
     );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("treats queue creation failure as fatal before Discord startup", async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.ensureScheduledThreadCloseQueue).mockRejectedValue(
+      new Error("queue unavailable"),
+    );
+
+    await runApplicationStartup(dependencies, createLogger());
+
+    expect(dependencies.startDiscord).not.toHaveBeenCalled();
+    expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
+    expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("treats worker registration failure as fatal after Discord startup", async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.startScheduledThreadCloseWorkers).mockRejectedValue(
+      new Error("worker unavailable"),
+    );
+
+    await runApplicationStartup(dependencies, createLogger());
+
+    expect(dependencies.startDiscord).toHaveBeenCalledOnce();
+    expect(dependencies.startScheduledThreadCloseWorkers).toHaveBeenCalledOnce();
+    expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });
 });
