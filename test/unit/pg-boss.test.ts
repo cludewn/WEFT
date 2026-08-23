@@ -6,6 +6,7 @@ import type { DatabaseConfig } from "../../src/config.js";
 import { createPgBossRuntime } from "../../src/pg-boss.js";
 
 const pgBossMock = vi.hoisted(() => ({
+  instance: undefined as object | undefined,
   constructorOptions: undefined as ConstructorOptions | undefined,
   listeners: new Map<string, (...args: unknown[]) => void>(),
   start: vi.fn<() => Promise<unknown>>(),
@@ -16,6 +17,7 @@ vi.mock("pg-boss", () => ({
   PgBoss: class {
     constructor(options: ConstructorOptions) {
       pgBossMock.constructorOptions = options;
+      pgBossMock.instance = this;
     }
 
     on(event: string, listener: (...args: unknown[]) => void): this {
@@ -48,6 +50,7 @@ function createLogger(): Logger {
 
 beforeEach(() => {
   pgBossMock.constructorOptions = undefined;
+  pgBossMock.instance = undefined;
   pgBossMock.listeners.clear();
   pgBossMock.start.mockReset().mockResolvedValue(undefined);
   pgBossMock.stop.mockReset().mockResolvedValue(undefined);
@@ -55,7 +58,7 @@ beforeEach(() => {
 
 describe("pg-boss runtime", () => {
   it("constructs an independently owned connection from validated database config", () => {
-    createPgBossRuntime(databaseConfig, createLogger());
+    const runtime = createPgBossRuntime(databaseConfig, createLogger());
 
     expect(pgBossMock.constructorOptions).toEqual({
       host: "database.internal",
@@ -69,6 +72,7 @@ describe("pg-boss runtime", () => {
     });
     expect(pgBossMock.constructorOptions).not.toHaveProperty("db");
     expect(pgBossMock.listeners.has("error")).toBe(true);
+    expect(runtime.client).toBe(pgBossMock.instance);
   });
 
   it("matches the application database SSL semantics", () => {

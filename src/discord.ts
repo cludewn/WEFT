@@ -20,6 +20,11 @@ export type DiscordStartupClient = {
   off: (event: Events.ClientReady, listener: () => void) => unknown;
 };
 
+export type DiscordRuntime = {
+  client: Client;
+  threadLifecycle: ReturnType<typeof createThreadLifecycleService>;
+};
+
 export class DiscordStartupAbortedError extends Error {
   constructor() {
     super("Discord startup was aborted");
@@ -61,11 +66,11 @@ function parseRestRateLimitDebug(message: string):
   return undefined;
 }
 
-export function createDiscordClient(
+export function createDiscordRuntime(
   logger: Logger,
   dependencies: DiscordDependencies,
   threadLifecycleOverride?: ReturnType<typeof createThreadLifecycleService>,
-): Client {
+): DiscordRuntime {
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
   const threadLifecycle =
     threadLifecycleOverride ??
@@ -164,7 +169,15 @@ export function createDiscordClient(
     });
   });
 
-  return client;
+  return { client, threadLifecycle };
+}
+
+export function createDiscordClient(
+  logger: Logger,
+  dependencies: DiscordDependencies,
+  threadLifecycleOverride?: ReturnType<typeof createThreadLifecycleService>,
+): Client {
+  return createDiscordRuntime(logger, dependencies, threadLifecycleOverride).client;
 }
 
 export function startDiscordClient(

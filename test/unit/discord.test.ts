@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createDiscordClient,
+  createDiscordRuntime,
   type DiscordDependencies,
   DiscordStartupAbortedError,
   type DiscordStartupClient,
@@ -31,6 +32,20 @@ function createLogger(): Logger {
 }
 
 describe("Discord client", () => {
+  it("returns the same lifecycle instance used by interactive Discord handlers", async () => {
+    const lifecycle = {
+      close: vi.fn(),
+      closeAsSystem: vi.fn(),
+      open: vi.fn(),
+      autoOpen: vi.fn(),
+    } as unknown as ThreadLifecycleService;
+
+    const runtime = createDiscordRuntime(createLogger(), discordDependencies, lifecycle);
+
+    expect(runtime.threadLifecycle).toBe(lifecycle);
+    await runtime.client.destroy();
+  });
+
   it("requests only the Guilds gateway intent", async () => {
     const client = createDiscordClient(createLogger(), discordDependencies);
 
