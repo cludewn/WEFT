@@ -1,9 +1,13 @@
-import { ChannelType, Routes } from "discord.js";
+import { ChannelType, HTTPError, Routes } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Client } from "discord.js";
 
-import { createThreadLifecycleDiscord, isSupportedThreadType } from "../../src/thread-discord.js";
+import {
+  classifyThreadDiscordMutationFailure,
+  createThreadLifecycleDiscord,
+  isSupportedThreadType,
+} from "../../src/thread-discord.js";
 
 describe("Discord thread support", () => {
   it("supports public, private, announcement, and forum-post thread types", () => {
@@ -34,5 +38,20 @@ describe("Discord thread support", () => {
       body: { name: "Closed thread", archived: true },
       reason: "WEFT soft close",
     });
+  });
+
+  it("classifies public REST errors without parsing messages", () => {
+    const request = { body: undefined, files: undefined };
+    expect(
+      classifyThreadDiscordMutationFailure(
+        new HTTPError(403, "Forbidden", "PATCH", "https://discord.invalid", request),
+      ),
+    ).toBe("PERMANENT");
+    expect(
+      classifyThreadDiscordMutationFailure(
+        new HTTPError(503, "Unavailable", "PATCH", "https://discord.invalid", request),
+      ),
+    ).toBe("RETRYABLE");
+    expect(classifyThreadDiscordMutationFailure(new Error("transport failure"))).toBe("RETRYABLE");
   });
 });

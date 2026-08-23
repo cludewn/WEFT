@@ -1,9 +1,17 @@
-import { ChannelType, PermissionFlagsBits, Routes } from "discord.js";
+import {
+  ChannelType,
+  DiscordAPIError,
+  HTTPError,
+  PermissionFlagsBits,
+  RateLimitError,
+  Routes,
+} from "discord.js";
 
 import type { Client, Guild, ThreadChannel } from "discord.js";
 
 import type {
   SupportedThreadType,
+  ThreadFailureDisposition,
   ThreadLifecycleDiscord,
   ThreadSnapshot,
 } from "./thread-lifecycle.js";
@@ -13,6 +21,26 @@ const supportedTypes = new Set<ChannelType>([
   ChannelType.PublicThread,
   ChannelType.PrivateThread,
 ]);
+
+export function classifyThreadDiscordMutationFailure(error: unknown): ThreadFailureDisposition {
+  if (error instanceof RateLimitError) {
+    return "RETRYABLE";
+  }
+  if (error instanceof DiscordAPIError || error instanceof HTTPError) {
+    if (
+      error.status === 408 ||
+      error.status === 425 ||
+      error.status === 429 ||
+      error.status >= 500
+    ) {
+      return "RETRYABLE";
+    }
+    if (error.status >= 400 && error.status < 500) {
+      return "PERMANENT";
+    }
+  }
+  return "RETRYABLE";
+}
 
 export function isSupportedThreadType(type: ChannelType): type is SupportedThreadType {
   return supportedTypes.has(type);
@@ -95,5 +123,6 @@ export function createThreadLifecycleDiscord(client: Client): ThreadLifecycleDis
         reason: "WEFT soft close",
       });
     },
+    classifyMutationFailure: classifyThreadDiscordMutationFailure,
   };
 }
