@@ -11,6 +11,10 @@ import {
   scheduledActions,
 } from "../../src/scheduled-action-persistence.js";
 import {
+  createScheduledThreadCloseStore,
+  scheduledThreadCloseAudits,
+} from "../../src/scheduled-thread-close-persistence.js";
+import {
   createScheduledThreadCloseRuntimeReconciler,
   createScheduledThreadCloseStartupReconciler,
 } from "../../src/scheduled-thread-close-reconciler.js";
@@ -25,6 +29,7 @@ const testGuildId = "scheduled-recovery-test-guild";
 const config = loadTestDatabaseConfig();
 const database = createDatabase(config);
 const store = createScheduledActionStore(database.client);
+const scheduledThreadCloses = createScheduledThreadCloseStore(database.client);
 const logger = createLogger();
 let runtime: PgBossRuntime;
 let controller: ScheduledThreadCloseWorkerController;
@@ -152,6 +157,30 @@ describe("scheduled thread close startup recovery", () => {
 });
 
 describe("scheduled thread close runtime reconciliation", () => {
+  it("repairs delivery for an ACTIVE close committed through the command persistence boundary", async () => {
+    const executeAt = new Date("2999-02-01T00:00:00Z");
+    const persisted = await scheduledThreadCloses.createOrReplace({
+      scheduledActionId: "runtime-command-gap",
+      auditId: "runtime-command-gap-audit",
+      guildId: testGuildId,
+      threadId: "thread-runtime-command-gap",
+      actorId: "actor-id",
+      executeAt,
+    });
+    expect(persisted).toMatchObject({ outcome: "CREATED" });
+    await expect(findJobs("runtime-command-gap")).resolves.toEqual([]);
+
+    await reconcileAtRuntime();
+
+    await expect(findJobs("runtime-command-gap")).resolves.toEqual([
+      expect.objectContaining({
+        singletonKey: "runtime-command-gap",
+        startAfter: executeAt,
+        data: { scheduledActionId: "runtime-command-gap" },
+      }),
+    ]);
+  });
+
   it("repairs ACTIVE delivery while excluding other action types and states", async () => {
     const active = await createAction("runtime-active", new Date(0));
     const executing = await createAction("runtime-executing", new Date(0));
@@ -331,6 +360,9 @@ async function findJobs(scheduledActionId: string) {
 }
 
 async function cleanupActions(): Promise<void> {
+  await database.client
+    .delete(scheduledThreadCloseAudits)
+    .where(eq(scheduledThreadCloseAudits.guildId, testGuildId));
   await database.client.delete(scheduledActions).where(eq(scheduledActions.guildId, testGuildId));
 }
 

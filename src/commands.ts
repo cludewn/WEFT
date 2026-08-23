@@ -5,6 +5,7 @@ import type { Logger } from "pino";
 
 import { configCommandDefinition, handleConfigCommand } from "./config-command.js";
 import type { GuildSettingsStore } from "./guild-settings.js";
+import type { ScheduledThreadCloseCommandService } from "./scheduled-thread-close-command.js";
 import { handleThreadCommand, threadCommandDefinition } from "./thread-command.js";
 import type { ThreadLifecycleService } from "./thread-lifecycle.js";
 
@@ -16,6 +17,7 @@ export const commandDefinitions = [
 
 export type CommandDependencies = {
   guildSettings: GuildSettingsStore;
+  scheduledThreadClose: ScheduledThreadCloseCommandService;
   threadLifecycle: ThreadLifecycleService;
   logger: Logger;
 };
@@ -35,7 +37,12 @@ export async function handleCommand(
   }
 
   if (interaction.commandName === "thread") {
-    await handleThreadCommand(interaction, dependencies.threadLifecycle, dependencies.logger);
+    await handleThreadCommand(
+      interaction,
+      dependencies.threadLifecycle,
+      dependencies.scheduledThreadClose,
+      dependencies.logger,
+    );
     return true;
   }
 

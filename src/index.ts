@@ -3,10 +3,16 @@ import pino from "pino";
 import { runApplicationStartup } from "./application-startup.js";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { createDatabase } from "./database.js";
-import { createDiscordRuntime, startDiscordClient } from "./discord.js";
+import {
+  createDiscordRuntime,
+  registerDiscordCommandHandler,
+  startDiscordClient,
+} from "./discord.js";
 import { createGuildSettingsStore } from "./guild-settings.js";
 import { createPgBossRuntime } from "./pg-boss.js";
 import { createScheduledActionStore } from "./scheduled-action-persistence.js";
+import { createScheduledThreadCloseCommandService } from "./scheduled-thread-close-command.js";
+import { createScheduledThreadCloseStore } from "./scheduled-thread-close-persistence.js";
 import { createScheduledThreadCloseExecutor } from "./scheduled-thread-close.js";
 import {
   createScheduledThreadCloseRuntimeReconciler,
@@ -35,6 +41,7 @@ async function main(): Promise<void> {
   const managedThreads = createManagedThreadStore(database.client);
   const audits = createThreadAuditStore(database.client);
   const scheduledActions = createScheduledActionStore(database.client);
+  const scheduledThreadCloses = createScheduledThreadCloseStore(database.client);
   const discordRuntime = createDiscordRuntime(logger, { guildSettings, managedThreads, audits });
   const scheduledThreadCloseExecutor = createScheduledThreadCloseExecutor({
     scheduledActions,
@@ -44,6 +51,18 @@ async function main(): Promise<void> {
     boss: pgBoss.client,
     scheduledActions,
     executor: scheduledThreadCloseExecutor,
+    logger,
+  });
+  const scheduledThreadCloseCommand = createScheduledThreadCloseCommandService({
+    discord: discordRuntime.threadDiscord,
+    schedules: scheduledThreadCloses,
+    delivery: scheduledThreadCloseWorkers,
+    logger,
+  });
+  registerDiscordCommandHandler(discordRuntime.client, {
+    guildSettings,
+    scheduledThreadClose: scheduledThreadCloseCommand,
+    threadLifecycle: discordRuntime.threadLifecycle,
     logger,
   });
   const scheduledThreadCloseReconciler = createScheduledThreadCloseStartupReconciler({

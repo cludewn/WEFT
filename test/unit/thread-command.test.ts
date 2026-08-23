@@ -4,9 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { ChatInputCommandInteraction } from "discord.js";
 
 import { OperationTimeoutError } from "../../src/operation-timeout.js";
+import type { ScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
 import {
   DEFAULT_INTERACTION_IO_TIMEOUT_MS,
-  handleThreadCommand,
+  handleThreadCommand as handleThreadCommandWithDependencies,
   threadCommandDefinition,
 } from "../../src/thread-command.js";
 import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
@@ -14,14 +15,22 @@ import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
 const logger = { debug: vi.fn(), warn: vi.fn() };
 
 describe("thread command", () => {
-  it("defines guild-only close and open subcommands with ManageThreads permission", () => {
+  it("defines guild-only thread subcommands with ManageThreads permission", () => {
     const definition = threadCommandDefinition.toJSON();
 
     expect(definition.contexts).toEqual([InteractionContextType.Guild]);
     expect(definition.default_member_permissions).toBe(
       PermissionFlagsBits.ManageThreads.toString(),
     );
-    expect(definition.options?.map((option) => option.name)).toEqual(["close", "open"]);
+    expect(definition.options?.map((option) => option.name)).toEqual([
+      "close",
+      "open",
+      "close-after",
+    ]);
+    expect(definition.options?.at(2)).toMatchObject({
+      name: "close-after",
+      options: [{ name: "after", required: true }],
+    });
     expect(DEFAULT_INTERACTION_IO_TIMEOUT_MS).toBe(2_500);
   });
 
@@ -210,6 +219,94 @@ describe("thread command", () => {
     expect(pendingMessage).not.toContain("Discord is rate-limiting this thread name change");
   });
 
+  it("routes close-after and reports created and replacement times", async () => {
+    const executeAt = new Date("2030-01-02T03:04:00.000Z");
+    const scheduledThreadClose = createScheduledThreadClose({
+      schedule: vi
+        .fn<ScheduledThreadCloseCommandService["schedule"]>()
+        .mockResolvedValueOnce({
+          ok: true,
+          outcome: "CREATED",
+          action: createScheduledAction(executeAt),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          outcome: "REPLACED",
+          action: createScheduledAction(executeAt),
+        }),
+    });
+    const created = createInteraction({ subcommand: "close-after", after: "30m" });
+    const replaced = createInteraction({ subcommand: "close-after", after: "2h" });
+
+    await handleThreadCommand(
+      created.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      scheduledThreadClose,
+    );
+    await handleThreadCommand(
+      replaced.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      scheduledThreadClose,
+    );
+
+    expect(scheduledThreadClose.schedule).toHaveBeenNthCalledWith(
+      1,
+      "guild-id",
+      "thread-id",
+      "actor-id",
+      "30m",
+    );
+    expect(scheduledThreadClose.schedule).toHaveBeenNthCalledWith(
+      2,
+      "guild-id",
+      "thread-id",
+      "actor-id",
+      "2h",
+    );
+    expect(created.editReply).toHaveBeenCalledWith(
+      edited("Thread close scheduled for <t:1893553440:F> (<t:1893553440:R>)."),
+    );
+    expect(replaced.editReply).toHaveBeenCalledWith(
+      edited(
+        "Scheduled thread close replaced. New close time: <t:1893553440:F> (<t:1893553440:R>).",
+      ),
+    );
+  });
+
+  it("reports an unconfirmed saved delivery without telling the user to retry", async () => {
+    const executeAt = new Date("2030-01-02T03:04:00.000Z");
+    const scheduledThreadClose = createScheduledThreadClose({
+      schedule: vi.fn(() =>
+        Promise.resolve({
+          ok: true,
+          outcome: "SAVED_DELIVERY_PENDING",
+          savedAs: "CREATED",
+          action: createScheduledAction(executeAt),
+        } as const),
+      ),
+    });
+    const fixture = createInteraction({ subcommand: "close-after" });
+
+    await handleThreadCommand(
+      fixture.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      scheduledThreadClose,
+    );
+
+    expect(fixture.editReply).toHaveBeenCalledWith(
+      edited(
+        "The scheduled close for <t:1893553440:F> (<t:1893553440:R>) was saved, but WEFT could not confirm its delivery yet. WEFT will reconcile it automatically.",
+      ),
+    );
+    expect(JSON.stringify(fixture.editReply.mock.calls)).not.toContain("retry");
+  });
+
   it("acknowledges before a delayed lifecycle result", async () => {
     let resolveLifecycle: ((result: { ok: true; changed: true }) => void) | undefined;
     const lifecycleResult = new Promise<{ ok: true; changed: true }>((resolve) => {
@@ -287,10 +384,49 @@ function createLifecycle(overrides: Partial<ThreadLifecycleService> = {}): Threa
   };
 }
 
+function createScheduledThreadClose(
+  overrides: Partial<ScheduledThreadCloseCommandService> = {},
+): ScheduledThreadCloseCommandService {
+  return {
+    schedule: vi.fn(() => Promise.resolve({ ok: false, code: "PERSISTENCE_FAILURE" } as const)),
+    ...overrides,
+  };
+}
+
+function handleThreadCommand(
+  interaction: ChatInputCommandInteraction,
+  lifecycle: ThreadLifecycleService,
+  commandLogger: typeof logger,
+  timeoutMs = DEFAULT_INTERACTION_IO_TIMEOUT_MS,
+  scheduledThreadClose = createScheduledThreadClose(),
+): Promise<void> {
+  return handleThreadCommandWithDependencies(
+    interaction,
+    lifecycle,
+    scheduledThreadClose,
+    commandLogger,
+    timeoutMs,
+  );
+}
+
+function createScheduledAction(executeAt: Date) {
+  return {
+    id: "scheduled-action-id",
+    guildId: "guild-id",
+    actionType: "CLOSE_THREAD" as const,
+    targetId: "thread-id",
+    status: "ACTIVE" as const,
+    executeAt,
+    createdAt: new Date("2030-01-01T00:00:00.000Z"),
+    updatedAt: new Date("2030-01-01T00:00:00.000Z"),
+  };
+}
+
 function createInteraction({
   inGuild = true,
   isThread = true,
   subcommand = "close",
+  after = "30m",
   deferred = false,
   replied = false,
   reply: replyOverride,
@@ -300,6 +436,7 @@ function createInteraction({
   inGuild?: boolean;
   isThread?: boolean;
   subcommand?: string;
+  after?: string;
   deferred?: boolean;
   replied?: boolean;
   reply?: ReturnType<typeof vi.fn<() => Promise<void>>>;
@@ -320,7 +457,10 @@ function createInteraction({
     channel: isThread ? { isThread: () => true, type: ChannelType.PublicThread } : null,
     inGuild: () => inGuild,
     memberPermissions: { has: () => true },
-    options: { getSubcommand: () => subcommand },
+    options: {
+      getSubcommand: () => subcommand,
+      getString: (name: string) => (name === "after" ? after : null),
+    },
     user: { id: "actor-id" },
     deferred,
     replied,

@@ -222,6 +222,19 @@ pg-boss retries each delivery for a finite cycle. If that cycle is exhausted whi
 application action remains active, a later runtime reconciliation sweep may create a new delivery
 cycle. Retry exhaustion alone does not make the application action terminal.
 
+`/thread close-after` creates a one-time close for the current active, unlocked thread. Its required
+`after` value is one relative duration using `m`, `h`, or `d`, from one minute through 365 days.
+Creating another close while the current close is `ACTIVE` replaces it; an `EXECUTING` close is not
+replaced. Schedule administration is serialized per guild and thread with a transaction-scoped
+PostgreSQL advisory lock. The action change and its `CREATED` or `REPLACED` record in the dedicated
+`scheduled_thread_close_audits` table commit atomically.
+
+After commit, the command uses the existing scheduled-close delivery boundary. If enqueue delivery
+cannot be confirmed, the committed action remains authoritative and the user receives a saved-but-
+pending result; the existing runtime reconciliation loop repairs missing delivery. The command does
+not cancel an older pg-boss delivery during replacement because workers reload the authoritative
+application action before attempting execution.
+
 ## Startup and shutdown
 
 Startup must initialize components in a controlled order.

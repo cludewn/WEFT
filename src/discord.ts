@@ -4,7 +4,7 @@ import type { Logger } from "pino";
 
 import { handleCommand, type CommandDependencies } from "./commands.js";
 import { createThreadLifecycleDiscord, isSupportedThreadType } from "./thread-discord.js";
-import { createThreadLifecycleService } from "./thread-lifecycle.js";
+import { createThreadLifecycleService, type ThreadLifecycleDiscord } from "./thread-lifecycle.js";
 import type { GuildSettingsStore } from "./guild-settings.js";
 import type { ManagedThreadStore, ThreadAuditStore } from "./thread-persistence.js";
 
@@ -22,6 +22,7 @@ export type DiscordStartupClient = {
 
 export type DiscordRuntime = {
   client: Client;
+  threadDiscord: ThreadLifecycleDiscord;
   threadLifecycle: ReturnType<typeof createThreadLifecycleService>;
 };
 
@@ -72,20 +73,16 @@ export function createDiscordRuntime(
   threadLifecycleOverride?: ReturnType<typeof createThreadLifecycleService>,
 ): DiscordRuntime {
   const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  const threadDiscord = createThreadLifecycleDiscord(client);
   const threadLifecycle =
     threadLifecycleOverride ??
     createThreadLifecycleService({
-      discord: createThreadLifecycleDiscord(client),
+      discord: threadDiscord,
       guildSettings: dependencies.guildSettings,
       managedThreads: dependencies.managedThreads,
       audits: dependencies.audits,
       logger,
     });
-  const commandDependencies: CommandDependencies = {
-    guildSettings: dependencies.guildSettings,
-    threadLifecycle,
-    logger,
-  };
 
   client.rest.on(RESTEvents.RateLimited, (rateLimit) => {
     logger.debug(
@@ -118,32 +115,6 @@ export function createDiscordRuntime(
     );
   });
 
-  client.on(Events.InteractionCreate, (interaction) => {
-    if (!interaction.isChatInputCommand()) {
-      return;
-    }
-
-    void handleCommand(interaction, commandDependencies)
-      .then((handled) => {
-        if (!handled) {
-          logger.warn(
-            { event: "unknown_command", commandName: interaction.commandName },
-            "Unknown Discord command received",
-          );
-        }
-      })
-      .catch((error: unknown) => {
-        logger.error(
-          {
-            event: "command_failed",
-            commandName: interaction.commandName,
-            errorName: error instanceof Error ? error.name : "UnknownError",
-          },
-          "Discord command failed",
-        );
-      });
-  });
-
   client.on(Events.ThreadUpdate, (oldThread, newThread) => {
     if (
       oldThread.archived !== true ||
@@ -169,7 +140,38 @@ export function createDiscordRuntime(
     });
   });
 
-  return { client, threadLifecycle };
+  return { client, threadDiscord, threadLifecycle };
+}
+
+export function registerDiscordCommandHandler(
+  client: Client,
+  dependencies: CommandDependencies,
+): void {
+  client.on(Events.InteractionCreate, (interaction) => {
+    if (!interaction.isChatInputCommand()) {
+      return;
+    }
+
+    void handleCommand(interaction, dependencies)
+      .then((handled) => {
+        if (!handled) {
+          dependencies.logger.warn(
+            { event: "unknown_command", commandName: interaction.commandName },
+            "Unknown Discord command received",
+          );
+        }
+      })
+      .catch((error: unknown) => {
+        dependencies.logger.error(
+          {
+            event: "command_failed",
+            commandName: interaction.commandName,
+            errorName: error instanceof Error ? error.name : "UnknownError",
+          },
+          "Discord command failed",
+        );
+      });
+  });
 }
 
 export function createDiscordClient(

@@ -9,6 +9,7 @@ import {
   type DiscordDependencies,
   DiscordStartupAbortedError,
   type DiscordStartupClient,
+  registerDiscordCommandHandler,
   startDiscordClient,
 } from "../../src/discord.js";
 import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
@@ -131,10 +132,9 @@ describe("Discord client", () => {
   it("logs only the event and command name for an unknown command", async () => {
     const warn = vi.fn();
     const error = vi.fn();
-    const client = createDiscordClient(
-      { debug: vi.fn(), warn, error } as unknown as Logger,
-      discordDependencies,
-    );
+    const logger = { debug: vi.fn(), warn, error } as unknown as Logger;
+    const client = createDiscordClient(logger, discordDependencies);
+    registerTestCommandHandler(client, logger);
     const reply = vi.fn();
     const interaction = {
       commandName: "unknown",
@@ -158,10 +158,9 @@ describe("Discord client", () => {
   it("handles reply failures without logging interaction content", async () => {
     const warn = vi.fn();
     const error = vi.fn();
-    const client = createDiscordClient(
-      { debug: vi.fn(), warn, error } as unknown as Logger,
-      discordDependencies,
-    );
+    const logger = { debug: vi.fn(), warn, error } as unknown as Logger;
+    const client = createDiscordClient(logger, discordDependencies);
+    registerTestCommandHandler(client, logger);
     const reply = vi.fn(() => Promise.reject(new Error("reply failed")));
     const interaction = {
       commandName: "ping",
@@ -189,11 +188,9 @@ describe("Discord client", () => {
       open: vi.fn(),
       autoOpen: vi.fn(),
     } as unknown as ThreadLifecycleService;
-    const client = createDiscordClient(
-      { debug: vi.fn(), warn, error } as unknown as Logger,
-      discordDependencies,
-      lifecycle,
-    );
+    const logger = { debug: vi.fn(), warn, error } as unknown as Logger;
+    const client = createDiscordClient(logger, discordDependencies, lifecycle);
+    registerTestCommandHandler(client, logger, lifecycle);
     const interaction = {
       commandName: "thread",
       isChatInputCommand: () => true,
@@ -341,6 +338,23 @@ describe("Discord client", () => {
     expect(startupClient.off).toHaveBeenCalledOnce();
   });
 });
+
+function registerTestCommandHandler(
+  client: ReturnType<typeof createDiscordClient>,
+  logger: Logger,
+  lifecycle = {
+    close: vi.fn(),
+    open: vi.fn(),
+    autoOpen: vi.fn(),
+  } as unknown as ThreadLifecycleService,
+): void {
+  registerDiscordCommandHandler(client, {
+    guildSettings: discordDependencies.guildSettings,
+    scheduledThreadClose: { schedule: vi.fn() },
+    threadLifecycle: lifecycle,
+    logger,
+  });
+}
 
 function createStartupClient(loginImplementation: () => Promise<string>): {
   client: DiscordStartupClient;

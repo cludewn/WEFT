@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ChatInputCommandInteraction } from "discord.js";
 
 import type { GuildSettings, GuildSettingsStore } from "../../src/guild-settings.js";
+import type { ScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
 import { handleThreadCommand } from "../../src/thread-command.js";
 import {
   addClosedPrefix,
@@ -25,6 +26,10 @@ import type {
   ThreadAuditRecord,
   ThreadAuditStore,
 } from "../../src/thread-persistence.js";
+
+const scheduledThreadCloseCommandStub = {
+  schedule: vi.fn(),
+} as unknown as ScheduledThreadCloseCommandService;
 
 describe("thread title rules", () => {
   it("adds one prefix and removes only the saved leading prefix", () => {
@@ -407,7 +412,13 @@ describe("thread lifecycle", () => {
     const command = createThreadInteraction("open");
 
     fixture.thread.archived = false;
-    await handleThreadCommand(command.interaction, fixture.service, fixture.logger, 250);
+    await handleThreadCommand(
+      command.interaction,
+      fixture.service,
+      scheduledThreadCloseCommandStub,
+      fixture.logger,
+      250,
+    );
 
     expect(fixture.thread).toMatchObject({ name: "Topic", archived: false });
     expect(fixture.state?.lifecycleState).toBe("OPEN");
@@ -445,6 +456,7 @@ describe("thread lifecycle", () => {
     const explicitOpen = handleThreadCommand(
       command.interaction,
       fixture.service,
+      scheduledThreadCloseCommandStub,
       fixture.logger,
       250,
     );
@@ -527,7 +539,13 @@ describe("thread lifecycle", () => {
     const fixture = createFixture();
     const firstClose = createThreadInteraction("close");
 
-    await handleThreadCommand(firstClose.interaction, fixture.service, fixture.logger, 50);
+    await handleThreadCommand(
+      firstClose.interaction,
+      fixture.service,
+      scheduledThreadCloseCommandStub,
+      fixture.logger,
+      50,
+    );
     expect(firstClose.editReply).toHaveBeenCalledWith({
       content: "Thread closed.",
       allowedMentions: { parse: [] },
@@ -547,7 +565,13 @@ describe("thread lifecycle", () => {
       vi.mocked(fixture.discord.renameThread).mock.calls.length +
       vi.mocked(fixture.discord.archiveThread).mock.calls.length;
     const secondClose = createThreadInteraction("close");
-    await handleThreadCommand(secondClose.interaction, fixture.service, fixture.logger, 50);
+    await handleThreadCommand(
+      secondClose.interaction,
+      fixture.service,
+      scheduledThreadCloseCommandStub,
+      fixture.logger,
+      50,
+    );
     expect(secondClose.editReply).toHaveBeenCalledWith({
       content: "Thread closed.",
       allowedMentions: { parse: [] },
