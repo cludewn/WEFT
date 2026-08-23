@@ -17,6 +17,11 @@ const targetIds = [
   "810000000000000003",
   "810000000000000004",
   "810000000000000005",
+  "810000000000000006",
+  "810000000000000007",
+  "810000000000000008",
+  "810000000000000009",
+  "810000000000000010",
 ] as const;
 const database = createDatabase(loadTestDatabaseConfig());
 const store = createScheduledActionStore(database.client);
@@ -203,6 +208,121 @@ describe("scheduled action persistence", () => {
     expect(activeWithTerminalRows.status).toBe("ACTIVE");
   });
 
+  it("allows only one concurrent execution claim", async () => {
+    const action = await store.create({
+      id: "concurrent-claim",
+      guildId,
+      actionType: "SEND_MESSAGE",
+      targetId: targetIds[5],
+      executeAt: new Date("2030-06-01T00:00:00Z"),
+    });
+
+    const claims = await Promise.all([
+      store.claimExecution(action.id),
+      store.claimExecution(action.id),
+    ]);
+
+    const successfulClaims = claims.filter((claim) => claim.transitioned);
+    const rejectedClaims = claims.filter((claim) => !claim.transitioned);
+    expect(successfulClaims).toHaveLength(1);
+    expect(successfulClaims[0]?.current.status).toBe("EXECUTING");
+    expect(rejectedClaims).toHaveLength(1);
+    expect(rejectedClaims[0]?.current?.status).toBe("EXECUTING");
+  });
+
+  it("linearizes a concurrent claim and cancel at the ACTIVE transition", async () => {
+    const action = await store.create({
+      id: "claim-cancel-race",
+      guildId,
+      actionType: "SEND_MESSAGE",
+      targetId: targetIds[6],
+      executeAt: new Date("2030-06-02T00:00:00Z"),
+    });
+
+    const [claim, cancelled] = await Promise.all([
+      store.claimExecution(action.id),
+      store.cancel(action.id),
+    ]);
+    const current = await store.findById(action.id);
+
+    expect(["EXECUTING", "CANCELLED"]).toContain(current?.status);
+    if (current?.status === "EXECUTING") {
+      expect(claim.transitioned).toBe(true);
+      expect(cancelled?.status).toBe("EXECUTING");
+    } else {
+      expect(claim.transitioned).toBe(false);
+      expect(cancelled?.status).toBe("CANCELLED");
+    }
+  });
+
+  it("keeps EXECUTING actions uncancellable and in the active close unique slot", async () => {
+    const action = await store.create({
+      id: "executing-close",
+      guildId,
+      actionType: "CLOSE_THREAD",
+      targetId: targetIds[7],
+      executeAt: new Date("2030-06-03T00:00:00Z"),
+    });
+    const claimed = await store.claimExecution(action.id);
+    expect(claimed).toMatchObject({ transitioned: true, current: { status: "EXECUTING" } });
+    const beforeCancel = claimed.current;
+
+    await expect(store.cancel(action.id)).resolves.toEqual(beforeCancel);
+    await expect(
+      store.create({
+        id: "close-conflicting-with-executing",
+        guildId,
+        actionType: "CLOSE_THREAD",
+        targetId: targetIds[7],
+        executeAt: new Date("2030-06-04T00:00:00Z"),
+      }),
+    ).rejects.toBeInstanceOf(ActiveScheduledCloseConflictError);
+  });
+
+  it("conditionally completes, fails, and releases only EXECUTING actions", async () => {
+    const inputs = [
+      ["complete-transition", targetIds[8]],
+      ["fail-transition", targetIds[9]],
+      ["release-transition", targetIds[5]],
+    ] as const;
+    for (const [id, targetId] of inputs) {
+      await store.create({
+        id,
+        guildId,
+        actionType: "SEND_MESSAGE",
+        targetId,
+        executeAt: new Date("2030-07-01T00:00:00Z"),
+      });
+      await store.claimExecution(id);
+    }
+
+    await expect(store.completeExecution("complete-transition")).resolves.toMatchObject({
+      transitioned: true,
+      current: { status: "COMPLETED" },
+    });
+    await expect(store.failExecution("fail-transition")).resolves.toMatchObject({
+      transitioned: true,
+      current: { status: "FAILED" },
+    });
+    await expect(store.releaseExecutionForRetry("release-transition")).resolves.toMatchObject({
+      transitioned: true,
+      current: { status: "ACTIVE" },
+    });
+
+    await expect(store.failExecution("complete-transition")).resolves.toMatchObject({
+      transitioned: false,
+      current: { status: "COMPLETED" },
+    });
+    await expect(store.releaseExecutionForRetry("fail-transition")).resolves.toMatchObject({
+      transitioned: false,
+      current: { status: "FAILED" },
+    });
+    await expect(store.completeExecution("release-transition")).resolves.toMatchObject({
+      transitioned: false,
+      current: { status: "ACTIVE" },
+    });
+  });
+
   it("installs timestamptz and the required partial indexes", async () => {
     const column = await database.client.execute<{ dataType: string }>(sql`
       select data_type as "dataType"
@@ -213,8 +333,11 @@ describe("scheduled action persistence", () => {
     `);
     expect(column.rows[0]?.dataType).toBe("timestamp with time zone");
 
-    const indexes = await database.client.execute<{ indexName: string }>(sql`
-      select indexname as "indexName"
+    const indexes = await database.client.execute<{
+      indexName: string;
+      indexDefinition: string;
+    }>(sql`
+      select indexname as "indexName", indexdef as "indexDefinition"
       from pg_indexes
       where schemaname = 'public'
         and tablename = 'scheduled_actions'
@@ -227,6 +350,14 @@ describe("scheduled action persistence", () => {
       "scheduled_actions_active_close_unique",
       "scheduled_actions_active_execute_at_idx",
     ]);
+    expect(
+      indexes.rows.find((row) => row.indexName === "scheduled_actions_active_close_unique")
+        ?.indexDefinition,
+    ).toContain("status = ANY (ARRAY['ACTIVE'::text, 'EXECUTING'::text])");
+    expect(
+      indexes.rows.find((row) => row.indexName === "scheduled_actions_active_execute_at_idx")
+        ?.indexDefinition,
+    ).toContain("status = 'ACTIVE'::text");
   });
 });
 

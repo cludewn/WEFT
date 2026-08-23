@@ -61,7 +61,10 @@ export type ThreadLifecycleDiscord = {
   botCanManage: (guildId: string, threadId: string) => Promise<boolean>;
   renameThread: (guildId: string, threadId: string, name: string) => Promise<void>;
   archiveThread: (guildId: string, threadId: string, name: string) => Promise<void>;
+  classifyMutationFailure: (error: unknown) => ThreadFailureDisposition;
 };
+
+export type ThreadFailureDisposition = "RETRYABLE" | "PERMANENT";
 
 export type ThreadLifecycleCompletedResult = { ok: true; changed: boolean };
 export type ThreadLifecyclePendingResult = { ok: false; pending: true };
@@ -69,6 +72,7 @@ export type ThreadLifecycleFailedResult = {
   ok: false;
   pending?: false;
   code: ThreadFailureCode;
+  disposition?: ThreadFailureDisposition;
 };
 export type ThreadLifecycleResult =
   ThreadLifecycleCompletedResult | ThreadLifecyclePendingResult | ThreadLifecycleFailedResult;
@@ -145,6 +149,7 @@ type OperationContext = {
   auditId: string;
   startedAt: number;
   deadlineAt: number;
+  completionMode: "INTERACTIVE" | "FINAL";
 };
 
 type LifecycleTarget = "CLOSED" | "OPEN";
@@ -156,14 +161,19 @@ type QueuedOperation = {
 type PendingMutation = {
   generation: number;
   promise: Promise<void>;
+  released: Promise<void>;
+  notifyReleased: () => void;
 };
 
-type CloseMutationIntent = {
+type CloseIntent = {
   operation: "CLOSE";
-  actor: { type: "USER"; id: string };
+  actor: Actor;
+};
+type CloseMutationIntent = CloseIntent & {
   appliedPrefix: string;
   intendedName: string;
   auditId: string;
+  completionMode: OperationContext["completionMode"];
 };
 type OpenIntent =
   | {
@@ -178,23 +188,26 @@ type OpenMutationIntent = OpenIntent & {
   appliedPrefix: string;
   intendedName: string;
   auditId: string;
+  completionMode: OperationContext["completionMode"];
 };
 type DiscordMutationIntent = CloseMutationIntent | OpenMutationIntent;
+type RawDiscordMutationSettlement =
+  { outcome: "resolved" } | { outcome: "rejected"; failureDisposition: ThreadFailureDisposition };
 type SettledDiscordMutation = {
   generation: number;
   boundary: DiscordMutationBoundary;
-  outcome: "resolved" | "rejected";
-};
+} & RawDiscordMutationSettlement;
 type ManagedFinalState =
   { lifecycleState: "CLOSED"; appliedPrefix: string } | { lifecycleState: "OPEN" };
 type FinalizationPlan = {
-  managedState: ManagedFinalState;
+  managedState?: ManagedFinalState;
   auditOutcome: "SUCCESS" | "FAILURE";
-  failureCode?: "DISCORD_RENAME_FAILED" | "DISCORD_ARCHIVE_FAILED";
+  failureCode?: ThreadFailureCode;
+  failureDisposition?: ThreadFailureDisposition;
 };
 type FinalizationJob = {
   generation: number;
-  promise: Promise<void>;
+  promise: Promise<FinalizationPlan>;
 };
 
 export class PendingDiscordMutationGuard {
@@ -208,8 +221,22 @@ export class PendingDiscordMutationGuard {
   track(guildId: string, threadId: string, promise: Promise<void>): number {
     const key = this.key(guildId, threadId);
     const generation = ++this.#generation;
-    this.#pending.set(key, { generation, promise });
+    let notifyReleased = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      notifyReleased = resolve;
+    });
+    this.#pending.get(key)?.notifyReleased();
+    this.#pending.set(key, { generation, promise, released, notifyReleased });
     return generation;
+  }
+
+  async waitForRelease(guildId: string, threadId: string): Promise<boolean> {
+    const pending = this.#pending.get(this.key(guildId, threadId));
+    if (pending === undefined) {
+      return false;
+    }
+    await pending.released;
+    return true;
   }
 
   isCurrent(guildId: string, threadId: string, generation: number): boolean {
@@ -218,8 +245,10 @@ export class PendingDiscordMutationGuard {
 
   release(guildId: string, threadId: string, generation: number): void {
     const key = this.key(guildId, threadId);
-    if (this.#pending.get(key)?.generation === generation) {
+    const pending = this.#pending.get(key);
+    if (pending?.generation === generation) {
       this.#pending.delete(key);
+      pending.notifyReleased();
     }
   }
 
@@ -230,9 +259,21 @@ export class PendingDiscordMutationGuard {
 
 export type ThreadLifecycleService = {
   close: (guildId: string, threadId: string, actorId: string) => Promise<ThreadLifecycleResult>;
+  closeAsSystem: (
+    guildId: string,
+    threadId: string,
+    auditId: string,
+  ) => Promise<SystemThreadCloseResult>;
   open: (guildId: string, threadId: string, actorId: string) => Promise<ThreadLifecycleResult>;
   autoOpen: (guildId: string, threadId: string) => Promise<ThreadLifecycleResult>;
 };
+
+export type SystemThreadCloseResult =
+  | { outcome: "SUCCESS"; changed: boolean }
+  | {
+      outcome: "RETRYABLE_FAILURE" | "PERMANENT_FAILURE";
+      code: ThreadFailureCode;
+    };
 
 class LifecycleFailure extends Error {
   constructor(readonly code: ThreadFailureCode) {
@@ -267,7 +308,8 @@ export function createThreadLifecycleService(
     guildId: string,
     threadId: string,
     operation: LifecycleOperation,
-    auditId = randomUUID(),
+    auditId: string = randomUUID(),
+    completionMode: OperationContext["completionMode"] = "INTERACTIVE",
   ): OperationContext {
     const startedAt = Date.now();
     return {
@@ -277,6 +319,7 @@ export function createThreadLifecycleService(
       auditId,
       startedAt,
       deadlineAt: startedAt + deadlineMs,
+      completionMode,
     };
   }
 
@@ -289,6 +332,10 @@ export function createThreadLifecycleService(
       context: OperationContext,
       precedingChangedSameTarget: boolean,
     ) => Promise<ThreadLifecycleResult>,
+    contextOptions?: {
+      auditId?: string;
+      completionMode?: OperationContext["completionMode"];
+    },
   ): Promise<ThreadLifecycleResult> {
     const key = `${guildId}:${threadId}`;
     const preceding = queuedOperations.get(key);
@@ -323,7 +370,13 @@ export function createThreadLifecycleService(
           "Thread lifecycle queue wait completed",
         );
       }
-      const context = createContext(guildId, threadId, lifecycleOperation);
+      const context = createContext(
+        guildId,
+        threadId,
+        lifecycleOperation,
+        contextOptions?.auditId,
+        contextOptions?.completionMode,
+      );
       return operation(context, precedingChangedSameTarget);
     })();
     const queued = { target, result };
@@ -438,11 +491,11 @@ export function createThreadLifecycleService(
     failureCode: "DISCORD_RENAME_FAILED" | "DISCORD_ARCHIVE_FAILED",
     intent: DiscordMutationIntent,
     operation: () => Promise<void>,
-  ): Promise<void> {
+  ): Promise<FinalizationPlan> {
     let trackedGeneration: number | undefined;
-    let settlement: Promise<"resolved" | "rejected"> | undefined;
+    let settlement: Promise<RawDiscordMutationSettlement> | undefined;
     let settlementScheduled = false;
-    const scheduleSettlement = (outcome: "resolved" | "rejected"): void => {
+    const scheduleSettlement = (outcome: RawDiscordMutationSettlement): void => {
       if (settlementScheduled || trackedGeneration === undefined) {
         return;
       }
@@ -450,40 +503,71 @@ export function createThreadLifecycleService(
       void startFinalizationJob(context.guildId, context.threadId, intent, {
         generation: trackedGeneration,
         boundary,
-        outcome,
+        ...outcome,
       });
     };
 
-    let settlementOutcome: Awaited<typeof settlement>;
-    try {
-      settlementOutcome = await runBoundary(
-        context,
-        boundary,
-        failureCode,
-        failureCode,
-        () => {
-          if (pendingMutations.isPending(context.guildId, context.threadId)) {
-            throw new LifecyclePending();
-          }
-          const mutation = Promise.resolve().then(operation);
-          trackedGeneration = pendingMutations.track(context.guildId, context.threadId, mutation);
-          settlement = mutation.then(
-            () => "resolved" as const,
-            () => "rejected" as const,
-          );
-          return settlement;
-        },
-        { timeoutMs: mutationWaitMs, pendingOnTimeout: true },
-      );
-    } catch (error) {
-      if (error instanceof LifecyclePending && settlement !== undefined) {
-        void settlement.then(scheduleSettlement);
+    const startMutation = (): Promise<RawDiscordMutationSettlement> => {
+      if (pendingMutations.isPending(context.guildId, context.threadId)) {
+        throw new LifecyclePending();
       }
-      throw error;
+      const mutation = Promise.resolve().then(operation);
+      trackedGeneration = pendingMutations.track(context.guildId, context.threadId, mutation);
+      settlement = mutation.then(
+        () => ({ outcome: "resolved" as const }),
+        (error: unknown) => ({
+          outcome: "rejected" as const,
+          failureDisposition: classifyMutationFailure(error),
+        }),
+      );
+      return settlement;
+    };
+
+    let settlementOutcome: Awaited<typeof settlement>;
+    if (context.completionMode === "FINAL") {
+      const startedAt = Date.now();
+      logger.debug(
+        {
+          event: "thread_lifecycle_boundary_started",
+          guildId: context.guildId,
+          threadId: context.threadId,
+          operation: context.operation,
+          boundary,
+        },
+        "Thread lifecycle boundary started",
+      );
+      settlementOutcome = await startMutation();
+      logger.debug(
+        {
+          event: "thread_lifecycle_boundary_completed",
+          guildId: context.guildId,
+          threadId: context.threadId,
+          operation: context.operation,
+          boundary,
+          durationMs: Date.now() - startedAt,
+        },
+        "Thread lifecycle boundary completed",
+      );
+    } else {
+      try {
+        settlementOutcome = await runBoundary(
+          context,
+          boundary,
+          failureCode,
+          failureCode,
+          startMutation,
+          { timeoutMs: mutationWaitMs, pendingOnTimeout: true },
+        );
+      } catch (error) {
+        if (error instanceof LifecyclePending && settlement !== undefined) {
+          void settlement.then(scheduleSettlement);
+        }
+        throw error;
+      }
     }
 
-    if (settlementOutcome === "rejected") {
-      scheduleSettlement("rejected");
+    if (settlementOutcome.outcome === "rejected" && context.completionMode === "INTERACTIVE") {
+      scheduleSettlement(settlementOutcome);
       throw new LifecyclePending();
     }
     if (trackedGeneration === undefined) {
@@ -492,14 +576,17 @@ export function createThreadLifecycleService(
     const finalization = startFinalizationJob(context.guildId, context.threadId, intent, {
       generation: trackedGeneration,
       boundary,
-      outcome: "resolved",
+      ...settlementOutcome,
     });
+    if (context.completionMode === "FINAL") {
+      return finalization;
+    }
     const remainingMs = context.deadlineAt - Date.now();
     if (remainingMs <= 0) {
       throw new LifecyclePending();
     }
     try {
-      await withTimeout(finalization, remainingMs);
+      return await withTimeout(finalization, remainingMs);
     } catch (error) {
       if (error instanceof OperationTimeoutError) {
         throw new LifecyclePending();
@@ -508,13 +595,33 @@ export function createThreadLifecycleService(
     }
   }
 
-  function requireNoPendingMutation(context: OperationContext): void {
-    if (pendingMutations.isPending(context.guildId, context.threadId)) {
-      if (context.operation === "AUTO_OPEN") {
-        deferredAutoOpen.add(threadKey(context.guildId, context.threadId));
-      }
-      throw new LifecyclePending();
+  function classifyMutationFailure(error: unknown): ThreadFailureDisposition {
+    try {
+      return discord.classifyMutationFailure(error);
+    } catch {
+      return "RETRYABLE";
     }
+  }
+
+  async function requireNoPendingMutation(context: OperationContext): Promise<void> {
+    if (context.completionMode === "FINAL") {
+      let waited = false;
+      while (await pendingMutations.waitForRelease(context.guildId, context.threadId)) {
+        waited = true;
+      }
+      if (waited) {
+        context.startedAt = Date.now();
+        context.deadlineAt = context.startedAt + deadlineMs;
+      }
+      return;
+    }
+    if (!pendingMutations.isPending(context.guildId, context.threadId)) {
+      return;
+    }
+    if (context.operation === "AUTO_OPEN") {
+      deferredAutoOpen.add(threadKey(context.guildId, context.threadId));
+    }
+    throw new LifecyclePending();
   }
 
   function startFinalizationJob(
@@ -522,14 +629,14 @@ export function createThreadLifecycleService(
     threadId: string,
     intent: DiscordMutationIntent,
     settlement: SettledDiscordMutation,
-  ): Promise<void> {
+  ): Promise<FinalizationPlan> {
     const key = threadKey(guildId, threadId);
     const existing = finalizationJobs.get(key);
     if (existing?.generation === settlement.generation) {
       return existing.promise;
     }
     if (!pendingMutations.isCurrent(guildId, threadId, settlement.generation)) {
-      return Promise.resolve();
+      return Promise.reject(new Error("Discord mutation generation is no longer current"));
     }
 
     logger.debug(
@@ -576,19 +683,22 @@ export function createThreadLifecycleService(
     threadId: string,
     intent: DiscordMutationIntent,
     settlement: SettledDiscordMutation,
-  ): Promise<void> {
+  ): Promise<FinalizationPlan> {
     const plan =
       settlement.outcome === "resolved"
         ? resolvedFinalizationPlan(intent)
         : await rejectedFinalizationPlan(guildId, threadId, intent, settlement);
-    await retryBackgroundBoundary(
-      guildId,
-      threadId,
-      intent.operation,
-      settlement.generation,
-      "managed_state_write",
-      () => applyManagedFinalState(guildId, threadId, plan.managedState),
-    );
+    const managedState = plan.managedState;
+    if (managedState !== undefined) {
+      await retryBackgroundBoundary(
+        guildId,
+        threadId,
+        intent.operation,
+        settlement.generation,
+        "managed_state_write",
+        () => applyManagedFinalState(guildId, threadId, managedState),
+      );
+    }
     const auditRecord = {
       id: intent.auditId,
       guildId,
@@ -607,6 +717,7 @@ export function createThreadLifecycleService(
       "audit_write",
       () => audits.record(auditRecord),
     );
+    return plan;
   }
 
   function resolvedFinalizationPlan(intent: DiscordMutationIntent): FinalizationPlan {
@@ -623,7 +734,7 @@ export function createThreadLifecycleService(
     guildId: string,
     threadId: string,
     intent: DiscordMutationIntent,
-    settlement: SettledDiscordMutation,
+    settlement: SettledDiscordMutation & { outcome: "rejected" },
   ): Promise<FinalizationPlan> {
     const thread = await retryBackgroundBoundary(
       guildId,
@@ -645,7 +756,14 @@ export function createThreadLifecycleService(
         },
         "Thread lifecycle reconciliation cannot confirm the Discord resource",
       );
-      return new Promise<never>(() => undefined);
+      if (intent.completionMode === "INTERACTIVE") {
+        return new Promise<never>(() => undefined);
+      }
+      return {
+        auditOutcome: "FAILURE",
+        failureCode: "UNSUPPORTED_CONTEXT",
+        failureDisposition: "PERMANENT",
+      };
     }
     const intendedStateApplied =
       intent.operation === "CLOSE"
@@ -658,7 +776,9 @@ export function createThreadLifecycleService(
         ? { lifecycleState: "CLOSED", appliedPrefix: intent.appliedPrefix }
         : { lifecycleState: "OPEN" },
       auditOutcome: intendedStateApplied ? "SUCCESS" : "FAILURE",
-      ...(intendedStateApplied ? {} : { failureCode }),
+      ...(intendedStateApplied
+        ? {}
+        : { failureCode, failureDisposition: settlement.failureDisposition }),
     };
   }
 
@@ -776,22 +896,33 @@ export function createThreadLifecycleService(
     outcome: "SUCCESS" | "FAILURE",
     failureCode?: ThreadFailureCode,
   ): Promise<void> {
+    const record = {
+      id: context.auditId,
+      guildId: context.guildId,
+      threadId: context.threadId,
+      action,
+      actorType: actor.type,
+      ...(actor.type === "USER" ? { actorId: actor.id } : {}),
+      outcome,
+      ...(failureCode === undefined ? {} : { failureCode }),
+    } as const;
+    if (context.completionMode === "FINAL") {
+      await retryBackgroundBoundary(
+        context.guildId,
+        context.threadId,
+        context.operation,
+        0,
+        "audit_write",
+        () => audits.record(record),
+      );
+      return;
+    }
     await runBoundary(
       context,
       "audit_write",
       "AUDIT_WRITE_FAILED",
       "AUDIT_WRITE_OUTCOME_UNKNOWN",
-      () =>
-        audits.record({
-          id: context.auditId,
-          guildId: context.guildId,
-          threadId: context.threadId,
-          action,
-          actorType: actor.type,
-          ...(actor.type === "USER" ? { actorId: actor.id } : {}),
-          outcome,
-          ...(failureCode === undefined ? {} : { failureCode }),
-        }),
+      () => audits.record(record),
     );
   }
 
@@ -855,6 +986,20 @@ export function createThreadLifecycleService(
     return { ok: false, code };
   }
 
+  function dispositionForFailure(code: ThreadFailureCode): ThreadFailureDisposition {
+    switch (code) {
+      case "UNSUPPORTED_CONTEXT":
+      case "THREAD_NOT_ACTIVE":
+      case "THREAD_LOCKED":
+      case "ACTOR_PERMISSION_MISSING":
+      case "BOT_PERMISSION_MISSING":
+      case "INVALID_THREAD_NAME":
+        return "PERMANENT";
+      default:
+        return "RETRYABLE";
+    }
+  }
+
   function isOutcomeUnknown(code: ThreadFailureCode): boolean {
     return code === "STATE_WRITE_OUTCOME_UNKNOWN" || code === "AUDIT_WRITE_OUTCOME_UNKNOWN";
   }
@@ -900,19 +1045,18 @@ export function createThreadLifecycleService(
 
   async function close(
     context: OperationContext,
-    actorId: string,
+    actor: Actor,
     precedingChangedSameTarget: boolean,
   ): Promise<ThreadLifecycleResult> {
     const { guildId, threadId } = context;
-    const actor = { type: "USER" as const, id: actorId };
     let fallback: ThreadFailureCode = "DISCORD_FETCH_FAILED";
     try {
-      requireNoPendingMutation(context);
+      await requireNoPendingMutation(context);
       const initial = await fetchSupported(context);
       if (initial.locked) {
         throw new LifecycleFailure("THREAD_LOCKED");
       }
-      await requirePermissions(context, actorId);
+      await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
 
       fallback = "SETTINGS_READ_FAILED";
       const settings = await runBoundary(
@@ -938,7 +1082,7 @@ export function createThreadLifecycleService(
       if (beforeStateWrite.locked) {
         throw new LifecycleFailure("THREAD_LOCKED");
       }
-      await requirePermissions(context, actorId);
+      await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
       let changed = existing?.lifecycleState !== "CLOSED" || precedingChangedSameTarget;
       void addClosedPrefix(beforeStateWrite.name, appliedPrefix);
 
@@ -956,7 +1100,7 @@ export function createThreadLifecycleService(
       if (beforeArchive.locked) {
         throw new LifecycleFailure("THREAD_LOCKED");
       }
-      await requirePermissions(context, actorId);
+      await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
       const closedName = addClosedPrefix(beforeArchive.name, appliedPrefix);
       if (!beforeArchive.archived || closedName !== beforeArchive.name) {
         const mutationIntent: CloseMutationIntent = {
@@ -965,9 +1109,10 @@ export function createThreadLifecycleService(
           appliedPrefix,
           intendedName: closedName,
           auditId: context.auditId,
+          completionMode: context.completionMode,
         };
         fallback = "DISCORD_ARCHIVE_FAILED";
-        await runDiscordMutation(
+        const finalization = await runDiscordMutation(
           context,
           "thread_archive",
           "DISCORD_ARCHIVE_FAILED",
@@ -975,6 +1120,13 @@ export function createThreadLifecycleService(
           () => discord.archiveThread(guildId, threadId, closedName),
         );
         changed = true;
+        if (finalization.auditOutcome === "FAILURE") {
+          return {
+            ok: false,
+            code: finalization.failureCode ?? "DISCORD_ARCHIVE_FAILED",
+            disposition: finalization.failureDisposition ?? "RETRYABLE",
+          };
+        }
         return { ok: true, changed };
       }
 
@@ -996,7 +1148,7 @@ export function createThreadLifecycleService(
     const { operation: action, actor } = intent;
     let fallback: ThreadFailureCode = "DISCORD_FETCH_FAILED";
     try {
-      requireNoPendingMutation(context);
+      await requireNoPendingMutation(context);
       const initial = await fetchSupported(context);
       if (initial.archived) {
         if (ignoreArchived) {
@@ -1052,6 +1204,7 @@ export function createThreadLifecycleService(
           appliedPrefix: managed.appliedPrefix,
           intendedName: openedName,
           auditId: context.auditId,
+          completionMode: context.completionMode,
         };
         fallback = "DISCORD_RENAME_FAILED";
         await runDiscordMutation(
@@ -1095,8 +1248,30 @@ export function createThreadLifecycleService(
         "CLOSE",
         "CLOSED",
         (context, precedingChangedSameTarget) =>
-          close(context, actorId, precedingChangedSameTarget),
+          close(context, { type: "USER", id: actorId }, precedingChangedSameTarget),
       );
+    },
+    closeAsSystem: async (guildId, threadId, auditId) => {
+      const result = await serialize(
+        guildId,
+        threadId,
+        "CLOSE",
+        "CLOSED",
+        (context, precedingChangedSameTarget) =>
+          close(context, { type: "SYSTEM" }, precedingChangedSameTarget),
+        { auditId, completionMode: "FINAL" },
+      );
+      if (result.ok) {
+        return { outcome: "SUCCESS", changed: result.changed };
+      }
+      if (result.pending === true) {
+        return { outcome: "RETRYABLE_FAILURE", code: "LIFECYCLE_DEADLINE_EXCEEDED" };
+      }
+      const disposition = result.disposition ?? dispositionForFailure(result.code);
+      return {
+        outcome: disposition === "PERMANENT" ? "PERMANENT_FAILURE" : "RETRYABLE_FAILURE",
+        code: result.code,
+      };
     },
     open: (guildId, threadId, actorId) => {
       return serialize(guildId, threadId, "OPEN", "OPEN", (context, precedingChangedSameTarget) =>

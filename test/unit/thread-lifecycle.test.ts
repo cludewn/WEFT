@@ -1562,6 +1562,177 @@ describe("thread lifecycle", () => {
       }),
     );
   });
+
+  it("waits for SYSTEM close mutation finalization without checking actor permission", async () => {
+    const fixture = createFixture({ deadlineMs: 50, mutationWaitMs: 5 });
+    const archive = deferred<void>();
+    fixture.discord.archiveThread = vi.fn<ThreadLifecycleDiscord["archiveThread"]>(
+      (_guildId, _threadId, name) =>
+        archive.promise.then(() => {
+          fixture.thread.name = name;
+          fixture.thread.archived = true;
+        }),
+    );
+
+    let settled = false;
+    const execution = fixture.service
+      .closeAsSystem(GUILD_ID, THREAD_ID, "scheduled-attempt-id")
+      .finally(() => {
+        settled = true;
+      });
+    await vi.waitFor(() => expect(fixture.discord.archiveThread).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(settled).toBe(false);
+    expect(fixture.discord.actorCanManage).not.toHaveBeenCalled();
+    expect(fixture.discord.botCanManage).toHaveBeenCalled();
+
+    archive.resolve();
+    await expect(execution).resolves.toEqual({ outcome: "SUCCESS", changed: true });
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        id: "scheduled-attempt-id",
+        action: "CLOSE",
+        actorType: "SYSTEM",
+        outcome: "SUCCESS",
+      }),
+    ]);
+  });
+
+  it("requires bot permission for a SYSTEM close", async () => {
+    const fixture = createFixture({ botCanManage: false });
+
+    await expect(
+      fixture.service.closeAsSystem(GUILD_ID, THREAD_ID, "missing-bot-permission"),
+    ).resolves.toEqual({
+      outcome: "PERMANENT_FAILURE",
+      code: "BOT_PERMISSION_MISSING",
+    });
+    expect(fixture.discord.actorCanManage).not.toHaveBeenCalled();
+    expect(fixture.discord.archiveThread).not.toHaveBeenCalled();
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        id: "missing-bot-permission",
+        actorType: "SYSTEM",
+        outcome: "FAILURE",
+        failureCode: "BOT_PERMISSION_MISSING",
+      }),
+    ]);
+  });
+
+  it("keeps the pre-mutation lifecycle deadline for a SYSTEM close", async () => {
+    const fixture = createFixture({ deadlineMs: 20 });
+    fixture.discord.fetchThread = vi.fn(() => new Promise<never>(() => undefined));
+
+    await expect(
+      fixture.service.closeAsSystem(GUILD_ID, THREAD_ID, "system-fetch-timeout"),
+    ).resolves.toEqual({
+      outcome: "RETRYABLE_FAILURE",
+      code: "DISCORD_FETCH_TIMEOUT",
+    });
+    expect(fixture.discord.archiveThread).not.toHaveBeenCalled();
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        id: "system-fetch-timeout",
+        actorType: "SYSTEM",
+        outcome: "FAILURE",
+        failureCode: "DISCORD_FETCH_TIMEOUT",
+      }),
+    ]);
+  });
+
+  it("waits for an existing pending mutation before starting a SYSTEM close", async () => {
+    const fixture = createFixture({ deadlineMs: 50, mutationWaitMs: 5 });
+    const archive = deferred<void>();
+    fixture.discord.archiveThread = vi.fn<ThreadLifecycleDiscord["archiveThread"]>(
+      (_guildId, _threadId, name) =>
+        archive.promise.then(() => {
+          fixture.thread.name = name;
+          fixture.thread.archived = true;
+        }),
+    );
+
+    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
+      ok: false,
+      pending: true,
+    });
+    let systemSettled = false;
+    const systemClose = fixture.service
+      .closeAsSystem(GUILD_ID, THREAD_ID, "system-after-pending")
+      .finally(() => {
+        systemSettled = true;
+      });
+    await Promise.resolve();
+    expect(systemSettled).toBe(false);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+
+    archive.resolve();
+    await expect(systemClose).resolves.toEqual({ outcome: "SUCCESS", changed: false });
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    expect(fixture.audits).toContainEqual(
+      expect.objectContaining({ id: "system-after-pending", actorType: "SYSTEM" }),
+    );
+  });
+
+  it("reconciles a rejected SYSTEM mutation that Discord applied as success", async () => {
+    const fixture = createFixture();
+    fixture.discord.archiveThread = vi.fn<ThreadLifecycleDiscord["archiveThread"]>(
+      (_guildId, _threadId, name) => {
+        fixture.thread.name = name;
+        fixture.thread.archived = true;
+        return Promise.reject(new Error("response lost"));
+      },
+    );
+
+    await expect(
+      fixture.service.closeAsSystem(GUILD_ID, THREAD_ID, "applied-rejection"),
+    ).resolves.toEqual({ outcome: "SUCCESS", changed: true });
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        id: "applied-rejection",
+        actorType: "SYSTEM",
+        outcome: "SUCCESS",
+      }),
+    ]);
+  });
+
+  it("classifies a rejected SYSTEM mutation that was not applied", async () => {
+    const fixture = createFixture();
+    fixture.discord.classifyMutationFailure = vi.fn(() => "PERMANENT" as const);
+    fixture.discord.archiveThread = vi.fn<ThreadLifecycleDiscord["archiveThread"]>(() =>
+      Promise.reject(new Error("definitive rejection")),
+    );
+
+    await expect(
+      fixture.service.closeAsSystem(GUILD_ID, THREAD_ID, "not-applied-rejection"),
+    ).resolves.toEqual({
+      outcome: "PERMANENT_FAILURE",
+      code: "DISCORD_ARCHIVE_FAILED",
+    });
+    expect(fixture.state?.lifecycleState).toBe("OPEN");
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        id: "not-applied-rejection",
+        actorType: "SYSTEM",
+        outcome: "FAILURE",
+        failureCode: "DISCORD_ARCHIVE_FAILED",
+      }),
+    ]);
+  });
+});
+
+describe("pending Discord mutation guard", () => {
+  it("does not lose a release before or after a waiter is registered", async () => {
+    const guard = new PendingDiscordMutationGuard();
+    const firstGeneration = guard.track(GUILD_ID, THREAD_ID, Promise.resolve());
+    const waiting = guard.waitForRelease(GUILD_ID, THREAD_ID);
+    guard.release(GUILD_ID, THREAD_ID, firstGeneration);
+    await expect(waiting).resolves.toBe(true);
+
+    const secondGeneration = guard.track(GUILD_ID, THREAD_ID, Promise.resolve());
+    guard.release(GUILD_ID, THREAD_ID, secondGeneration);
+    await expect(guard.waitForRelease(GUILD_ID, THREAD_ID)).resolves.toBe(false);
+  });
 });
 
 const GUILD_ID = "100000000000000001";
@@ -1691,6 +1862,7 @@ function createFixture({
       thread.archived = true;
       return Promise.resolve();
     }),
+    classifyMutationFailure: vi.fn(() => "RETRYABLE" as const),
   };
   const guildSettings = {
     getOrCreate: vi.fn<GuildSettingsStore["getOrCreate"]>(() => {

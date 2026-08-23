@@ -7,7 +7,13 @@ import type { DatabaseClient } from "./database.js";
 export const SCHEDULED_ACTION_TYPES = ["CLOSE_THREAD", "SEND_MESSAGE"] as const;
 export type ScheduledActionType = (typeof SCHEDULED_ACTION_TYPES)[number];
 
-export const SCHEDULED_ACTION_STATUSES = ["ACTIVE", "CANCELLED", "COMPLETED", "FAILED"] as const;
+export const SCHEDULED_ACTION_STATUSES = [
+  "ACTIVE",
+  "EXECUTING",
+  "CANCELLED",
+  "COMPLETED",
+  "FAILED",
+] as const;
 export type ScheduledActionStatus = (typeof SCHEDULED_ACTION_STATUSES)[number];
 
 export const scheduledActions = pgTable(
@@ -29,11 +35,13 @@ export const scheduledActions = pgTable(
     ),
     check(
       "scheduled_actions_status_check",
-      sql`${table.status} in ('ACTIVE', 'CANCELLED', 'COMPLETED', 'FAILED')`,
+      sql`${table.status} in ('ACTIVE', 'EXECUTING', 'CANCELLED', 'COMPLETED', 'FAILED')`,
     ),
     uniqueIndex("scheduled_actions_active_close_unique")
       .on(table.guildId, table.targetId)
-      .where(sql`${table.actionType} = 'CLOSE_THREAD' and ${table.status} = 'ACTIVE'`),
+      .where(
+        sql`${table.actionType} = 'CLOSE_THREAD' and ${table.status} in ('ACTIVE', 'EXECUTING')`,
+      ),
     index("scheduled_actions_active_execute_at_idx")
       .on(table.executeAt)
       .where(sql`${table.status} = 'ACTIVE'`),
@@ -55,7 +63,15 @@ export type ScheduledActionStore = {
   create: (input: CreateScheduledAction) => Promise<ScheduledAction>;
   findById: (id: string) => Promise<ScheduledAction | undefined>;
   cancel: (id: string) => Promise<ScheduledAction | undefined>;
+  claimExecution: (id: string) => Promise<ScheduledActionTransitionResult>;
+  completeExecution: (id: string) => Promise<ScheduledActionTransitionResult>;
+  failExecution: (id: string) => Promise<ScheduledActionTransitionResult>;
+  releaseExecutionForRetry: (id: string) => Promise<ScheduledActionTransitionResult>;
 };
+
+export type ScheduledActionTransitionResult =
+  | { transitioned: true; current: ScheduledAction }
+  | { transitioned: false; current: ScheduledAction | undefined };
 
 export class ActiveScheduledCloseConflictError extends Error {
   constructor() {
@@ -72,6 +88,23 @@ export function createScheduledActionStore(database: DatabaseClient): ScheduledA
       .where(eq(scheduledActions.id, id))
       .limit(1);
     return action;
+  };
+
+  const transition = async (
+    id: string,
+    expectedStatus: ScheduledActionStatus,
+    nextStatus: ScheduledActionStatus,
+  ): Promise<ScheduledActionTransitionResult> => {
+    const [transitioned] = await database
+      .update(scheduledActions)
+      .set({ status: nextStatus, updatedAt: new Date() })
+      .where(and(eq(scheduledActions.id, id), eq(scheduledActions.status, expectedStatus)))
+      .returning();
+
+    if (transitioned !== undefined) {
+      return { transitioned: true, current: transitioned };
+    }
+    return { transitioned: false, current: await findById(id) };
   };
 
   return {
@@ -103,6 +136,10 @@ export function createScheduledActionStore(database: DatabaseClient): ScheduledA
 
       return cancelled ?? findById(id);
     },
+    claimExecution: (id) => transition(id, "ACTIVE", "EXECUTING"),
+    completeExecution: (id) => transition(id, "EXECUTING", "COMPLETED"),
+    failExecution: (id) => transition(id, "EXECUTING", "FAILED"),
+    releaseExecutionForRetry: (id) => transition(id, "EXECUTING", "ACTIVE"),
   };
 }
 
