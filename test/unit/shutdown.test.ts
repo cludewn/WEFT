@@ -32,16 +32,22 @@ describe("createShutdown", () => {
     );
   });
 
-  it("attempts Discord destruction before database closure and continues after failure", async () => {
+  it("stops pg-boss before Discord and the database and continues after failure", async () => {
     const calls: string[] = [];
-    const discordFailure = new Error("Discord destruction failed");
+    const pgBossFailure = new Error("pg-boss shutdown failed");
     const shutdown = createShutdown(
       [
+        {
+          name: "pg-boss",
+          close: () => {
+            calls.push("pg-boss");
+            throw pgBossFailure;
+          },
+        },
         {
           name: "discord",
           close: () => {
             calls.push("discord");
-            throw discordFailure;
           },
         },
         {
@@ -55,6 +61,6 @@ describe("createShutdown", () => {
     );
 
     await expect(shutdown("SIGTERM")).rejects.toBeInstanceOf(AggregateError);
-    expect(calls).toEqual(["discord", "database"]);
+    expect(calls).toEqual(["pg-boss", "discord", "database"]);
   });
 });
