@@ -168,6 +168,15 @@ describe("scheduled thread close pg-boss worker", () => {
     await expect(
       fixture.controller.enqueueScheduledThreadClose("scheduled-action-id", executeAt),
     ).resolves.toBe("ALREADY_PRESENT");
+    expect(fixture.logger.debug).toHaveBeenCalledTimes(2);
+    expect(fixture.logger.debug).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        event: "scheduled_thread_close_enqueued",
+        enqueueResult: "ALREADY_PRESENT",
+      }),
+      expect.any(String),
+    );
+    expect(fixture.logger.info).not.toHaveBeenCalled();
   });
 
   it("preserves created and retry deliveries during startup cleanup", async () => {

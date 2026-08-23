@@ -303,7 +303,7 @@ export function createScheduledThreadCloseWorkerController({
         { singletonKey: scheduledActionId, startAfter: executeAt },
       );
       const result = jobId === null ? "ALREADY_PRESENT" : "ENQUEUED";
-      logger.info(
+      logger.debug(
         {
           event: "scheduled_thread_close_enqueued",
           queue: SCHEDULED_THREAD_CLOSE_QUEUE,

@@ -18,6 +18,7 @@ function createDependencies(): ApplicationStartupDependencies {
     recoverScheduledThreadCloseDeliveries: vi.fn(() => Promise.resolve()),
     startDiscord: vi.fn(() => Promise.resolve()),
     startScheduledThreadCloseWorkers: vi.fn(() => Promise.resolve()),
+    startScheduledThreadCloseRuntimeReconciliation: vi.fn(() => Promise.resolve()),
     shutdown: vi.fn(() => Promise.resolve()),
   };
 }
@@ -46,6 +47,8 @@ describe("application startup", () => {
     const queueReady = createDeferred();
     const recoveryCompleted = createDeferred();
     const discordStarted = createDeferred();
+    const workersStarted = createDeferred();
+    const runtimeReconciliationStarted = createDeferred();
     const dependencies = createDependencies();
     vi.mocked(dependencies.verifyDatabaseConnection).mockReturnValue(databaseVerified.promise);
     vi.mocked(dependencies.startPgBoss).mockReturnValue(pgBossStarted.promise);
@@ -54,6 +57,12 @@ describe("application startup", () => {
       recoveryCompleted.promise,
     );
     vi.mocked(dependencies.startDiscord).mockReturnValue(discordStarted.promise);
+    vi.mocked(dependencies.startScheduledThreadCloseWorkers).mockReturnValue(
+      workersStarted.promise,
+    );
+    vi.mocked(dependencies.startScheduledThreadCloseRuntimeReconciliation).mockReturnValue(
+      runtimeReconciliationStarted.promise,
+    );
 
     const startup = runApplicationStartup(dependencies, createLogger());
     await Promise.resolve();
@@ -84,9 +93,17 @@ describe("application startup", () => {
     expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
 
     discordStarted.resolve();
-    await startup;
+    await Promise.resolve();
 
     expect(dependencies.startScheduledThreadCloseWorkers).toHaveBeenCalledOnce();
+    expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
+
+    workersStarted.resolve();
+    await Promise.resolve();
+    expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).toHaveBeenCalledOnce();
+
+    runtimeReconciliationStarted.resolve();
+    await startup;
     expect(dependencies.shutdown).not.toHaveBeenCalled();
   });
 
@@ -103,6 +120,7 @@ describe("application startup", () => {
     expect(dependencies.recoverScheduledThreadCloseDeliveries).not.toHaveBeenCalled();
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
+    expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });
@@ -120,6 +138,7 @@ describe("application startup", () => {
     expect(dependencies.recoverScheduledThreadCloseDeliveries).not.toHaveBeenCalled();
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
+    expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledOnce();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(logger.error).toHaveBeenCalledWith(
@@ -140,6 +159,7 @@ describe("application startup", () => {
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
     expect(dependencies.recoverScheduledThreadCloseDeliveries).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
+    expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });
@@ -154,6 +174,7 @@ describe("application startup", () => {
 
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
+    expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });
@@ -168,6 +189,21 @@ describe("application startup", () => {
 
     expect(dependencies.startDiscord).toHaveBeenCalledOnce();
     expect(dependencies.startScheduledThreadCloseWorkers).toHaveBeenCalledOnce();
+    expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
+    expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("treats runtime reconciliation startup failure as fatal after workers start", async () => {
+    const dependencies = createDependencies();
+    vi.mocked(dependencies.startScheduledThreadCloseRuntimeReconciliation).mockRejectedValue(
+      new Error("runtime reconciliation unavailable"),
+    );
+
+    await runApplicationStartup(dependencies, createLogger());
+
+    expect(dependencies.startScheduledThreadCloseWorkers).toHaveBeenCalledOnce();
+    expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).toHaveBeenCalledOnce();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });

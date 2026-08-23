@@ -10,6 +10,7 @@ export type ApplicationStartupDependencies = {
   recoverScheduledThreadCloseDeliveries: () => Promise<void>;
   startDiscord: () => Promise<void>;
   startScheduledThreadCloseWorkers: () => Promise<void>;
+  startScheduledThreadCloseRuntimeReconciliation: () => Promise<void>;
   shutdown: (reason: string) => Promise<void>;
 };
 
@@ -27,6 +28,7 @@ export async function runApplicationStartup(
     await dependencies.startDiscord();
     logger.info({ event: "discord_ready" }, "Discord client is ready");
     await dependencies.startScheduledThreadCloseWorkers();
+    await dependencies.startScheduledThreadCloseRuntimeReconciliation();
     logger.info({ event: "application_ready" }, "Application startup completed");
   } catch (error) {
     if (error instanceof DiscordStartupAbortedError) {

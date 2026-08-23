@@ -210,6 +210,18 @@ Discord API effects and PostgreSQL updates cannot be committed as one transactio
 
 The scheduling implementation must reduce duplicate external effects, but it must not claim strict exactly-once delivery.
 
+Scheduled thread-close delivery is reconciled in two distinct modes. Startup recovery may release
+interrupted executions and remove stale active delivery left by a fully terminated previous
+process. During normal operation, a fixed-delay loop scans only active scheduled thread closes and
+repairs missing pg-boss delivery without changing application lifecycle state or cancelling active
+jobs. The startup active-action pass is the initial reconciliation; periodic reconciliation begins
+60 seconds after runtime startup and waits 60 seconds after each completed sweep before starting the
+next one.
+
+pg-boss retries each delivery for a finite cycle. If that cycle is exhausted while the authoritative
+application action remains active, a later runtime reconciliation sweep may create a new delivery
+cycle. Retry exhaustion alone does not make the application action terminal.
+
 ## Startup and shutdown
 
 Startup must initialize components in a controlled order.
@@ -225,18 +237,21 @@ The intended sequence is:
 7. reconcile persistent scheduled actions and their delivery state,
 8. initialize the Discord client and wait until it is ready,
 9. register workers and event handlers,
-10. begin normal operation.
+10. start runtime reconciliation loops,
+11. begin normal operation.
 
 Startup code must not print secret values.
 
 Shutdown must:
 
 1. stop accepting new application work where practical,
-2. stop pg-boss and close its independently owned database connections,
-3. destroy the Discord client,
-4. close the application database connections,
-5. report shutdown failures,
-6. exit without silently abandoning in-process state.
+2. stop new runtime reconciliation sweeps and drain an in-flight sweep,
+3. stop worker polling and drain in-flight scheduled execution,
+4. stop pg-boss and close its independently owned database connections,
+5. destroy the Discord client,
+6. close the application database connections,
+7. report shutdown failures,
+8. exit without silently abandoning in-process state.
 
 The exact migration and command-registration strategies must be selected during their implementation phases.
 
@@ -599,6 +614,7 @@ After both vertical slices, review whether the current physical structure still 
 - Implement worker startup and shutdown.
 - Define transient and permanent failure classification.
 - Implement startup reconciliation.
+- Implement runtime reconciliation of active scheduled-action delivery.
 - Test cancellation and execution races.
 - Test restart recovery.
 
