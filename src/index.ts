@@ -8,6 +8,7 @@ import { createGuildSettingsStore } from "./guild-settings.js";
 import { createPgBossRuntime } from "./pg-boss.js";
 import { createScheduledActionStore } from "./scheduled-action-persistence.js";
 import { createScheduledThreadCloseExecutor } from "./scheduled-thread-close.js";
+import { createScheduledThreadCloseStartupReconciler } from "./scheduled-thread-close-reconciler.js";
 import { createScheduledThreadCloseWorkerController } from "./scheduled-thread-close-worker.js";
 import { createShutdown } from "./shutdown.js";
 import { createManagedThreadStore, createThreadAuditStore } from "./thread-persistence.js";
@@ -42,6 +43,11 @@ async function main(): Promise<void> {
     executor: scheduledThreadCloseExecutor,
     logger,
   });
+  const scheduledThreadCloseReconciler = createScheduledThreadCloseStartupReconciler({
+    scheduledActions,
+    delivery: scheduledThreadCloseWorkers,
+    logger,
+  });
   const startupAbortController = new AbortController();
   const shutdown = createShutdown(
     [
@@ -68,6 +74,8 @@ async function main(): Promise<void> {
       verifyDatabaseConnection: () => database.verifyConnection(),
       startPgBoss: () => pgBoss.start(),
       ensureScheduledThreadCloseQueue: () => scheduledThreadCloseWorkers.ensureQueue(),
+      recoverScheduledThreadCloseDeliveries: () =>
+        scheduledThreadCloseReconciler.recoverAtStartup(),
       startDiscord: () =>
         startDiscordClient(
           discordRuntime.client,

@@ -1,4 +1,4 @@
-import { and, DrizzleQueryError, eq, sql } from "drizzle-orm";
+import { and, asc, DrizzleQueryError, eq, gt, or, sql } from "drizzle-orm";
 import { check, index, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { DatabaseError } from "pg";
 
@@ -45,6 +45,9 @@ export const scheduledActions = pgTable(
     index("scheduled_actions_active_execute_at_idx")
       .on(table.executeAt)
       .where(sql`${table.status} = 'ACTIVE'`),
+    index("scheduled_actions_active_close_execute_at_id_idx")
+      .on(table.executeAt, table.id)
+      .where(sql`${table.actionType} = 'CLOSE_THREAD' and ${table.status} = 'ACTIVE'`),
   ],
 );
 
@@ -59,9 +62,20 @@ export type CreateScheduledAction = {
   executeAt: Date;
 };
 
+export type ActiveScheduledThreadCloseCursor = {
+  executeAt: Date;
+  id: string;
+};
+
+const SCHEDULED_THREAD_CLOSE_RECOVERY_PAGE_SIZE = 100;
+
 export type ScheduledActionStore = {
   create: (input: CreateScheduledAction) => Promise<ScheduledAction>;
   findById: (id: string) => Promise<ScheduledAction | undefined>;
+  findActiveThreadClosesPage: (
+    cursor?: ActiveScheduledThreadCloseCursor,
+  ) => Promise<ScheduledAction[]>;
+  findExecutingThreadClosesPage: (afterId?: string) => Promise<ScheduledAction[]>;
   cancel: (id: string) => Promise<ScheduledAction | undefined>;
   claimExecution: (id: string) => Promise<ScheduledActionTransitionResult>;
   completeExecution: (id: string) => Promise<ScheduledActionTransitionResult>;
@@ -127,6 +141,42 @@ export function createScheduledActionStore(database: DatabaseClient): ScheduledA
       }
     },
     findById,
+    async findActiveThreadClosesPage(cursor) {
+      return database
+        .select()
+        .from(scheduledActions)
+        .where(
+          and(
+            eq(scheduledActions.actionType, "CLOSE_THREAD"),
+            eq(scheduledActions.status, "ACTIVE"),
+            cursor === undefined
+              ? undefined
+              : or(
+                  gt(scheduledActions.executeAt, cursor.executeAt),
+                  and(
+                    eq(scheduledActions.executeAt, cursor.executeAt),
+                    gt(scheduledActions.id, cursor.id),
+                  ),
+                ),
+          ),
+        )
+        .orderBy(asc(scheduledActions.executeAt), asc(scheduledActions.id))
+        .limit(SCHEDULED_THREAD_CLOSE_RECOVERY_PAGE_SIZE);
+    },
+    async findExecutingThreadClosesPage(afterId) {
+      return database
+        .select()
+        .from(scheduledActions)
+        .where(
+          and(
+            eq(scheduledActions.actionType, "CLOSE_THREAD"),
+            eq(scheduledActions.status, "EXECUTING"),
+            afterId === undefined ? undefined : gt(scheduledActions.id, afterId),
+          ),
+        )
+        .orderBy(asc(scheduledActions.id))
+        .limit(SCHEDULED_THREAD_CLOSE_RECOVERY_PAGE_SIZE);
+    },
     async cancel(id) {
       const [cancelled] = await database
         .update(scheduledActions)

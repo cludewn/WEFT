@@ -35,7 +35,7 @@ type ScheduledThreadClosePayload = z.infer<typeof scheduledThreadClosePayload>;
 
 type PgBossScheduledThreadCloseClient = Pick<
   PgBoss,
-  "createQueue" | "getQueue" | "send" | "work" | "offWork"
+  "createQueue" | "getQueue" | "send" | "work" | "offWork" | "findJobs" | "cancel"
 >;
 
 type WorkerLogger = Pick<Logger, "debug" | "info" | "warn">;
@@ -48,6 +48,8 @@ export type ScheduledThreadCloseWorkerController = {
     scheduledActionId: string,
     executeAt: Date,
   ) => Promise<ScheduledThreadCloseEnqueueResult>;
+  cancelStaleActiveDeliveries: (scheduledActionId: string) => Promise<number>;
+  hasCreatedOrRetryDelivery: (scheduledActionId: string) => Promise<boolean>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
 };
@@ -312,6 +314,37 @@ export function createScheduledThreadCloseWorkerController({
         "Scheduled thread close delivery enqueue completed",
       );
       return result;
+    },
+
+    async cancelStaleActiveDeliveries(scheduledActionId) {
+      const jobs = await boss.findJobs(SCHEDULED_THREAD_CLOSE_QUEUE, {
+        key: scheduledActionId,
+      });
+      const activeJobIds = jobs.filter((job) => job.state === "active").map((job) => job.id);
+      if (activeJobIds.length === 0) {
+        return 0;
+      }
+
+      try {
+        await boss.cancel(SCHEDULED_THREAD_CLOSE_QUEUE, activeJobIds);
+      } catch {
+        // A rejected client promise may have applied the cancellation. Confirmation below is final.
+      }
+
+      const confirmedJobs = await boss.findJobs(SCHEDULED_THREAD_CLOSE_QUEUE, {
+        key: scheduledActionId,
+      });
+      if (confirmedJobs.some((job) => job.state === "active")) {
+        throw new Error("Scheduled thread close stale delivery cleanup could not be confirmed");
+      }
+      return activeJobIds.length;
+    },
+
+    async hasCreatedOrRetryDelivery(scheduledActionId) {
+      const jobs = await boss.findJobs(SCHEDULED_THREAD_CLOSE_QUEUE, {
+        key: scheduledActionId,
+      });
+      return jobs.some((job) => job.state === "created" || job.state === "retry");
     },
 
     start(): Promise<void> {

@@ -1,0 +1,1 @@
+CREATE INDEX "scheduled_actions_active_close_execute_at_id_idx" ON "scheduled_actions" USING btree ("execute_at","id") WHERE "scheduled_actions"."action_type" = 'CLOSE_THREAD' and "scheduled_actions"."status" = 'ACTIVE';

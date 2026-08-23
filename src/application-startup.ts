@@ -7,6 +7,7 @@ export type ApplicationStartupDependencies = {
   verifyDatabaseConnection: () => Promise<void>;
   startPgBoss: () => Promise<void>;
   ensureScheduledThreadCloseQueue: () => Promise<void>;
+  recoverScheduledThreadCloseDeliveries: () => Promise<void>;
   startDiscord: () => Promise<void>;
   startScheduledThreadCloseWorkers: () => Promise<void>;
   shutdown: (reason: string) => Promise<void>;
@@ -22,6 +23,7 @@ export async function runApplicationStartup(
     logger.info({ event: "database_connected" }, "PostgreSQL connection verified");
     await dependencies.startPgBoss();
     await dependencies.ensureScheduledThreadCloseQueue();
+    await dependencies.recoverScheduledThreadCloseDeliveries();
     await dependencies.startDiscord();
     logger.info({ event: "discord_ready" }, "Discord client is ready");
     await dependencies.startScheduledThreadCloseWorkers();

@@ -147,6 +147,8 @@ function createFixture({
   const store: ScheduledActionStore = {
     create: vi.fn(),
     findById: vi.fn(() => Promise.resolve(current)),
+    findActiveThreadClosesPage: vi.fn(() => Promise.resolve([])),
+    findExecutingThreadClosesPage: vi.fn(() => Promise.resolve([])),
     cancel: vi.fn(),
     claimExecution: vi.fn(() => transition("ACTIVE", "EXECUTING")),
     completeExecution: vi.fn(() => transition("EXECUTING", "COMPLETED")),

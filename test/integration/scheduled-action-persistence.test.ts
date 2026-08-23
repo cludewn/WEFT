@@ -1,16 +1,18 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
 import {
   ActiveScheduledCloseConflictError,
+  type ActiveScheduledThreadCloseCursor,
   createScheduledActionStore,
   scheduledActions,
 } from "../../src/scheduled-action-persistence.js";
 
 const guildId = "710000000000000001";
+const recoveryPaginationGuildId = "710000000000000002";
 const targetIds = [
   "810000000000000001",
   "810000000000000002",
@@ -28,6 +30,10 @@ const store = createScheduledActionStore(database.client);
 
 beforeAll(async () => {
   await migrate(database.client, { migrationsFolder: "drizzle" });
+  await cleanup();
+});
+
+beforeEach(async () => {
   await cleanup();
 });
 
@@ -323,6 +329,73 @@ describe("scheduled action persistence", () => {
     });
   });
 
+  it("paginates focused ACTIVE and EXECUTING thread-close recovery queries", async () => {
+    const executeAt = new Date("2031-01-01T00:00:00Z");
+    const activeRows = Array.from({ length: 205 }, (_, index) => ({
+      id: `recovery-active-${index.toString().padStart(3, "0")}`,
+      guildId: recoveryPaginationGuildId,
+      actionType: "CLOSE_THREAD" as const,
+      targetId: `recovery-active-target-${index.toString().padStart(3, "0")}`,
+      status: "ACTIVE" as const,
+      executeAt,
+    }));
+    const executingRows = Array.from({ length: 105 }, (_, index) => ({
+      id: `recovery-executing-${index.toString().padStart(3, "0")}`,
+      guildId: recoveryPaginationGuildId,
+      actionType: "CLOSE_THREAD" as const,
+      targetId: `recovery-executing-target-${index.toString().padStart(3, "0")}`,
+      status: "EXECUTING" as const,
+      executeAt,
+    }));
+    await database.client.insert(scheduledActions).values([
+      ...activeRows,
+      ...executingRows,
+      {
+        id: "recovery-send-message",
+        guildId: recoveryPaginationGuildId,
+        actionType: "SEND_MESSAGE",
+        targetId: "recovery-message-target",
+        status: "ACTIVE",
+        executeAt,
+      },
+      {
+        id: "recovery-completed-close",
+        guildId: recoveryPaginationGuildId,
+        actionType: "CLOSE_THREAD",
+        targetId: "recovery-completed-target",
+        status: "COMPLETED",
+        executeAt,
+      },
+    ]);
+
+    const activePageLengths: number[] = [];
+    const activeIds: string[] = [];
+    let activeCursor: ActiveScheduledThreadCloseCursor | undefined;
+    for (;;) {
+      const page = await store.findActiveThreadClosesPage(activeCursor);
+      activePageLengths.push(page.length);
+      activeIds.push(...page.map((action) => action.id));
+      if (page.length === 0) break;
+      const last = page.at(-1)!;
+      activeCursor = { executeAt: last.executeAt, id: last.id };
+    }
+    expect(activePageLengths).toEqual([100, 100, 5, 0]);
+    expect(activeIds).toEqual(activeRows.map((action) => action.id));
+
+    const executingPageLengths: number[] = [];
+    const executingIds: string[] = [];
+    let executingCursor: string | undefined;
+    for (;;) {
+      const page = await store.findExecutingThreadClosesPage(executingCursor);
+      executingPageLengths.push(page.length);
+      executingIds.push(...page.map((action) => action.id));
+      if (page.length === 0) break;
+      executingCursor = page.at(-1)!.id;
+    }
+    expect(executingPageLengths).toEqual([100, 5, 0]);
+    expect(executingIds).toEqual(executingRows.map((action) => action.id));
+  });
+
   it("installs timestamptz and the required partial indexes", async () => {
     const column = await database.client.execute<{ dataType: string }>(sql`
       select data_type as "dataType"
@@ -343,10 +416,12 @@ describe("scheduled action persistence", () => {
         and tablename = 'scheduled_actions'
         and indexname in (
           'scheduled_actions_active_close_unique',
+          'scheduled_actions_active_close_execute_at_id_idx',
           'scheduled_actions_active_execute_at_idx'
         )
     `);
     expect(indexes.rows.map((row) => row.indexName).sort()).toEqual([
+      "scheduled_actions_active_close_execute_at_id_idx",
       "scheduled_actions_active_close_unique",
       "scheduled_actions_active_execute_at_idx",
     ]);
@@ -354,6 +429,13 @@ describe("scheduled action persistence", () => {
       indexes.rows.find((row) => row.indexName === "scheduled_actions_active_close_unique")
         ?.indexDefinition,
     ).toContain("status = ANY (ARRAY['ACTIVE'::text, 'EXECUTING'::text])");
+    expect(
+      indexes.rows.find(
+        (row) => row.indexName === "scheduled_actions_active_close_execute_at_id_idx",
+      )?.indexDefinition,
+    ).toContain(
+      "USING btree (execute_at, id) WHERE ((action_type = 'CLOSE_THREAD'::text) AND (status = 'ACTIVE'::text))",
+    );
     expect(
       indexes.rows.find((row) => row.indexName === "scheduled_actions_active_execute_at_idx")
         ?.indexDefinition,
@@ -365,6 +447,9 @@ async function cleanup(): Promise<void> {
   await database.client
     .delete(scheduledActions)
     .where(
-      and(eq(scheduledActions.guildId, guildId), inArray(scheduledActions.targetId, targetIds)),
+      or(
+        and(eq(scheduledActions.guildId, guildId), inArray(scheduledActions.targetId, targetIds)),
+        eq(scheduledActions.guildId, recoveryPaginationGuildId),
+      ),
     );
 }

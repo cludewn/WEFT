@@ -82,13 +82,18 @@ function createFixture({
     createQueue: vi.fn(() => Promise.resolve()),
     getQueue: vi.fn(() => Promise.resolve(requiredQueue)),
     send: vi.fn(() => Promise.resolve("pg-boss-job-id" as string | null)),
+    findJobs: vi.fn(() => Promise.resolve([])),
+    cancel: vi.fn(() => Promise.resolve({})),
     work: vi.fn((_name: string, _options: unknown, handler: WorkerHandler) => {
       handlers.push(handler);
       workerSequence += 1;
       return Promise.resolve(`worker-${workerSequence}`);
     }),
     offWork: vi.fn(() => Promise.resolve()),
-  } as unknown as Pick<PgBoss, "createQueue" | "getQueue" | "send" | "work" | "offWork">;
+  } as unknown as Pick<
+    PgBoss,
+    "createQueue" | "getQueue" | "send" | "findJobs" | "cancel" | "work" | "offWork"
+  >;
   const findById = vi.fn(() => Promise.resolve(action));
   const execute = vi.fn<ScheduledThreadCloseExecutor["execute"]>(() =>
     Promise.resolve(executionResult),
@@ -163,6 +168,85 @@ describe("scheduled thread close pg-boss worker", () => {
     await expect(
       fixture.controller.enqueueScheduledThreadClose("scheduled-action-id", executeAt),
     ).resolves.toBe("ALREADY_PRESENT");
+  });
+
+  it("preserves created and retry deliveries during startup cleanup", async () => {
+    const fixture = createFixture();
+    vi.mocked(fixture.boss.findJobs).mockResolvedValue([
+      createJob(undefined, { id: "created-job", state: "created" }),
+      createJob(undefined, { id: "retry-job", state: "retry" }),
+    ]);
+
+    await expect(
+      fixture.controller.cancelStaleActiveDeliveries("scheduled-action-id"),
+    ).resolves.toBe(0);
+
+    expect(fixture.boss.cancel).not.toHaveBeenCalled();
+  });
+
+  it("cancels every active delivery and ignores terminal history", async () => {
+    const fixture = createFixture();
+    vi.mocked(fixture.boss.findJobs)
+      .mockResolvedValueOnce([
+        createJob(undefined, { id: "completed-job", state: "completed" }),
+        createJob(undefined, { id: "active-job-one", state: "active" }),
+        createJob(undefined, { id: "active-job-two", state: "active" }),
+      ])
+      .mockResolvedValueOnce([
+        createJob(undefined, { id: "completed-job", state: "completed" }),
+        createJob(undefined, { id: "active-job-one", state: "cancelled" }),
+        createJob(undefined, { id: "active-job-two", state: "cancelled" }),
+      ]);
+
+    await expect(
+      fixture.controller.cancelStaleActiveDeliveries("scheduled-action-id"),
+    ).resolves.toBe(2);
+
+    expect(fixture.boss.cancel).toHaveBeenCalledWith(SCHEDULED_THREAD_CLOSE_QUEUE, [
+      "active-job-one",
+      "active-job-two",
+    ]);
+    expect(fixture.boss.findJobs).toHaveBeenNthCalledWith(1, SCHEDULED_THREAD_CLOSE_QUEUE, {
+      key: "scheduled-action-id",
+    });
+    expect(fixture.boss.findJobs).toHaveBeenNthCalledWith(2, SCHEDULED_THREAD_CLOSE_QUEUE, {
+      key: "scheduled-action-id",
+    });
+  });
+
+  it("confirms cancellation after the cancel promise rejects", async () => {
+    const fixture = createFixture();
+    vi.mocked(fixture.boss.findJobs)
+      .mockResolvedValueOnce([createJob(undefined, { state: "active" })])
+      .mockResolvedValueOnce([createJob(undefined, { state: "cancelled" })]);
+    vi.mocked(fixture.boss.cancel).mockRejectedValue(new Error("response lost"));
+
+    await expect(
+      fixture.controller.cancelStaleActiveDeliveries("scheduled-action-id"),
+    ).resolves.toBe(1);
+  });
+
+  it("fails cleanup when an active delivery remains after cancellation", async () => {
+    const fixture = createFixture();
+    vi.mocked(fixture.boss.findJobs).mockResolvedValue([createJob(undefined, { state: "active" })]);
+
+    await expect(
+      fixture.controller.cancelStaleActiveDeliveries("scheduled-action-id"),
+    ).rejects.toThrow("Scheduled thread close stale delivery cleanup could not be confirmed");
+  });
+
+  it("confirms only created or retry deliveries after an ambiguous enqueue", async () => {
+    const fixture = createFixture();
+    vi.mocked(fixture.boss.findJobs)
+      .mockResolvedValueOnce([createJob(undefined, { state: "completed" })])
+      .mockResolvedValueOnce([createJob(undefined, { state: "retry" })]);
+
+    await expect(fixture.controller.hasCreatedOrRetryDelivery("scheduled-action-id")).resolves.toBe(
+      false,
+    );
+    await expect(fixture.controller.hasCreatedOrRetryDelivery("scheduled-action-id")).resolves.toBe(
+      true,
+    );
   });
 
   it.each([
