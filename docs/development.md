@@ -221,10 +221,11 @@ The intended sequence is:
 3. connect to PostgreSQL,
 4. run or verify database migrations according to the approved migration strategy,
 5. initialize pg-boss when scheduling is implemented,
-6. initialize the Discord client,
-7. register workers and event handlers,
-8. perform startup reconciliation,
-9. begin normal operation.
+6. create and validate required scheduling queues,
+7. reconcile persistent scheduled actions and their delivery state,
+8. initialize the Discord client and wait until it is ready,
+9. register workers and event handlers,
+10. begin normal operation.
 
 Startup code must not print secret values.
 
