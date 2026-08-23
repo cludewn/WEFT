@@ -190,6 +190,11 @@ Use pg-boss for persistent job execution.
 
 Do not implement persistent scheduling with in-memory `setTimeout` calls.
 
+pg-boss owns its PostgreSQL connection pool and its internal `pgboss` schema. It uses the validated
+application database configuration, but it does not share WEFT's application pool. pg-boss creates
+and migrates its internal schema during startup. WEFT-owned tables remain managed through the
+explicit Drizzle migration workflow and are not migrated automatically during application startup.
+
 The initial scheduled action categories are:
 
 - `CLOSE_THREAD`
@@ -226,9 +231,9 @@ Startup code must not print secret values.
 Shutdown must:
 
 1. stop accepting new application work where practical,
-2. stop or pause job consumption safely,
+2. stop pg-boss and close its independently owned database connections,
 3. destroy the Discord client,
-4. close database and job-system connections,
+4. close the application database connections,
 5. report shutdown failures,
 6. exit without silently abandoning in-process state.
 
