@@ -8,7 +8,10 @@ import { createGuildSettingsStore } from "./guild-settings.js";
 import { createPgBossRuntime } from "./pg-boss.js";
 import { createScheduledActionStore } from "./scheduled-action-persistence.js";
 import { createScheduledThreadCloseExecutor } from "./scheduled-thread-close.js";
-import { createScheduledThreadCloseStartupReconciler } from "./scheduled-thread-close-reconciler.js";
+import {
+  createScheduledThreadCloseRuntimeReconciler,
+  createScheduledThreadCloseStartupReconciler,
+} from "./scheduled-thread-close-reconciler.js";
 import { createScheduledThreadCloseWorkerController } from "./scheduled-thread-close-worker.js";
 import { createShutdown } from "./shutdown.js";
 import { createManagedThreadStore, createThreadAuditStore } from "./thread-persistence.js";
@@ -48,9 +51,18 @@ async function main(): Promise<void> {
     delivery: scheduledThreadCloseWorkers,
     logger,
   });
+  const scheduledThreadCloseRuntimeReconciler = createScheduledThreadCloseRuntimeReconciler({
+    scheduledActions,
+    delivery: scheduledThreadCloseWorkers,
+    logger,
+  });
   const startupAbortController = new AbortController();
   const shutdown = createShutdown(
     [
+      {
+        name: "scheduled-thread-close-runtime-reconciler",
+        close: () => scheduledThreadCloseRuntimeReconciler.stop(),
+      },
       { name: "scheduled-thread-close-workers", close: () => scheduledThreadCloseWorkers.stop() },
       { name: "pg-boss", close: () => pgBoss.stop() },
       { name: "discord", close: () => discordRuntime.client.destroy() },
@@ -83,6 +95,8 @@ async function main(): Promise<void> {
           startupAbortController.signal,
         ),
       startScheduledThreadCloseWorkers: () => scheduledThreadCloseWorkers.start(),
+      startScheduledThreadCloseRuntimeReconciliation: () =>
+        scheduledThreadCloseRuntimeReconciler.start(),
       shutdown,
     },
     logger,

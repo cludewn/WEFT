@@ -32,11 +32,17 @@ describe("createShutdown", () => {
     );
   });
 
-  it("drains scheduled workers before pg-boss, Discord, and the database", async () => {
+  it("drains runtime reconciliation and workers before pg-boss, Discord, and database", async () => {
     const calls: string[] = [];
     const pgBossFailure = new Error("pg-boss shutdown failed");
     const shutdown = createShutdown(
       [
+        {
+          name: "scheduled-thread-close-runtime-reconciler",
+          close: () => {
+            calls.push("scheduled-thread-close-runtime-reconciler");
+          },
+        },
         {
           name: "scheduled-thread-close-workers",
           close: () => {
@@ -67,6 +73,12 @@ describe("createShutdown", () => {
     );
 
     await expect(shutdown("SIGTERM")).rejects.toBeInstanceOf(AggregateError);
-    expect(calls).toEqual(["scheduled-thread-close-workers", "pg-boss", "discord", "database"]);
+    expect(calls).toEqual([
+      "scheduled-thread-close-runtime-reconciler",
+      "scheduled-thread-close-workers",
+      "pg-boss",
+      "discord",
+      "database",
+    ]);
   });
 });

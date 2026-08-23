@@ -1,11 +1,15 @@
 import type { Logger } from "pino";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   ScheduledAction,
   ScheduledActionStore,
 } from "../../src/scheduled-action-persistence.js";
-import { createScheduledThreadCloseStartupReconciler } from "../../src/scheduled-thread-close-reconciler.js";
+import {
+  createScheduledThreadCloseRuntimeReconciler,
+  createScheduledThreadCloseStartupReconciler,
+  SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS,
+} from "../../src/scheduled-thread-close-reconciler.js";
 import type { ScheduledThreadCloseStartupRecoveryError } from "../../src/scheduled-thread-close-reconciler.js";
 import type { ScheduledThreadCloseWorkerController } from "../../src/scheduled-thread-close-worker.js";
 
@@ -63,6 +67,27 @@ function createFixture() {
     logger,
   });
   return { delivery, logger, reconciler, scheduledActions };
+}
+
+function createRuntimeFixture() {
+  const fixture = createFixture();
+  const reconciler = createScheduledThreadCloseRuntimeReconciler({
+    scheduledActions: fixture.scheduledActions,
+    delivery: fixture.delivery,
+    logger: fixture.logger,
+  });
+  return { ...fixture, reconciler };
+}
+
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve: (value) => resolve?.(value) };
 }
 
 describe("scheduled thread close startup reconciliation", () => {
@@ -303,5 +328,220 @@ describe("scheduled thread close startup reconciliation", () => {
     expect(
       JSON.stringify((fixture.logger.warn as ReturnType<typeof vi.fn>).mock.calls),
     ).not.toContain("sensitive database detail");
+  });
+});
+
+describe("scheduled thread close runtime reconciliation", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reconciles only ACTIVE pages with persisted execution times", async () => {
+    const fixture = createRuntimeFixture();
+    const overdue = createAction("overdue", "ACTIVE", new Date(0));
+    const executeAt = new Date("2999-01-01T00:00:00Z");
+    const futureOne = createAction("future-a", "ACTIVE", executeAt);
+    const futureTwo = createAction("future-b", "ACTIVE", executeAt);
+    vi.mocked(fixture.scheduledActions.findActiveThreadClosesPage)
+      .mockResolvedValueOnce([overdue, futureOne])
+      .mockResolvedValueOnce([futureTwo])
+      .mockResolvedValueOnce([]);
+    vi.mocked(fixture.delivery.enqueueScheduledThreadClose)
+      .mockResolvedValueOnce("ENQUEUED")
+      .mockResolvedValueOnce("ALREADY_PRESENT")
+      .mockResolvedValueOnce("ENQUEUED");
+
+    await fixture.reconciler.reconcileOnce();
+
+    expect(fixture.delivery.enqueueScheduledThreadClose).toHaveBeenNthCalledWith(
+      1,
+      overdue.id,
+      overdue.executeAt,
+    );
+    expect(fixture.delivery.enqueueScheduledThreadClose).toHaveBeenNthCalledWith(
+      2,
+      futureOne.id,
+      futureOne.executeAt,
+    );
+    expect(fixture.delivery.enqueueScheduledThreadClose).toHaveBeenNthCalledWith(
+      3,
+      futureTwo.id,
+      futureTwo.executeAt,
+    );
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenNthCalledWith(2, {
+      executeAt,
+      id: futureOne.id,
+    });
+    expect(fixture.scheduledActions.findExecutingThreadClosesPage).not.toHaveBeenCalled();
+    expect(fixture.scheduledActions.releaseExecutionForRetry).not.toHaveBeenCalled();
+    expect(fixture.delivery.cancelStaleActiveDeliveries).not.toHaveBeenCalled();
+    expect(fixture.delivery.hasCreatedOrRetryDelivery).not.toHaveBeenCalled();
+    expect(fixture.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: "periodic",
+        pageCount: 2,
+        scanned: 3,
+        enqueued: 2,
+        alreadyPresent: 1,
+        outcome: "COMPLETED",
+      }),
+      expect.any(String),
+    );
+  });
+
+  it("starts idempotently and performs the first periodic sweep after 60 seconds", async () => {
+    const fixture = createRuntimeFixture();
+
+    await fixture.reconciler.start();
+    await fixture.reconciler.start();
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS - 1);
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenCalledOnce();
+    expect(fixture.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "scheduled_thread_close_runtime_reconciliation_started",
+        intervalMs: SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS,
+      }),
+      expect.any(String),
+    );
+
+    await fixture.reconciler.stop();
+  });
+
+  it("keeps manual and periodic reconciliation single-flight and delays from settlement", async () => {
+    const fixture = createRuntimeFixture();
+    const page = createDeferred<ScheduledAction[]>();
+    vi.mocked(fixture.scheduledActions.findActiveThreadClosesPage)
+      .mockReturnValueOnce(page.promise)
+      .mockResolvedValue([]);
+    await fixture.reconciler.start();
+
+    await vi.advanceTimersByTimeAsync(SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS);
+    const manualOne = fixture.reconciler.reconcileOnce();
+    const manualTwo = fixture.reconciler.reconcileOnce();
+    expect(manualOne).toBe(manualTwo);
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS);
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenCalledOnce();
+
+    page.resolve([]);
+    await manualOne;
+    await vi.advanceTimersByTimeAsync(SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS - 1);
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenCalledTimes(2);
+
+    await fixture.reconciler.stop();
+  });
+
+  it("stops a failed sweep and retries from the beginning on the next cycle", async () => {
+    const fixture = createRuntimeFixture();
+    const first = createAction("first", "ACTIVE");
+    const second = createAction("second", "ACTIVE");
+    vi.mocked(fixture.scheduledActions.findActiveThreadClosesPage)
+      .mockResolvedValueOnce([first, second])
+      .mockResolvedValueOnce([first, second])
+      .mockResolvedValueOnce([]);
+    vi.mocked(fixture.delivery.enqueueScheduledThreadClose)
+      .mockRejectedValueOnce(new Error("sensitive enqueue detail"))
+      .mockResolvedValue("ENQUEUED");
+    await fixture.reconciler.start();
+
+    await vi.advanceTimersByTimeAsync(SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS);
+
+    expect(fixture.delivery.enqueueScheduledThreadClose).toHaveBeenCalledOnce();
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenNthCalledWith(
+      1,
+      undefined,
+    );
+    expect(fixture.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ failureCode: "ENQUEUE_FAILED", outcome: "FAILED", scanned: 1 }),
+      expect.any(String),
+    );
+    expect(
+      JSON.stringify((fixture.logger.warn as ReturnType<typeof vi.fn>).mock.calls),
+    ).not.toContain("sensitive enqueue detail");
+
+    await vi.advanceTimersByTimeAsync(SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS);
+
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenNthCalledWith(
+      2,
+      undefined,
+    );
+    expect(fixture.delivery.enqueueScheduledThreadClose).toHaveBeenCalledTimes(3);
+    await fixture.reconciler.stop();
+  });
+
+  it("logs a safe page failure and retries on the next cycle", async () => {
+    const fixture = createRuntimeFixture();
+    vi.mocked(fixture.scheduledActions.findActiveThreadClosesPage)
+      .mockRejectedValueOnce(new Error("sensitive database detail"))
+      .mockResolvedValueOnce([]);
+    await fixture.reconciler.start();
+
+    await vi.advanceTimersByTimeAsync(SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS);
+    expect(fixture.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ failureCode: "ACTIVE_SCAN_FAILED", outcome: "FAILED" }),
+      expect.any(String),
+    );
+
+    await vi.advanceTimersByTimeAsync(SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS);
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenNthCalledWith(
+      2,
+      undefined,
+    );
+    expect(
+      JSON.stringify((fixture.logger.warn as ReturnType<typeof vi.fn>).mock.calls),
+    ).not.toContain("sensitive database detail");
+    await fixture.reconciler.stop();
+  });
+
+  it("stops idempotently, cancels the timer, and never schedules another sweep", async () => {
+    const fixture = createRuntimeFixture();
+    await fixture.reconciler.start();
+
+    const firstStop = fixture.reconciler.stop();
+    const secondStop = fixture.reconciler.stop();
+    expect(firstStop).toBe(secondStop);
+    await firstStop;
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS * 2);
+
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).not.toHaveBeenCalled();
+    await fixture.reconciler.reconcileOnce();
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).not.toHaveBeenCalled();
+  });
+
+  it("waits for an in-flight sweep without aborting it during stop", async () => {
+    const fixture = createRuntimeFixture();
+    const page = createDeferred<ScheduledAction[]>();
+    vi.mocked(fixture.scheduledActions.findActiveThreadClosesPage).mockReturnValue(page.promise);
+    await fixture.reconciler.start();
+    const sweep = fixture.reconciler.reconcileOnce();
+    let stopped = false;
+
+    const stop = fixture.reconciler.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    page.resolve([]);
+    await sweep;
+    await stop;
+    expect(stopped).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS * 2);
+    expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenCalledOnce();
   });
 });
