@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
@@ -67,6 +67,16 @@ export type RecordThreadActivity = {
   occurredAt: Date;
 };
 
+export type EnableAutoCloseParentChannel = {
+  guildId: string;
+  parentChannelId: string;
+  enabledAt: Date;
+  activeThreadIds: readonly string[];
+};
+
+export type EnableAutoCloseParentChannelResult =
+  { outcome: "ENABLED"; baselinesApplied: number } | { outcome: "ALREADY_ENABLED" };
+
 export type AutomaticClosePersistenceStore = {
   /** Returns whether the allowlist changed. Adding an existing pair is a successful no-op. */
   addParentChannel: (guildId: string, parentChannelId: string) => Promise<boolean>;
@@ -83,6 +93,18 @@ export type AutomaticClosePersistenceStore = {
   removeThreadExclusion: (guildId: string, threadId: string) => Promise<boolean>;
   /** Applies `last_activity_at = max(existing, incoming)` atomically in PostgreSQL. */
   recordActivity: (input: RecordThreadActivity) => Promise<void>;
+  /** Configured automatic-close parent channels for one guild, ordered by parent channel ID. */
+  listParentChannels: (guildId: string) => Promise<string[]>;
+  /**
+   * Adds a parent channel to the allowlist and applies the enable timestamp as an activity floor
+   * for the supplied active threads, in one transaction.
+   *
+   * The parent row is added only when absent. Baselines are applied only when the parent was
+   * newly added, never for individually excluded threads, and never backward.
+   */
+  enableParentChannelWithBaselines: (
+    input: EnableAutoCloseParentChannel,
+  ) => Promise<EnableAutoCloseParentChannelResult>;
 };
 
 export function createAutomaticClosePersistenceStore(
@@ -132,6 +154,67 @@ export function createAutomaticClosePersistenceStore(
         )
         .returning({ guildId: autoCloseThreadExclusions.guildId });
       return removed.length > 0;
+    },
+    async listParentChannels(guildId) {
+      const rows = await database
+        .select({ parentChannelId: autoCloseParentChannels.parentChannelId })
+        .from(autoCloseParentChannels)
+        .where(eq(autoCloseParentChannels.guildId, guildId))
+        .orderBy(asc(autoCloseParentChannels.parentChannelId));
+      return rows.map((row) => row.parentChannelId);
+    },
+    async enableParentChannelWithBaselines({
+      guildId,
+      parentChannelId,
+      enabledAt,
+      activeThreadIds,
+    }) {
+      return database.transaction(
+        async (dbTransaction): Promise<EnableAutoCloseParentChannelResult> => {
+          const inserted = await dbTransaction
+            .insert(autoCloseParentChannels)
+            .values({ guildId, parentChannelId })
+            .onConflictDoNothing({
+              target: [autoCloseParentChannels.guildId, autoCloseParentChannels.parentChannelId],
+            })
+            .returning({ guildId: autoCloseParentChannels.guildId });
+
+          if (inserted.length === 0) {
+            return { outcome: "ALREADY_ENABLED" };
+          }
+
+          // A repeated thread ID would make one ON CONFLICT DO UPDATE affect the same row twice.
+          const candidates = [...new Set(activeThreadIds)];
+          if (candidates.length === 0) {
+            return { outcome: "ENABLED", baselinesApplied: 0 };
+          }
+
+          // One statement applies `last_activity_at = max(existing, enabled_at)` for every
+          // supplied thread. Excluded threads are skipped, and a stale or equal baseline leaves
+          // `last_activity_at`, `parent_channel_id`, and `updated_at` untouched.
+          const applied = await dbTransaction.execute(sql`
+            insert into ${autoCloseThreadActivity}
+              (guild_id, thread_id, parent_channel_id, last_activity_at, updated_at)
+            select
+              ${guildId}, candidate.thread_id, ${parentChannelId}, ${enabledAt}, ${new Date()}
+            from unnest(${sql.param(candidates)}::text[]) as candidate(thread_id)
+            where not exists (
+              select 1
+              from ${autoCloseThreadExclusions} as excluded_thread
+              where excluded_thread.guild_id = ${guildId}
+                and excluded_thread.thread_id = candidate.thread_id
+            )
+            on conflict (guild_id, thread_id) do update
+            set last_activity_at  = excluded.last_activity_at,
+                parent_channel_id = excluded.parent_channel_id,
+                updated_at        = excluded.updated_at
+            where ${autoCloseThreadActivity}.last_activity_at < excluded.last_activity_at
+            returning thread_id
+          `);
+
+          return { outcome: "ENABLED", baselinesApplied: applied.rows.length };
+        },
+      );
     },
     async recordActivity({ guildId, threadId, parentChannelId, occurredAt }) {
       await database

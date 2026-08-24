@@ -1,6 +1,8 @@
 import pino from "pino";
 
 import { runApplicationStartup } from "./application-startup.js";
+import { createAutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
+import { createAutomaticClosePersistenceStore } from "./automatic-close-persistence.js";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { createDatabase } from "./database.js";
 import {
@@ -20,6 +22,7 @@ import {
 } from "./scheduled-thread-close-reconciler.js";
 import { createScheduledThreadCloseWorkerController } from "./scheduled-thread-close-worker.js";
 import { createShutdown } from "./shutdown.js";
+import { createAutoCloseDiscord } from "./thread-discord.js";
 import { createManagedThreadStore, createThreadAuditStore } from "./thread-persistence.js";
 
 async function main(): Promise<void> {
@@ -42,7 +45,14 @@ async function main(): Promise<void> {
   const audits = createThreadAuditStore(database.client);
   const scheduledActions = createScheduledActionStore(database.client);
   const scheduledThreadCloses = createScheduledThreadCloseStore(database.client);
+  const automaticCloses = createAutomaticClosePersistenceStore(database.client);
   const discordRuntime = createDiscordRuntime(logger, { guildSettings, managedThreads, audits });
+  const automaticCloseConfiguration = createAutomaticCloseConfigurationService({
+    guildSettings,
+    schedules: automaticCloses,
+    discord: createAutoCloseDiscord(discordRuntime.client),
+    logger,
+  });
   const scheduledThreadCloseExecutor = createScheduledThreadCloseExecutor({
     scheduledActions,
     schedules: scheduledThreadCloses,
@@ -62,6 +72,7 @@ async function main(): Promise<void> {
     logger,
   });
   registerDiscordCommandHandler(discordRuntime.client, {
+    automaticCloseConfiguration,
     guildSettings,
     scheduledThreadClose: scheduledThreadCloseCommand,
     threadLifecycle: discordRuntime.threadLifecycle,

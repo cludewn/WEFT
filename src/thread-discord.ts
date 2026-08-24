@@ -9,6 +9,7 @@ import {
 
 import type { Client, Guild, ThreadChannel } from "discord.js";
 
+import type { AutoCloseDiscord } from "./automatic-close-configuration.js";
 import type {
   SupportedThreadType,
   ThreadFailureDisposition,
@@ -44,6 +45,27 @@ export function classifyThreadDiscordMutationFailure(error: unknown): ThreadFail
 
 export function isSupportedThreadType(type: ChannelType): type is SupportedThreadType {
   return supportedTypes.has(type);
+}
+
+/**
+ * Reads the guild's currently active threads for automatic-close parent enrollment.
+ *
+ * `GuildManager#fetch` resolves from the client cache when the guild is already known, and the
+ * guild-level active-thread route returns every visible thread in one request, so this performs no
+ * per-thread REST call.
+ */
+export function createAutoCloseDiscord(client: Client): AutoCloseDiscord {
+  return {
+    async fetchActiveThreadSummaries(guildId) {
+      const guild = await client.guilds.fetch(guildId);
+      const { threads } = await guild.channels.fetchActiveThreads();
+      return [...threads.values()].map((thread) => ({
+        threadId: thread.id,
+        parentId: thread.parentId,
+        type: thread.type,
+      }));
+    },
+  };
 }
 
 export function createThreadLifecycleDiscord(client: Client): ThreadLifecycleDiscord {

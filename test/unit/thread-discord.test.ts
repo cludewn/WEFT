@@ -5,6 +5,7 @@ import type { Client } from "discord.js";
 
 import {
   classifyThreadDiscordMutationFailure,
+  createAutoCloseDiscord,
   createThreadLifecycleDiscord,
   isSupportedThreadType,
 } from "../../src/thread-discord.js";
@@ -53,5 +54,33 @@ describe("Discord thread support", () => {
       ),
     ).toBe("RETRYABLE");
     expect(classifyThreadDiscordMutationFailure(new Error("transport failure"))).toBe("RETRYABLE");
+  });
+});
+
+describe("automatic close active thread enumeration", () => {
+  it("reads the guild active threads once and projects the minimum thread facts", async () => {
+    const fetchActiveThreads = vi.fn(() =>
+      Promise.resolve({
+        threads: new Map([
+          [
+            "thread-one",
+            { id: "thread-one", parentId: "parent-one", type: ChannelType.PublicThread },
+          ],
+          ["thread-two", { id: "thread-two", parentId: null, type: ChannelType.PrivateThread }],
+        ]),
+      }),
+    );
+    const fetchGuild = vi.fn(() => Promise.resolve({ channels: { fetchActiveThreads } }));
+    const discord = createAutoCloseDiscord({
+      guilds: { fetch: fetchGuild },
+    } as unknown as Client);
+
+    await expect(discord.fetchActiveThreadSummaries("guild-id")).resolves.toEqual([
+      { threadId: "thread-one", parentId: "parent-one", type: ChannelType.PublicThread },
+      { threadId: "thread-two", parentId: null, type: ChannelType.PrivateThread },
+    ]);
+
+    expect(fetchGuild).toHaveBeenCalledExactlyOnceWith("guild-id");
+    expect(fetchActiveThreads).toHaveBeenCalledOnce();
   });
 });

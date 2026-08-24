@@ -349,6 +349,13 @@ function registerTestCommandHandler(
   } as unknown as ThreadLifecycleService,
 ): void {
   registerDiscordCommandHandler(client, {
+    automaticCloseConfiguration: {
+      show: vi.fn(),
+      setInactivitySeconds: vi.fn(),
+      setBotMessagesCountAsActivity: vi.fn(),
+      addParentChannel: vi.fn(),
+      removeParentChannel: vi.fn(),
+    },
     guildSettings: discordDependencies.guildSettings,
     scheduledThreadClose: { schedule: vi.fn(), cancel: vi.fn(), closeManually: vi.fn() },
     threadLifecycle: lifecycle,
