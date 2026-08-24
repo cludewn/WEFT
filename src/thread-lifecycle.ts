@@ -258,7 +258,12 @@ export class PendingDiscordMutationGuard {
 }
 
 export type ThreadLifecycleService = {
-  close: (guildId: string, threadId: string, actorId: string) => Promise<ThreadLifecycleResult>;
+  close: (
+    guildId: string,
+    threadId: string,
+    actorId: string,
+    prepareManualClose?: () => Promise<void>,
+  ) => Promise<ThreadLifecycleResult>;
   closeAsSystem: (
     guildId: string,
     threadId: string,
@@ -1047,6 +1052,7 @@ export function createThreadLifecycleService(
     context: OperationContext,
     actor: Actor,
     precedingChangedSameTarget: boolean,
+    prepareManualClose?: () => Promise<void>,
   ): Promise<ThreadLifecycleResult> {
     const { guildId, threadId } = context;
     let fallback: ThreadFailureCode = "DISCORD_FETCH_FAILED";
@@ -1057,7 +1063,15 @@ export function createThreadLifecycleService(
         throw new LifecycleFailure("THREAD_LOCKED");
       }
       await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
+    } catch (error) {
+      return fail(context, "CLOSE", actor, error, fallback);
+    }
 
+    if (prepareManualClose !== undefined) {
+      await prepareManualClose();
+    }
+
+    try {
       fallback = "SETTINGS_READ_FAILED";
       const settings = await runBoundary(
         context,
@@ -1241,14 +1255,19 @@ export function createThreadLifecycleService(
   }
 
   return {
-    close: (guildId, threadId, actorId) => {
+    close: (guildId, threadId, actorId, prepareManualClose) => {
       return serialize(
         guildId,
         threadId,
         "CLOSE",
         "CLOSED",
         (context, precedingChangedSameTarget) =>
-          close(context, { type: "USER", id: actorId }, precedingChangedSameTarget),
+          close(
+            context,
+            { type: "USER", id: actorId },
+            precedingChangedSameTarget,
+            prepareManualClose,
+          ),
       );
     },
     closeAsSystem: async (guildId, threadId, auditId) => {

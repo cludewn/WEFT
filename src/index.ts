@@ -57,6 +57,7 @@ async function main(): Promise<void> {
     discord: discordRuntime.threadDiscord,
     schedules: scheduledThreadCloses,
     delivery: scheduledThreadCloseWorkers,
+    threadLifecycle: discordRuntime.threadLifecycle,
     logger,
   });
   registerDiscordCommandHandler(discordRuntime.client, {

@@ -350,7 +350,7 @@ function registerTestCommandHandler(
 ): void {
   registerDiscordCommandHandler(client, {
     guildSettings: discordDependencies.guildSettings,
-    scheduledThreadClose: { schedule: vi.fn() },
+    scheduledThreadClose: { schedule: vi.fn(), cancel: vi.fn(), closeManually: vi.fn() },
     threadLifecycle: lifecycle,
     logger,
   });
