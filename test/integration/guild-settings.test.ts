@@ -6,6 +6,7 @@ import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
 import {
   createGuildSettingsStore,
+  DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS,
   DEFAULT_CLOSED_PREFIX,
   DEFAULT_GUILD_TIMEZONE,
   guildSettings,
@@ -32,6 +33,8 @@ describe("guild settings persistence", () => {
       guildId: guildIds[0],
       timezone: DEFAULT_GUILD_TIMEZONE,
       closedPrefix: DEFAULT_CLOSED_PREFIX,
+      autoCloseInactivitySeconds: DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS,
+      autoCloseBotMessagesCountAsActivity: false,
     });
 
     await store.setTimezone(guildIds[0], "Asia/Tokyo");

@@ -262,6 +262,22 @@ By default, activity excludes:
 
 Bot messages do not count as activity by default.
 
+The default inactivity duration is 7 days.
+
+The supported configurable inactivity range is 5 minutes through 365 days.
+
+The parent-channel allowlist is empty by default. An empty allowlist produces no automatic-close
+candidates, so no thread is automatically closed.
+
+A thread may participate in automatic-close management only when:
+
+1. it is a supported Discord thread resource,
+2. its parent channel is in the guild's automatic-close allowlist,
+3. it has no individual automatic-close exclusion.
+
+The parent-channel allowlist is the higher-level policy. `/thread track` removes an individual
+exclusion. It does not override a parent channel that is outside the allowlist.
+
 Automatic closing uses a periodic database-driven sweep rather than replacing a delayed job after every message.
 
 The initial sweep interval is five minutes.
@@ -477,7 +493,6 @@ WEFT is not intended to:
 
 The following decisions must be made before their corresponding implementation work:
 
-- the default automatic-close inactivity duration,
 - the exact overdue grace period for one-time scheduled messages,
 - retry count and backoff parameters for scheduled messages,
 - the command input format for recurring schedules,

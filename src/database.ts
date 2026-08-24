@@ -1,6 +1,11 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
+import {
+  autoCloseParentChannels,
+  autoCloseThreadActivity,
+  autoCloseThreadExclusions,
+} from "./automatic-close-persistence.js";
 import type { DatabaseConfig } from "./config.js";
 import { guildSettings } from "./guild-settings.js";
 import { scheduledActions } from "./scheduled-action-persistence.js";
@@ -20,6 +25,9 @@ export function createDatabase(config: DatabaseConfig) {
 
   const client = drizzle(pool, {
     schema: {
+      autoCloseParentChannels,
+      autoCloseThreadActivity,
+      autoCloseThreadExclusions,
       guildSettings,
       managedThreads,
       scheduledActions,

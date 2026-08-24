@@ -1,18 +1,40 @@
-import { eq } from "drizzle-orm";
-import { pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { eq, sql } from "drizzle-orm";
+import { boolean, check, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
 
 export const DEFAULT_GUILD_TIMEZONE = "UTC";
 export const DEFAULT_CLOSED_PREFIX = "[CLOSED]";
 
-export const guildSettings = pgTable("guild_settings", {
-  guildId: text("guild_id").primaryKey(),
-  timezone: text("timezone").notNull().default(DEFAULT_GUILD_TIMEZONE),
-  closedPrefix: text("closed_prefix").notNull().default(DEFAULT_CLOSED_PREFIX),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
+/** Seven days. */
+export const DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS = 604_800;
+/** Five minutes. */
+export const MINIMUM_AUTO_CLOSE_INACTIVITY_SECONDS = 300;
+/** 365 days. */
+export const MAXIMUM_AUTO_CLOSE_INACTIVITY_SECONDS = 31_536_000;
+
+export const guildSettings = pgTable(
+  "guild_settings",
+  {
+    guildId: text("guild_id").primaryKey(),
+    timezone: text("timezone").notNull().default(DEFAULT_GUILD_TIMEZONE),
+    closedPrefix: text("closed_prefix").notNull().default(DEFAULT_CLOSED_PREFIX),
+    autoCloseInactivitySeconds: integer("auto_close_inactivity_seconds")
+      .notNull()
+      .default(DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS),
+    autoCloseBotMessagesCountAsActivity: boolean("auto_close_bot_messages_count_as_activity")
+      .notNull()
+      .default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check(
+      "guild_settings_auto_close_inactivity_seconds_check",
+      sql`${table.autoCloseInactivitySeconds} between ${sql.raw(String(MINIMUM_AUTO_CLOSE_INACTIVITY_SECONDS))} and ${sql.raw(String(MAXIMUM_AUTO_CLOSE_INACTIVITY_SECONDS))}`,
+    ),
+  ],
+);
 
 export type GuildSettings = typeof guildSettings.$inferSelect;
 
@@ -20,6 +42,11 @@ export type GuildSettingsStore = {
   getOrCreate: (guildId: string) => Promise<GuildSettings>;
   setTimezone: (guildId: string, timezone: string) => Promise<GuildSettings>;
   setClosedPrefix: (guildId: string, prefix: string) => Promise<GuildSettings>;
+  setAutoCloseInactivitySeconds: (guildId: string, seconds: number) => Promise<GuildSettings>;
+  setAutoCloseBotMessagesCountAsActivity: (
+    guildId: string,
+    countsAsActivity: boolean,
+  ) => Promise<GuildSettings>;
 };
 
 export class InvalidTimezoneError extends Error {
@@ -33,6 +60,15 @@ export class InvalidClosedPrefixError extends Error {
   constructor() {
     super("Closed prefix must be 1 to 20 characters and contain no control characters");
     this.name = "InvalidClosedPrefixError";
+  }
+}
+
+export class InvalidAutoCloseInactivityError extends Error {
+  constructor() {
+    super(
+      "Automatic close inactivity must be a whole number of seconds from 5 minutes to 365 days",
+    );
+    this.name = "InvalidAutoCloseInactivityError";
   }
 }
 
@@ -68,6 +104,19 @@ export function validateClosedPrefix(value: string): string {
   }
 
   return prefix;
+}
+
+export function validateAutoCloseInactivitySeconds(value: number): number {
+  if (!Number.isInteger(value)) {
+    throw new InvalidAutoCloseInactivityError();
+  }
+  if (
+    value < MINIMUM_AUTO_CLOSE_INACTIVITY_SECONDS ||
+    value > MAXIMUM_AUTO_CLOSE_INACTIVITY_SECONDS
+  ) {
+    throw new InvalidAutoCloseInactivityError();
+  }
+  return value;
 }
 
 export function createGuildSettingsStore(database: DatabaseClient): GuildSettingsStore {
@@ -118,6 +167,38 @@ export function createGuildSettingsStore(database: DatabaseClient): GuildSetting
 
       if (settings === undefined) {
         throw new Error("Guild closed prefix could not be updated");
+      }
+
+      return settings;
+    },
+    async setAutoCloseInactivitySeconds(guildId, value) {
+      const autoCloseInactivitySeconds = validateAutoCloseInactivitySeconds(value);
+      await getOrCreate(guildId);
+      const [settings] = await database
+        .update(guildSettings)
+        .set({ autoCloseInactivitySeconds, updatedAt: new Date() })
+        .where(eq(guildSettings.guildId, guildId))
+        .returning();
+
+      if (settings === undefined) {
+        throw new Error("Guild automatic close inactivity could not be updated");
+      }
+
+      return settings;
+    },
+    async setAutoCloseBotMessagesCountAsActivity(guildId, countsAsActivity) {
+      await getOrCreate(guildId);
+      const [settings] = await database
+        .update(guildSettings)
+        .set({
+          autoCloseBotMessagesCountAsActivity: countsAsActivity,
+          updatedAt: new Date(),
+        })
+        .where(eq(guildSettings.guildId, guildId))
+        .returning();
+
+      if (settings === undefined) {
+        throw new Error("Guild automatic close bot message activity could not be updated");
       }
 
       return settings;

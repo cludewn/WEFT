@@ -700,6 +700,20 @@ Do not create scheduling abstractions for unsupported future action types.
 - Implement `/thread track`, `/thread untrack`, and `/thread status` as required by the approved behavior.
 - Add policy, idempotency, and reconciliation tests.
 
+Automatic-close persistence keeps policy state separate from thread lifecycle state. The scalar
+guild policy fields live in `guild_settings`. The parent-channel allowlist, per-thread exclusions,
+and qualifying thread activity each have a dedicated table. The inactivity duration is persisted as
+integer seconds rather than a PostgreSQL interval or a derived per-thread timestamp, so a guild
+policy change does not rewrite stored activity.
+
+Qualifying activity writes are monotonic: `last_activity_at` keeps the maximum observed value, so
+an out-of-order Discord event cannot move activity backward. The invariant is applied inside one
+PostgreSQL statement rather than an application-level read-modify-write.
+
+Automatic-close participation does not require a `managed_threads` row. `managed_threads` remains
+WEFT's thread lifecycle state and only exists for threads WEFT has already closed, so requiring it
+would exclude exactly the threads inactivity management must be able to close.
+
 ### Phase 7: Managed messages
 
 - Implement `/message send`.
