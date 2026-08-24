@@ -1,9 +1,12 @@
 import type {
   ScheduledAction,
-  ScheduledActionStatus,
   ScheduledActionStore,
   ScheduledActionTransitionResult,
 } from "./scheduled-action-persistence.js";
+import type {
+  ScheduledThreadCloseExecutionTransitionResult,
+  ScheduledThreadCloseStore,
+} from "./scheduled-thread-close-persistence.js";
 import type {
   SystemThreadCloseResult,
   ThreadFailureCode,
@@ -34,24 +37,42 @@ export type ScheduledThreadCloseExecutionResult =
       action: ScheduledAction;
     };
 
+/**
+ * Identifiers for one execution attempt.
+ *
+ * The thread lifecycle audit and the scheduled-close execution audit are separate records in
+ * separate tables and therefore carry separate stable identifiers.
+ */
+export type ScheduledThreadCloseExecutionAuditIds = {
+  attemptAuditId: string;
+  executionAuditId: string;
+};
+
 export type ScheduledThreadCloseExecutor = {
   execute: (
     action: ScheduledAction,
-    attemptAuditId: string,
+    auditIds: ScheduledThreadCloseExecutionAuditIds,
   ) => Promise<ScheduledThreadCloseExecutionResult>;
 };
 
+type ExecutionFinalizationStore = Pick<
+  ScheduledThreadCloseStore,
+  "completeExecution" | "failExecution" | "releaseExecutionForRetry"
+>;
+
 type Dependencies = {
-  scheduledActions: ScheduledActionStore;
+  scheduledActions: Pick<ScheduledActionStore, "claimExecution" | "findById">;
+  schedules: ExecutionFinalizationStore;
   threadLifecycle: Pick<ThreadLifecycleService, "closeAsSystem">;
 };
 
 export function createScheduledThreadCloseExecutor({
   scheduledActions,
+  schedules,
   threadLifecycle,
 }: Dependencies): ScheduledThreadCloseExecutor {
   return {
-    async execute(action, attemptAuditId) {
+    async execute(action, { attemptAuditId, executionAuditId }) {
       if (action.actionType !== "CLOSE_THREAD") {
         return { outcome: "SKIPPED", reason: "ACTION_TYPE_MISMATCH", action };
       }
@@ -75,10 +96,13 @@ export function createScheduledThreadCloseExecutor({
         );
       } catch {
         return finalizeTransition(
-          scheduledActions,
           claim.current,
-          "ACTIVE",
-          scheduledActions.releaseExecutionForRetry,
+          () =>
+            schedules.releaseExecutionForRetry({
+              scheduledActionId: claim.current.id,
+              auditId: executionAuditId,
+              failureCode: "THREAD_LIFECYCLE_UNEXPECTED_FAILURE",
+            }),
           "RETRYABLE_FAILURE",
           "THREAD_LIFECYCLE_UNEXPECTED_FAILURE",
         );
@@ -86,28 +110,36 @@ export function createScheduledThreadCloseExecutor({
 
       if (lifecycleResult.outcome === "SUCCESS") {
         return finalizeTransition(
-          scheduledActions,
           claim.current,
-          "COMPLETED",
-          scheduledActions.completeExecution,
+          () =>
+            schedules.completeExecution({
+              scheduledActionId: claim.current.id,
+              auditId: executionAuditId,
+            }),
           "SUCCESS",
         );
       }
       if (lifecycleResult.outcome === "PERMANENT_FAILURE") {
         return finalizeTransition(
-          scheduledActions,
           claim.current,
-          "FAILED",
-          scheduledActions.failExecution,
+          () =>
+            schedules.failExecution({
+              scheduledActionId: claim.current.id,
+              auditId: executionAuditId,
+              failureCode: lifecycleResult.code,
+            }),
           "PERMANENT_FAILURE",
           lifecycleResult.code,
         );
       }
       return finalizeTransition(
-        scheduledActions,
         claim.current,
-        "ACTIVE",
-        scheduledActions.releaseExecutionForRetry,
+        () =>
+          schedules.releaseExecutionForRetry({
+            scheduledActionId: claim.current.id,
+            auditId: executionAuditId,
+            failureCode: lifecycleResult.code,
+          }),
         "RETRYABLE_FAILURE",
         lifecycleResult.code,
       );
@@ -116,7 +148,7 @@ export function createScheduledThreadCloseExecutor({
 }
 
 async function confirmClaimAfterResponseLoss(
-  scheduledActions: ScheduledActionStore,
+  scheduledActions: Pick<ScheduledActionStore, "findById">,
   actionId: string,
 ): Promise<ScheduledThreadCloseExecutionResult> {
   try {
@@ -149,57 +181,49 @@ function skippedForCurrent(
     : { outcome: "SKIPPED", reason: "NOT_ACTIVE", action: current };
 }
 
+/**
+ * Applies one audited execution transition.
+ *
+ * The scheduled-action state change and its execution audit commit together, so an unconfirmed
+ * response is classified as retryable rather than retried blindly here.
+ */
 async function finalizeTransition(
-  scheduledActions: ScheduledActionStore,
   executingAction: ScheduledAction,
-  expectedFinalStatus: ScheduledActionStatus,
-  transition: (id: string) => Promise<ScheduledActionTransitionResult>,
+  transition: () => Promise<ScheduledThreadCloseExecutionTransitionResult>,
   finalOutcome: "SUCCESS" | "RETRYABLE_FAILURE" | "PERMANENT_FAILURE",
   failureCode?: ScheduledThreadCloseExecutionFailureCode,
 ): Promise<ScheduledThreadCloseExecutionResult> {
-  let result: ScheduledActionTransitionResult;
+  let result: ScheduledThreadCloseExecutionTransitionResult;
   try {
-    result = await transition(executingAction.id);
+    result = await transition();
   } catch {
-    try {
-      const current = await scheduledActions.findById(executingAction.id);
-      return transitionResult(current, expectedFinalStatus, finalOutcome, failureCode);
-    } catch {
-      return transitionFailure(executingAction);
-    }
+    return transitionFailure(executingAction);
   }
-  return transitionResult(result.current, expectedFinalStatus, finalOutcome, failureCode);
-}
 
-function transitionResult(
-  current: ScheduledAction | undefined,
-  expectedFinalStatus: ScheduledActionStatus,
-  finalOutcome: "SUCCESS" | "RETRYABLE_FAILURE" | "PERMANENT_FAILURE",
-  failureCode?: ScheduledThreadCloseExecutionFailureCode,
-): ScheduledThreadCloseExecutionResult {
-  if (current === undefined || current.status !== expectedFinalStatus) {
-    return current === undefined
+  if (result.outcome === "NOT_TRANSITIONED") {
+    return result.current === undefined
       ? { outcome: "RETRYABLE_FAILURE", code: "SCHEDULED_ACTION_TRANSITION_FAILED" }
       : {
           outcome: "RETRYABLE_FAILURE",
           code: "SCHEDULED_ACTION_TRANSITION_FAILED",
-          action: current,
+          action: result.current,
         };
   }
+
   if (finalOutcome === "SUCCESS") {
-    return { outcome: "SUCCESS", action: current };
+    return { outcome: "SUCCESS", action: result.action };
   }
   if (finalOutcome === "PERMANENT_FAILURE") {
     return {
       outcome: "PERMANENT_FAILURE",
       code: failureCode as ThreadFailureCode,
-      action: current,
+      action: result.action,
     };
   }
   return {
     outcome: "RETRYABLE_FAILURE",
     code: failureCode ?? "SCHEDULED_ACTION_TRANSITION_FAILED",
-    action: current,
+    action: result.action,
   };
 }
 

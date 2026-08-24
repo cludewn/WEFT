@@ -220,7 +220,28 @@ next one.
 
 pg-boss retries each delivery for a finite cycle. If that cycle is exhausted while the authoritative
 application action remains active, a later runtime reconciliation sweep may create a new delivery
-cycle. Retry exhaustion alone does not make the application action terminal.
+cycle. Retry exhaustion alone does not make the application action terminal. Delivery retry
+exhaustion is reported through operational logging only: it never marks the scheduled action
+`FAILED` and never records a scheduled-close execution audit. Runtime reconciliation remains
+`ACTIVE`-only and does not recover `EXECUTING` actions.
+
+A scheduled thread close records its execution outcome in `scheduled_thread_close_audits`. Each
+terminal execution transition and its execution audit commit in one PostgreSQL transaction, so a
+scheduled-action state change is never persisted without its audit and an audit is never persisted
+without its state change. A successful execution records `EXECUTION_COMPLETED` with a `SUCCESS`
+outcome; a retryable execution releases the action to `ACTIVE` and records `EXECUTION_RETRY` with
+its concrete failure code; a permanent failure records `EXECUTION_FAILED` with its concrete failure
+code. Startup recovery of an execution interrupted by a terminated process performs the same
+audited release and records `EXECUTION_RETRY` with `EXECUTION_INTERRUPTED`. Claiming an action for
+execution, a lost claim, a missing or non-active action, and an action-type mismatch complete no
+execution transition and therefore write no execution audit.
+
+Thread lifecycle audits and scheduled-close execution audits are separate records with separate
+stable identifiers. Each identifier is generated before its state-changing operation and reused
+when an ambiguous response requires read-only confirmation. Confirmation must match both the
+expected scheduled-action state and the exact audit record for that operation's identifier; a
+matching state alone is not a committed result, and an unconfirmed state-changing operation is
+never retried blindly.
 
 `/thread close-after` creates a one-time close for the current active, unlocked thread. Its required
 `after` value is one relative duration using `m`, `h`, or `d`, from one minute through 365 days.

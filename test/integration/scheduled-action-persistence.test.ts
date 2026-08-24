@@ -285,50 +285,6 @@ describe("scheduled action persistence", () => {
     ).rejects.toBeInstanceOf(ActiveScheduledCloseConflictError);
   });
 
-  it("conditionally completes, fails, and releases only EXECUTING actions", async () => {
-    const inputs = [
-      ["complete-transition", targetIds[8]],
-      ["fail-transition", targetIds[9]],
-      ["release-transition", targetIds[5]],
-    ] as const;
-    for (const [id, targetId] of inputs) {
-      await store.create({
-        id,
-        guildId,
-        actionType: "SEND_MESSAGE",
-        targetId,
-        executeAt: new Date("2030-07-01T00:00:00Z"),
-      });
-      await store.claimExecution(id);
-    }
-
-    await expect(store.completeExecution("complete-transition")).resolves.toMatchObject({
-      transitioned: true,
-      current: { status: "COMPLETED" },
-    });
-    await expect(store.failExecution("fail-transition")).resolves.toMatchObject({
-      transitioned: true,
-      current: { status: "FAILED" },
-    });
-    await expect(store.releaseExecutionForRetry("release-transition")).resolves.toMatchObject({
-      transitioned: true,
-      current: { status: "ACTIVE" },
-    });
-
-    await expect(store.failExecution("complete-transition")).resolves.toMatchObject({
-      transitioned: false,
-      current: { status: "COMPLETED" },
-    });
-    await expect(store.releaseExecutionForRetry("fail-transition")).resolves.toMatchObject({
-      transitioned: false,
-      current: { status: "FAILED" },
-    });
-    await expect(store.completeExecution("release-transition")).resolves.toMatchObject({
-      transitioned: false,
-      current: { status: "ACTIVE" },
-    });
-  });
-
   it("paginates focused ACTIVE and EXECUTING thread-close recovery queries", async () => {
     const executeAt = new Date("2031-01-01T00:00:00Z");
     const activeRows = Array.from({ length: 205 }, (_, index) => ({

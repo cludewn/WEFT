@@ -78,9 +78,6 @@ export type ScheduledActionStore = {
   findExecutingThreadClosesPage: (afterId?: string) => Promise<ScheduledAction[]>;
   cancel: (id: string) => Promise<ScheduledAction | undefined>;
   claimExecution: (id: string) => Promise<ScheduledActionTransitionResult>;
-  completeExecution: (id: string) => Promise<ScheduledActionTransitionResult>;
-  failExecution: (id: string) => Promise<ScheduledActionTransitionResult>;
-  releaseExecutionForRetry: (id: string) => Promise<ScheduledActionTransitionResult>;
 };
 
 export type ScheduledActionTransitionResult =
@@ -187,9 +184,6 @@ export function createScheduledActionStore(database: DatabaseClient): ScheduledA
       return cancelled ?? findById(id);
     },
     claimExecution: (id) => transition(id, "ACTIVE", "EXECUTING"),
-    completeExecution: (id) => transition(id, "EXECUTING", "COMPLETED"),
-    failExecution: (id) => transition(id, "EXECUTING", "FAILED"),
-    releaseExecutionForRetry: (id) => transition(id, "EXECUTING", "ACTIVE"),
   };
 }
 

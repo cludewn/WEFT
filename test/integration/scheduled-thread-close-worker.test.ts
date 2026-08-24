@@ -10,6 +10,10 @@ import {
   createScheduledActionStore,
   scheduledActions,
 } from "../../src/scheduled-action-persistence.js";
+import {
+  createScheduledThreadCloseStore,
+  scheduledThreadCloseAudits,
+} from "../../src/scheduled-thread-close-persistence.js";
 import { createScheduledThreadCloseExecutor } from "../../src/scheduled-thread-close.js";
 import {
   createScheduledThreadCloseWorkerController,
@@ -23,6 +27,7 @@ const config = loadTestDatabaseConfig();
 const database = createDatabase(config);
 const pgBoss = createPgBossRuntime(config, createLogger());
 const store = createScheduledActionStore(database.client);
+const scheduledThreadCloses = createScheduledThreadCloseStore(database.client);
 const controllers: ScheduledThreadCloseWorkerController[] = [];
 
 beforeAll(async () => {
@@ -119,6 +124,16 @@ describe("scheduled thread close pg-boss delivery", () => {
       );
     });
 
+    await expect(executionAudits(action.id)).resolves.toEqual([
+      expect.objectContaining({
+        event: "EXECUTION_RETRY",
+        actorType: "SYSTEM",
+        actorId: null,
+        outcome: "FAILURE",
+        failureCode: "DISCORD_FETCH_TIMEOUT",
+      }),
+    ]);
+
     const retryJob = await findJob(action.id);
     await pgBoss.client.update(SCHEDULED_THREAD_CLOSE_QUEUE, undefined, {
       id: retryJob!.id,
@@ -132,6 +147,13 @@ describe("scheduled thread close pg-boss delivery", () => {
       state: "completed",
       retryCount: 1,
     });
+
+    const audits = await executionAudits(action.id);
+    expect(audits.map((audit) => audit.event).sort()).toEqual([
+      "EXECUTION_COMPLETED",
+      "EXECUTION_RETRY",
+    ]);
+    expect(new Set(audits.map((audit) => audit.id)).size).toBe(2);
   });
 
   it("completes delivery without retrying a permanent action failure", async () => {
@@ -150,6 +172,15 @@ describe("scheduled thread close pg-boss delivery", () => {
       state: "completed",
       retryCount: 0,
     });
+    await expect(executionAudits(action.id)).resolves.toEqual([
+      expect.objectContaining({
+        event: "EXECUTION_FAILED",
+        actorType: "SYSTEM",
+        actorId: null,
+        outcome: "FAILURE",
+        failureCode: "BOT_PERMISSION_MISSING",
+      }),
+    ]);
   });
 
   it("does not execute a cancelled stale delivery", async () => {
@@ -164,6 +195,7 @@ describe("scheduled thread close pg-boss delivery", () => {
 
     expect(fixture.closeAsSystem).not.toHaveBeenCalled();
     await expect(store.findById(action.id)).resolves.toMatchObject({ status: "CANCELLED" });
+    await expect(executionAudits(action.id)).resolves.toEqual([]);
   });
 
   it("resolves stale EXECUTING delivery without changing application authority", async () => {
@@ -178,6 +210,7 @@ describe("scheduled thread close pg-boss delivery", () => {
 
     expect(fixture.closeAsSystem).not.toHaveBeenCalled();
     await expect(store.findById(action.id)).resolves.toMatchObject({ status: "EXECUTING" });
+    await expect(executionAudits(action.id)).resolves.toEqual([]);
   });
 
   it("allows only one execution from duplicate singleton enqueue attempts", async () => {
@@ -191,6 +224,7 @@ describe("scheduled thread close pg-boss delivery", () => {
     await waitFor(async () => (await store.findById(action.id))?.status === "COMPLETED");
 
     expect(fixture.closeAsSystem).toHaveBeenCalledOnce();
+    await expect(executionAudits(action.id)).resolves.toHaveLength(1);
   });
 
   it("keeps worker drain pending until an in-flight SYSTEM close settles", async () => {
@@ -232,6 +266,7 @@ function createFixture(
   }
   const executor = createScheduledThreadCloseExecutor({
     scheduledActions: store,
+    schedules: scheduledThreadCloses,
     threadLifecycle: { closeAsSystem },
   });
   const controller = createScheduledThreadCloseWorkerController({
@@ -286,7 +321,17 @@ async function waitFor(
 }
 
 async function cleanupActions(): Promise<void> {
+  await database.client
+    .delete(scheduledThreadCloseAudits)
+    .where(eq(scheduledThreadCloseAudits.guildId, testGuildId));
   await database.client.delete(scheduledActions).where(eq(scheduledActions.guildId, testGuildId));
+}
+
+async function executionAudits(scheduledActionId: string) {
+  return database.client
+    .select()
+    .from(scheduledThreadCloseAudits)
+    .where(eq(scheduledThreadCloseAudits.scheduledActionId, scheduledActionId));
 }
 
 function createLogger(): Logger {

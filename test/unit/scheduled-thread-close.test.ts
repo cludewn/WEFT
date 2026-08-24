@@ -6,14 +6,20 @@ import type {
   ScheduledActionStore,
   ScheduledActionTransitionResult,
 } from "../../src/scheduled-action-persistence.js";
+import type {
+  ScheduledThreadCloseExecutionTransitionResult,
+  ScheduledThreadCloseStore,
+} from "../../src/scheduled-thread-close-persistence.js";
 import { createScheduledThreadCloseExecutor } from "../../src/scheduled-thread-close.js";
 import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
+
+const auditIds = { attemptAuditId: "attempt-audit-id", executionAuditId: "execution-audit-id" };
 
 describe("scheduled thread close executor", () => {
   it("skips a mismatched action type without claiming or auditing", async () => {
     const fixture = createFixture({ actionType: "SEND_MESSAGE" });
 
-    await expect(fixture.executor.execute(fixture.action, "attempt-audit-id")).resolves.toEqual({
+    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toEqual({
       outcome: "SKIPPED",
       reason: "ACTION_TYPE_MISMATCH",
       action: fixture.action,
@@ -21,13 +27,14 @@ describe("scheduled thread close executor", () => {
 
     expect(fixture.store.claimExecution).not.toHaveBeenCalled();
     expect(fixture.closeAsSystem).not.toHaveBeenCalled();
+    expect(fixture.executionAudits).toHaveLength(0);
     expect(fixture.current.status).toBe("ACTIVE");
   });
 
-  it("claims, performs a SYSTEM close with the attempt audit ID, and completes", async () => {
+  it("uses separate lifecycle and scheduled-execution audit identifiers", async () => {
     const fixture = createFixture();
 
-    const result = await fixture.executor.execute(fixture.action, "attempt-audit-id");
+    const result = await fixture.executor.execute(fixture.action, auditIds);
 
     expect(result).toMatchObject({ outcome: "SUCCESS", action: { status: "COMPLETED" } });
     expect(fixture.closeAsSystem).toHaveBeenCalledWith(
@@ -35,86 +42,168 @@ describe("scheduled thread close executor", () => {
       fixture.action.targetId,
       "attempt-audit-id",
     );
-    expect(fixture.store.completeExecution).toHaveBeenCalledOnce();
+    expect(fixture.schedules.completeExecution).toHaveBeenCalledExactlyOnceWith({
+      scheduledActionId: fixture.action.id,
+      auditId: "execution-audit-id",
+    });
+    expect(fixture.executionAudits).toEqual([
+      { scheduledActionId: fixture.action.id, auditId: "execution-audit-id", event: "COMPLETED" },
+    ]);
     expect(fixture.current.status).toBe("COMPLETED");
   });
 
-  it("releases a retryable failure and marks a permanent failure", async () => {
-    const retryable = createFixture({
+  it("releases a retryable failure with its concrete failure code", async () => {
+    const fixture = createFixture({
       lifecycleResult: { outcome: "RETRYABLE_FAILURE", code: "DISCORD_FETCH_TIMEOUT" },
     });
-    await expect(
-      retryable.executor.execute(retryable.action, "retry-audit"),
-    ).resolves.toMatchObject({
+
+    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toMatchObject({
       outcome: "RETRYABLE_FAILURE",
       code: "DISCORD_FETCH_TIMEOUT",
       action: { status: "ACTIVE" },
     });
-    expect(retryable.store.releaseExecutionForRetry).toHaveBeenCalledOnce();
 
-    const permanent = createFixture({
+    expect(fixture.schedules.releaseExecutionForRetry).toHaveBeenCalledExactlyOnceWith({
+      scheduledActionId: fixture.action.id,
+      auditId: "execution-audit-id",
+      failureCode: "DISCORD_FETCH_TIMEOUT",
+    });
+    expect(fixture.executionAudits).toHaveLength(1);
+  });
+
+  it("fails a permanent failure with its concrete failure code", async () => {
+    const fixture = createFixture({
       lifecycleResult: { outcome: "PERMANENT_FAILURE", code: "BOT_PERMISSION_MISSING" },
     });
-    await expect(
-      permanent.executor.execute(permanent.action, "permanent-audit"),
-    ).resolves.toMatchObject({
+
+    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toMatchObject({
       outcome: "PERMANENT_FAILURE",
       code: "BOT_PERMISSION_MISSING",
       action: { status: "FAILED" },
     });
-    expect(permanent.store.failExecution).toHaveBeenCalledOnce();
+
+    expect(fixture.schedules.failExecution).toHaveBeenCalledExactlyOnceWith({
+      scheduledActionId: fixture.action.id,
+      auditId: "execution-audit-id",
+      failureCode: "BOT_PERMISSION_MISSING",
+    });
+    expect(fixture.executionAudits).toHaveLength(1);
   });
 
-  it("does not execute when the conditional claim loses", async () => {
+  it("releases an unexpected lifecycle failure as an audited retry", async () => {
+    const fixture = createFixture();
+    fixture.closeAsSystem.mockRejectedValueOnce(new Error("lifecycle exploded"));
+
+    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toMatchObject({
+      outcome: "RETRYABLE_FAILURE",
+      code: "THREAD_LIFECYCLE_UNEXPECTED_FAILURE",
+      action: { status: "ACTIVE" },
+    });
+
+    expect(fixture.schedules.releaseExecutionForRetry).toHaveBeenCalledExactlyOnceWith({
+      scheduledActionId: fixture.action.id,
+      auditId: "execution-audit-id",
+      failureCode: "THREAD_LIFECYCLE_UNEXPECTED_FAILURE",
+    });
+  });
+
+  it("writes no execution audit when the claim response is lost", async () => {
+    const fixture = createFixture();
+    vi.mocked(fixture.store.claimExecution).mockRejectedValueOnce(new Error("response lost"));
+
+    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toMatchObject({
+      outcome: "RETRYABLE_FAILURE",
+      code: "SCHEDULED_ACTION_CLAIM_FAILED",
+    });
+
+    expect(fixture.closeAsSystem).not.toHaveBeenCalled();
+    expect(fixture.executionAudits).toHaveLength(0);
+  });
+
+  it("writes no execution audit for a missing action", async () => {
+    const fixture = createFixture();
+    vi.mocked(fixture.store.claimExecution).mockRejectedValueOnce(new Error("response lost"));
+    vi.mocked(fixture.store.findById).mockResolvedValueOnce(undefined);
+
+    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toEqual({
+      outcome: "SKIPPED",
+      reason: "MISSING",
+    });
+
+    expect(fixture.executionAudits).toHaveLength(0);
+  });
+
+  it("writes no execution audit when the conditional claim loses", async () => {
     const fixture = createFixture();
     fixture.current = { ...fixture.current, status: "CANCELLED" };
 
-    await expect(
-      fixture.executor.execute(fixture.action, "attempt-audit-id"),
-    ).resolves.toMatchObject({
+    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toMatchObject({
       outcome: "SKIPPED",
       reason: "NOT_ACTIVE",
       action: { status: "CANCELLED" },
     });
+
     expect(fixture.closeAsSystem).not.toHaveBeenCalled();
+    expect(fixture.executionAudits).toHaveLength(0);
   });
 
-  it("confirms a final transition after response loss without repeating the write", async () => {
+  it("treats a confirmed committed transition as the intended outcome", async () => {
     const fixture = createFixture();
-    vi.mocked(fixture.store.completeExecution).mockImplementationOnce(() => {
+    vi.mocked(fixture.schedules.completeExecution).mockImplementationOnce(() => {
       fixture.current = { ...fixture.current, status: "COMPLETED", updatedAt: new Date() };
-      return Promise.reject(new Error("response lost"));
+      return Promise.resolve({ outcome: "ALREADY_COMMITTED", action: fixture.current });
     });
 
-    await expect(
-      fixture.executor.execute(fixture.action, "attempt-audit-id"),
-    ).resolves.toMatchObject({
+    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toMatchObject({
       outcome: "SUCCESS",
       action: { status: "COMPLETED" },
     });
-    expect(fixture.store.completeExecution).toHaveBeenCalledOnce();
-    expect(fixture.store.findById).toHaveBeenCalledOnce();
+
+    expect(fixture.schedules.completeExecution).toHaveBeenCalledOnce();
+    expect(fixture.store.findById).not.toHaveBeenCalled();
   });
 
-  it("does not blindly repeat an uncertain retry release", async () => {
+  it("classifies an unconfirmed transition as retryable without repeating the write", async () => {
     const fixture = createFixture({
       lifecycleResult: { outcome: "RETRYABLE_FAILURE", code: "DISCORD_FETCH_FAILED" },
     });
-    vi.mocked(fixture.store.releaseExecutionForRetry).mockRejectedValueOnce(
+    vi.mocked(fixture.schedules.releaseExecutionForRetry).mockRejectedValueOnce(
       new Error("response lost"),
     );
 
-    await expect(
-      fixture.executor.execute(fixture.action, "attempt-audit-id"),
-    ).resolves.toMatchObject({
+    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toMatchObject({
       outcome: "RETRYABLE_FAILURE",
       code: "SCHEDULED_ACTION_TRANSITION_FAILED",
       action: { status: "EXECUTING" },
     });
-    expect(fixture.store.releaseExecutionForRetry).toHaveBeenCalledOnce();
+
+    expect(fixture.schedules.releaseExecutionForRetry).toHaveBeenCalledOnce();
+    expect(fixture.store.findById).not.toHaveBeenCalled();
     expect(fixture.current.status).toBe("EXECUTING");
   });
+
+  it("classifies a lost conditional transition as retryable", async () => {
+    const fixture = createFixture();
+    vi.mocked(fixture.schedules.completeExecution).mockImplementationOnce(() => {
+      fixture.current = { ...fixture.current, status: "CANCELLED", updatedAt: new Date() };
+      return Promise.resolve({ outcome: "NOT_TRANSITIONED", current: fixture.current });
+    });
+
+    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toMatchObject({
+      outcome: "RETRYABLE_FAILURE",
+      code: "SCHEDULED_ACTION_TRANSITION_FAILED",
+      action: { status: "CANCELLED" },
+    });
+
+    expect(fixture.executionAudits).toHaveLength(0);
+  });
 });
+
+type RecordedExecutionAudit = {
+  scheduledActionId: string;
+  auditId: string;
+  event: "COMPLETED" | "FAILED" | "RETRY";
+};
 
 function createFixture({
   actionType = "CLOSE_THREAD",
@@ -134,6 +223,8 @@ function createFixture({
     updatedAt: new Date("2026-01-01T00:00:00Z"),
   };
   let current = action;
+  const executionAudits: RecordedExecutionAudit[] = [];
+
   const transition = (
     expected: ScheduledActionStatus,
     next: ScheduledActionStatus,
@@ -144,6 +235,24 @@ function createFixture({
     current = { ...current, status: next, updatedAt: new Date() };
     return Promise.resolve({ transitioned: true, current });
   };
+
+  const auditedTransition = (
+    next: ScheduledActionStatus,
+    event: RecordedExecutionAudit["event"],
+    input: { scheduledActionId: string; auditId: string },
+  ): Promise<ScheduledThreadCloseExecutionTransitionResult> => {
+    if (current.status !== "EXECUTING") {
+      return Promise.resolve({ outcome: "NOT_TRANSITIONED", current });
+    }
+    current = { ...current, status: next, updatedAt: new Date() };
+    executionAudits.push({
+      scheduledActionId: input.scheduledActionId,
+      auditId: input.auditId,
+      event,
+    });
+    return Promise.resolve({ outcome: "TRANSITIONED", action: current });
+  };
+
   const store: ScheduledActionStore = {
     create: vi.fn(),
     findById: vi.fn(() => Promise.resolve(current)),
@@ -151,19 +260,35 @@ function createFixture({
     findExecutingThreadClosesPage: vi.fn(() => Promise.resolve([])),
     cancel: vi.fn(),
     claimExecution: vi.fn(() => transition("ACTIVE", "EXECUTING")),
-    completeExecution: vi.fn(() => transition("EXECUTING", "COMPLETED")),
-    failExecution: vi.fn(() => transition("EXECUTING", "FAILED")),
-    releaseExecutionForRetry: vi.fn(() => transition("EXECUTING", "ACTIVE")),
   };
+
+  const schedules: ScheduledThreadCloseStore = {
+    createOrReplace: vi.fn(),
+    cancel: vi.fn(),
+    findAuditById: vi.fn(),
+    completeExecution: vi.fn<ScheduledThreadCloseStore["completeExecution"]>((input) =>
+      auditedTransition("COMPLETED", "COMPLETED", input),
+    ),
+    failExecution: vi.fn<ScheduledThreadCloseStore["failExecution"]>((input) =>
+      auditedTransition("FAILED", "FAILED", input),
+    ),
+    releaseExecutionForRetry: vi.fn<ScheduledThreadCloseStore["releaseExecutionForRetry"]>(
+      (input) => auditedTransition("ACTIVE", "RETRY", input),
+    ),
+  };
+
   const closeAsSystem = vi.fn(() => Promise.resolve(lifecycleResult));
   const executor = createScheduledThreadCloseExecutor({
     scheduledActions: store,
+    schedules,
     threadLifecycle: { closeAsSystem },
   });
 
   return {
     action,
     store,
+    schedules,
+    executionAudits,
     closeAsSystem,
     executor,
     get current() {

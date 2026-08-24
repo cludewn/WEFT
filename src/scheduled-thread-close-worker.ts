@@ -6,6 +6,7 @@ import { z } from "zod";
 
 import type { ScheduledActionStore } from "./scheduled-action-persistence.js";
 import type {
+  ScheduledThreadCloseExecutionAuditIds,
   ScheduledThreadCloseExecutionFailureCode,
   ScheduledThreadCloseExecutor,
 } from "./scheduled-thread-close.js";
@@ -187,14 +188,17 @@ export function createScheduledThreadCloseWorkerController({
       return;
     }
 
-    const attemptAuditId = randomUUID();
+    const auditIds: ScheduledThreadCloseExecutionAuditIds = {
+      attemptAuditId: randomUUID(),
+      executionAuditId: randomUUID(),
+    };
     logger.debug(
       {
         event: "scheduled_thread_close_execution_started",
         queue: SCHEDULED_THREAD_CLOSE_QUEUE,
         jobId: job.id,
         scheduledActionId,
-        attemptAuditId,
+        ...auditIds,
         retryCount: job.retryCount,
         retryLimit: job.retryLimit,
       },
@@ -203,19 +207,19 @@ export function createScheduledThreadCloseWorkerController({
 
     let result;
     try {
-      result = await executor.execute(action, attemptAuditId);
+      result = await executor.execute(action, auditIds);
     } catch {
       rejectRetryableDelivery(
         logger,
         job,
         scheduledActionId,
         "SCHEDULED_THREAD_CLOSE_EXECUTOR_FAILED",
-        attemptAuditId,
+        auditIds,
       );
     }
 
     if (result.outcome === "RETRYABLE_FAILURE") {
-      rejectRetryableDelivery(logger, job, scheduledActionId, result.code, attemptAuditId);
+      rejectRetryableDelivery(logger, job, scheduledActionId, result.code, auditIds);
     }
 
     logger.info(
@@ -224,7 +228,7 @@ export function createScheduledThreadCloseWorkerController({
         queue: SCHEDULED_THREAD_CLOSE_QUEUE,
         jobId: job.id,
         scheduledActionId,
-        attemptAuditId,
+        ...auditIds,
         outcome: result.outcome,
         ...(result.outcome === "SKIPPED" ? { reason: result.reason } : {}),
         ...(result.outcome === "PERMANENT_FAILURE" ? { failureCode: result.code } : {}),
@@ -422,12 +426,18 @@ function hasRequiredQueueConfiguration(queue: QueueResult | null): boolean {
   );
 }
 
+/**
+ * Rejects one delivery attempt so pg-boss can retry it.
+ *
+ * Delivery retry exhaustion is reported through operational logging only. It does not change the
+ * authoritative scheduled action and never records a scheduled-close execution audit.
+ */
 function rejectRetryableDelivery(
   logger: WorkerLogger,
   job: JobWithMetadata<unknown>,
   scheduledActionId: string,
   failureCode: RetryableDeliveryFailureCode,
-  attemptAuditId?: string,
+  auditIds?: ScheduledThreadCloseExecutionAuditIds,
 ): never {
   logger.warn(
     {
@@ -435,7 +445,7 @@ function rejectRetryableDelivery(
       queue: SCHEDULED_THREAD_CLOSE_QUEUE,
       jobId: job.id,
       scheduledActionId,
-      ...(attemptAuditId === undefined ? {} : { attemptAuditId }),
+      ...(auditIds ?? {}),
       failureCode,
       retryCount: job.retryCount,
       retryLimit: job.retryLimit,
@@ -449,7 +459,7 @@ function rejectRetryableDelivery(
         queue: SCHEDULED_THREAD_CLOSE_QUEUE,
         jobId: job.id,
         scheduledActionId,
-        ...(attemptAuditId === undefined ? {} : { attemptAuditId }),
+        ...(auditIds ?? {}),
         failureCode,
         retryCount: job.retryCount,
         retryLimit: job.retryLimit,
