@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { configCommandDefinition, handleConfigCommand } from "../../src/config-command.js";
 import {
+  DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS,
   DEFAULT_CLOSED_PREFIX,
   DEFAULT_GUILD_TIMEZONE,
   InvalidClosedPrefixError,
@@ -15,6 +16,8 @@ const defaultSettings: GuildSettings = {
   guildId: "123456789012345678",
   timezone: DEFAULT_GUILD_TIMEZONE,
   closedPrefix: DEFAULT_CLOSED_PREFIX,
+  autoCloseInactivitySeconds: DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS,
+  autoCloseBotMessagesCountAsActivity: false,
   createdAt: new Date("2026-01-01T00:00:00Z"),
   updatedAt: new Date("2026-01-01T00:00:00Z"),
 };
@@ -109,6 +112,15 @@ function createStore(overrides: Partial<GuildSettingsStore> = {}): GuildSettings
     ),
     setClosedPrefix: vi.fn<GuildSettingsStore["setClosedPrefix"]>((_guildId, closedPrefix) =>
       Promise.resolve({ ...defaultSettings, closedPrefix }),
+    ),
+    setAutoCloseInactivitySeconds: vi.fn<GuildSettingsStore["setAutoCloseInactivitySeconds"]>(
+      (_guildId, autoCloseInactivitySeconds) =>
+        Promise.resolve({ ...defaultSettings, autoCloseInactivitySeconds }),
+    ),
+    setAutoCloseBotMessagesCountAsActivity: vi.fn<
+      GuildSettingsStore["setAutoCloseBotMessagesCountAsActivity"]
+    >((_guildId, autoCloseBotMessagesCountAsActivity) =>
+      Promise.resolve({ ...defaultSettings, autoCloseBotMessagesCountAsActivity }),
     ),
     ...overrides,
   };
