@@ -527,8 +527,15 @@ describe("scheduled thread close creation persistence", () => {
       } else {
         await actionStore.claimExecution(actionId);
         await (status === "COMPLETED"
-          ? actionStore.completeExecution(actionId)
-          : actionStore.failExecution(actionId));
+          ? store.completeExecution({
+              scheduledActionId: actionId,
+              auditId: `unchanged-${status.toLowerCase()}-execution-audit`,
+            })
+          : store.failExecution({
+              scheduledActionId: actionId,
+              auditId: `unchanged-${status.toLowerCase()}-execution-audit`,
+              failureCode: "BOT_PERMISSION_MISSING",
+            }));
       }
 
       const result = await store.cancel({
@@ -1243,6 +1250,343 @@ describe("scheduled thread close creation persistence", () => {
         and constraint_type = 'FOREIGN KEY'
     `);
     expect(foreignKeys.rows[0]?.count).toBe("0");
+  });
+});
+
+describe("scheduled thread close execution audit persistence", () => {
+  const executeAt = new Date("2030-08-01T00:00:00Z");
+
+  const createExecutingAction = async (id: string, threadId: string) => {
+    await actionStore.create({
+      id,
+      guildId: guildIds[0],
+      actionType: "CLOSE_THREAD",
+      targetId: threadId,
+      executeAt,
+    });
+    const claim = await actionStore.claimExecution(id);
+    expect(claim).toMatchObject({ transitioned: true, current: { status: "EXECUTING" } });
+    return claim.current;
+  };
+
+  const executionAuditsFor = (scheduledActionId: string) =>
+    database.client
+      .select()
+      .from(scheduledThreadCloseAudits)
+      .where(eq(scheduledThreadCloseAudits.scheduledActionId, scheduledActionId));
+
+  it("commits a completed execution with exactly one EXECUTION_COMPLETED audit", async () => {
+    await createExecutingAction("complete-action", threadIds[0]);
+
+    await expect(
+      store.completeExecution({
+        scheduledActionId: "complete-action",
+        auditId: "complete-execution-audit",
+      }),
+    ).resolves.toMatchObject({ outcome: "TRANSITIONED", action: { status: "COMPLETED" } });
+
+    await expect(executionAuditsFor("complete-action")).resolves.toEqual([
+      expect.objectContaining({
+        id: "complete-execution-audit",
+        scheduledActionId: "complete-action",
+        guildId: guildIds[0],
+        threadId: threadIds[0],
+        event: "EXECUTION_COMPLETED",
+        actorType: "SYSTEM",
+        actorId: null,
+        previousScheduledActionId: null,
+        previousExecuteAt: null,
+        executeAt,
+        outcome: "SUCCESS",
+        failureCode: null,
+      }),
+    ]);
+  });
+
+  it("commits a retryable release with exactly one EXECUTION_RETRY audit", async () => {
+    await createExecutingAction("retry-action", threadIds[1]);
+
+    await expect(
+      store.releaseExecutionForRetry({
+        scheduledActionId: "retry-action",
+        auditId: "retry-execution-audit",
+        failureCode: "DISCORD_FETCH_TIMEOUT",
+      }),
+    ).resolves.toMatchObject({ outcome: "TRANSITIONED", action: { status: "ACTIVE" } });
+
+    await expect(executionAuditsFor("retry-action")).resolves.toEqual([
+      expect.objectContaining({
+        id: "retry-execution-audit",
+        event: "EXECUTION_RETRY",
+        actorType: "SYSTEM",
+        actorId: null,
+        previousScheduledActionId: null,
+        previousExecuteAt: null,
+        executeAt,
+        outcome: "FAILURE",
+        failureCode: "DISCORD_FETCH_TIMEOUT",
+      }),
+    ]);
+  });
+
+  it("commits a permanent failure with exactly one EXECUTION_FAILED audit", async () => {
+    await createExecutingAction("fail-action", threadIds[2]);
+
+    await expect(
+      store.failExecution({
+        scheduledActionId: "fail-action",
+        auditId: "fail-execution-audit",
+        failureCode: "BOT_PERMISSION_MISSING",
+      }),
+    ).resolves.toMatchObject({ outcome: "TRANSITIONED", action: { status: "FAILED" } });
+
+    await expect(executionAuditsFor("fail-action")).resolves.toEqual([
+      expect.objectContaining({
+        id: "fail-execution-audit",
+        event: "EXECUTION_FAILED",
+        actorType: "SYSTEM",
+        actorId: null,
+        previousScheduledActionId: null,
+        previousExecuteAt: null,
+        executeAt,
+        outcome: "FAILURE",
+        failureCode: "BOT_PERMISSION_MISSING",
+      }),
+    ]);
+  });
+
+  it("records an interrupted startup release as EXECUTION_RETRY with EXECUTION_INTERRUPTED", async () => {
+    await createExecutingAction("interrupted-action", threadIds[0]);
+
+    await expect(
+      store.releaseExecutionForRetry({
+        scheduledActionId: "interrupted-action",
+        auditId: "interrupted-recovery-audit",
+        failureCode: "EXECUTION_INTERRUPTED",
+      }),
+    ).resolves.toMatchObject({ outcome: "TRANSITIONED", action: { status: "ACTIVE" } });
+
+    await expect(executionAuditsFor("interrupted-action")).resolves.toEqual([
+      expect.objectContaining({
+        id: "interrupted-recovery-audit",
+        event: "EXECUTION_RETRY",
+        actorType: "SYSTEM",
+        actorId: null,
+        outcome: "FAILURE",
+        failureCode: "EXECUTION_INTERRUPTED",
+      }),
+    ]);
+  });
+
+  it("rolls back the state transition when the execution audit cannot be inserted", async () => {
+    await createExecutingAction("audit-rollback-action", threadIds[0]);
+    await database.client.insert(scheduledThreadCloseAudits).values({
+      id: "conflicting-execution-audit",
+      scheduledActionId: "audit-rollback-action",
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      event: "EXECUTION_FAILED",
+      actorType: "SYSTEM",
+      executeAt,
+      outcome: "FAILURE",
+      failureCode: "DISCORD_ARCHIVE_FAILED",
+    });
+
+    await expect(
+      store.completeExecution({
+        scheduledActionId: "audit-rollback-action",
+        auditId: "conflicting-execution-audit",
+      }),
+    ).rejects.toThrow();
+
+    await expect(actionStore.findById("audit-rollback-action")).resolves.toMatchObject({
+      status: "EXECUTING",
+    });
+    await expect(executionAuditsFor("audit-rollback-action")).resolves.toEqual([
+      expect.objectContaining({
+        id: "conflicting-execution-audit",
+        event: "EXECUTION_FAILED",
+        failureCode: "DISCORD_ARCHIVE_FAILED",
+      }),
+    ]);
+  });
+
+  it.each(["ACTIVE", "CANCELLED", "COMPLETED"] as const)(
+    "changes nothing and writes no audit when the action is currently %s",
+    async (status) => {
+      const actionId = `unexpected-${status.toLowerCase()}-action`;
+      await actionStore.create({
+        id: actionId,
+        guildId: guildIds[0],
+        actionType: "CLOSE_THREAD",
+        targetId: threadIds[0],
+        executeAt,
+      });
+      if (status === "CANCELLED") {
+        await actionStore.cancel(actionId);
+      } else if (status === "COMPLETED") {
+        await actionStore.claimExecution(actionId);
+        await store.completeExecution({
+          scheduledActionId: actionId,
+          auditId: `${actionId}-setup-audit`,
+        });
+      }
+
+      await expect(
+        store.releaseExecutionForRetry({
+          scheduledActionId: actionId,
+          auditId: `${actionId}-audit`,
+          failureCode: "DISCORD_FETCH_FAILED",
+        }),
+      ).resolves.toMatchObject({ outcome: "NOT_TRANSITIONED", current: { status } });
+
+      await expect(actionStore.findById(actionId)).resolves.toMatchObject({ status });
+      await expect(store.findAuditById(`${actionId}-audit`)).resolves.toBeUndefined();
+    },
+  );
+
+  it("treats a repeated audit ID as already committed without a second audit", async () => {
+    await createExecutingAction("repeat-action", threadIds[0]);
+    await store.completeExecution({
+      scheduledActionId: "repeat-action",
+      auditId: "repeat-execution-audit",
+    });
+
+    await expect(
+      store.completeExecution({
+        scheduledActionId: "repeat-action",
+        auditId: "repeat-execution-audit",
+      }),
+    ).resolves.toMatchObject({ outcome: "ALREADY_COMMITTED", action: { status: "COMPLETED" } });
+
+    await expect(executionAuditsFor("repeat-action")).resolves.toHaveLength(1);
+  });
+
+  it("confirms a committed execution transition after simulated response loss", async () => {
+    await createExecutingAction("execution-response-loss-action", threadIds[0]);
+    let transactionCalls = 0;
+    const responseLossDatabase = {
+      select: database.client.select.bind(database.client),
+      transaction: async (work: Parameters<DatabaseClient["transaction"]>[0]) => {
+        transactionCalls += 1;
+        await database.client.transaction(work);
+        throw new Error("simulated response loss after commit");
+      },
+    } as unknown as DatabaseClient;
+    const responseLossStore = createScheduledThreadCloseStore(responseLossDatabase);
+
+    await expect(
+      responseLossStore.releaseExecutionForRetry({
+        scheduledActionId: "execution-response-loss-action",
+        auditId: "execution-response-loss-audit",
+        failureCode: "EXECUTION_INTERRUPTED",
+      }),
+    ).resolves.toMatchObject({ outcome: "ALREADY_COMMITTED", action: { status: "ACTIVE" } });
+
+    expect(transactionCalls).toBe(1);
+    await expect(executionAuditsFor("execution-response-loss-action")).resolves.toEqual([
+      expect.objectContaining({
+        id: "execution-response-loss-audit",
+        event: "EXECUTION_RETRY",
+        failureCode: "EXECUTION_INTERRUPTED",
+      }),
+    ]);
+  });
+
+  it("does not confirm a matching action status without this attempt's exact audit", async () => {
+    await createExecutingAction("status-only-action", threadIds[0]);
+    await store.completeExecution({
+      scheduledActionId: "status-only-action",
+      auditId: "status-only-first-audit",
+    });
+    let transactionCalls = 0;
+    const responseLossDatabase = {
+      select: database.client.select.bind(database.client),
+      transaction: async (work: Parameters<DatabaseClient["transaction"]>[0]) => {
+        transactionCalls += 1;
+        await database.client.transaction(work);
+        throw new Error("simulated response loss after commit");
+      },
+    } as unknown as DatabaseClient;
+    const responseLossStore = createScheduledThreadCloseStore(responseLossDatabase);
+
+    await expect(
+      responseLossStore.completeExecution({
+        scheduledActionId: "status-only-action",
+        auditId: "status-only-second-audit",
+      }),
+    ).rejects.toThrow("simulated response loss after commit");
+
+    expect(transactionCalls).toBe(1);
+    await expect(executionAuditsFor("status-only-action")).resolves.toHaveLength(1);
+    await expect(store.findAuditById("status-only-second-audit")).resolves.toBeUndefined();
+  });
+
+  it("allows only one concurrent finalization to transition and audit", async () => {
+    await createExecutingAction("concurrent-final-action", threadIds[0]);
+    const transactionReady = deferred<void>();
+    const releaseCommit = deferred<void>();
+    const pausedDatabase = {
+      select: database.client.select.bind(database.client),
+      transaction: (work: Parameters<DatabaseClient["transaction"]>[0]) =>
+        database.client.transaction(async (transaction) => {
+          const result = await work(transaction);
+          transactionReady.resolve(undefined);
+          await releaseCommit.promise;
+          return result;
+        }),
+    } as unknown as DatabaseClient;
+    const pausedStore = createScheduledThreadCloseStore(pausedDatabase);
+
+    const completion = pausedStore.completeExecution({
+      scheduledActionId: "concurrent-final-action",
+      auditId: "concurrent-complete-audit",
+    });
+    await transactionReady.promise;
+    const failure = store.failExecution({
+      scheduledActionId: "concurrent-final-action",
+      auditId: "concurrent-fail-audit",
+      failureCode: "DISCORD_ARCHIVE_FAILED",
+    });
+    releaseCommit.resolve(undefined);
+
+    await expect(completion).resolves.toMatchObject({
+      outcome: "TRANSITIONED",
+      action: { status: "COMPLETED" },
+    });
+    await expect(failure).resolves.toMatchObject({
+      outcome: "NOT_TRANSITIONED",
+      current: { status: "COMPLETED" },
+    });
+    await expect(executionAuditsFor("concurrent-final-action")).resolves.toEqual([
+      expect.objectContaining({ id: "concurrent-complete-audit", event: "EXECUTION_COMPLETED" }),
+    ]);
+  });
+
+  it("keeps distinct retry and completion records across execution attempts", async () => {
+    await createExecutingAction("history-action", threadIds[0]);
+    await store.releaseExecutionForRetry({
+      scheduledActionId: "history-action",
+      auditId: "history-retry-audit",
+      failureCode: "DISCORD_RENAME_FAILED",
+    });
+    await actionStore.claimExecution("history-action");
+    await store.completeExecution({
+      scheduledActionId: "history-action",
+      auditId: "history-complete-audit",
+    });
+
+    const audits = await executionAuditsFor("history-action");
+    expect(audits).toHaveLength(2);
+    expect(audits.map((audit) => [audit.id, audit.event, audit.failureCode]).sort()).toEqual(
+      [
+        ["history-complete-audit", "EXECUTION_COMPLETED", null],
+        ["history-retry-audit", "EXECUTION_RETRY", "DISCORD_RENAME_FAILED"],
+      ].sort(),
+    );
+    await expect(actionStore.findById("history-action")).resolves.toMatchObject({
+      status: "COMPLETED",
+    });
   });
 });
 

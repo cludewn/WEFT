@@ -45,6 +45,7 @@ async function main(): Promise<void> {
   const discordRuntime = createDiscordRuntime(logger, { guildSettings, managedThreads, audits });
   const scheduledThreadCloseExecutor = createScheduledThreadCloseExecutor({
     scheduledActions,
+    schedules: scheduledThreadCloses,
     threadLifecycle: discordRuntime.threadLifecycle,
   });
   const scheduledThreadCloseWorkers = createScheduledThreadCloseWorkerController({
@@ -68,6 +69,7 @@ async function main(): Promise<void> {
   });
   const scheduledThreadCloseReconciler = createScheduledThreadCloseStartupReconciler({
     scheduledActions,
+    schedules: scheduledThreadCloses,
     delivery: scheduledThreadCloseWorkers,
     logger,
   });

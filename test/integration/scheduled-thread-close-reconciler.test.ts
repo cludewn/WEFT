@@ -130,6 +130,23 @@ describe("scheduled thread close startup recovery", () => {
     expect(jobs.some((job) => job.state === "active")).toBe(false);
     expect(jobs.filter((job) => job.state === "cancelled")).toHaveLength(1);
     expect(jobs.filter((job) => job.state === "created" || job.state === "retry")).toHaveLength(1);
+    await expect(
+      database.client
+        .select()
+        .from(scheduledThreadCloseAudits)
+        .where(eq(scheduledThreadCloseAudits.scheduledActionId, action.id)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        event: "EXECUTION_RETRY",
+        actorType: "SYSTEM",
+        actorId: null,
+        previousScheduledActionId: null,
+        previousExecuteAt: null,
+        outcome: "FAILURE",
+        failureCode: "EXECUTION_INTERRUPTED",
+        executeAt: action.executeAt,
+      }),
+    ]);
   });
 
   it("creates a new delivery when terminal failed history has exhausted its singleton", async () => {
@@ -189,10 +206,17 @@ describe("scheduled thread close runtime reconciliation", () => {
     await store.cancel(cancelled.id);
     const completed = await createAction("runtime-completed", new Date(0));
     await store.claimExecution(completed.id);
-    await store.completeExecution(completed.id);
+    await scheduledThreadCloses.completeExecution({
+      scheduledActionId: completed.id,
+      auditId: "runtime-completed-execution-audit",
+    });
     const failed = await createAction("runtime-failed", new Date(0));
     await store.claimExecution(failed.id);
-    await store.failExecution(failed.id);
+    await scheduledThreadCloses.failExecution({
+      scheduledActionId: failed.id,
+      auditId: "runtime-failed-execution-audit",
+      failureCode: "BOT_PERMISSION_MISSING",
+    });
     const message = await store.create({
       id: "runtime-message",
       guildId: testGuildId,
@@ -335,6 +359,7 @@ function createRecoveryFixture(): void {
   });
   recoverAtStartup = createScheduledThreadCloseStartupReconciler({
     scheduledActions: store,
+    schedules: scheduledThreadCloses,
     delivery: controller,
     logger,
   }).recoverAtStartup;

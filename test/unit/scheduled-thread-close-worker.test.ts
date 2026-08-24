@@ -121,6 +121,8 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
 describe("scheduled thread close pg-boss worker", () => {
   it("creates and verifies the exact queue configuration", async () => {
     const fixture = createFixture();
@@ -386,22 +388,26 @@ describe("scheduled thread close pg-boss worker", () => {
     );
   });
 
-  it("generates a different audit UUID immediately for each executor invocation", async () => {
+  it("generates separate lifecycle and execution audit UUIDs for each invocation", async () => {
     const fixture = createFixture();
     await fixture.controller.start();
 
     await fixture.handlers[0]!([createJob()]);
     await fixture.handlers[0]!([createJob(undefined, { id: "second-job" })]);
 
-    const firstAuditId = fixture.execute.mock.calls[0]?.[1];
-    const secondAuditId = fixture.execute.mock.calls[1]?.[1];
-    expect(firstAuditId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    );
-    expect(secondAuditId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-    );
-    expect(secondAuditId).not.toBe(firstAuditId);
+    const first = fixture.execute.mock.calls[0]?.[1];
+    const second = fixture.execute.mock.calls[1]?.[1];
+    for (const auditId of [
+      first?.attemptAuditId,
+      first?.executionAuditId,
+      second?.attemptAuditId,
+      second?.executionAuditId,
+    ]) {
+      expect(auditId).toMatch(UUID_PATTERN);
+    }
+    expect(first?.executionAuditId).not.toBe(first?.attemptAuditId);
+    expect(second?.attemptAuditId).not.toBe(first?.attemptAuditId);
+    expect(second?.executionAuditId).not.toBe(first?.executionAuditId);
   });
 
   it("uses public retry metadata to warn before the retry budget is exhausted", async () => {
@@ -420,6 +426,31 @@ describe("scheduled thread close pg-boss worker", () => {
     ).rejects.toBeInstanceOf(ScheduledThreadCloseDeliveryRetryError);
     expect(fixture.logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ event: "scheduled_thread_close_delivery_retry_exhausted" }),
+      expect.any(String),
+    );
+  });
+
+  it("reports an exhausted retry budget without any terminal application transition", async () => {
+    const action = createAction();
+    const fixture = createFixture({
+      action,
+      executionResult: {
+        outcome: "RETRYABLE_FAILURE",
+        code: "DISCORD_FETCH_TIMEOUT",
+        action: { ...action, status: "ACTIVE" },
+      },
+    });
+
+    await expect(
+      startAndRun(fixture, createJob(undefined, { retryCount: 3, retryLimit: 3 })),
+    ).rejects.toBeInstanceOf(ScheduledThreadCloseDeliveryRetryError);
+
+    // Delivery exhaustion is reported through logging only. The worker owns no audit or
+    // state-changing store, so it cannot mark the action FAILED or write an EXECUTION_FAILED audit.
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    expect(fixture.findById).toHaveBeenCalledOnce();
+    expect(fixture.logger.info).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: "scheduled_thread_close_execution_finished" }),
       expect.any(String),
     );
   });
@@ -528,10 +559,11 @@ describe("scheduled thread close pg-boss worker", () => {
       startAndRun(fixture, createJob(undefined, { signal: abortController.signal })),
     ).resolves.toBeUndefined();
 
-    expect(fixture.execute).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "scheduled-action-id" }),
-      expect.any(String),
-    );
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    const [executedAction, executedAuditIds] = fixture.execute.mock.calls[0]!;
+    expect(executedAction).toMatchObject({ id: "scheduled-action-id" });
+    expect(executedAuditIds.attemptAuditId).toMatch(UUID_PATTERN);
+    expect(executedAuditIds.executionAuditId).toMatch(UUID_PATTERN);
     expect(fixture.execute.mock.calls[0]).toHaveLength(2);
   });
 });

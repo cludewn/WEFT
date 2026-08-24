@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import type { Logger } from "pino";
 
 import type {
@@ -5,6 +7,10 @@ import type {
   ScheduledAction,
   ScheduledActionStore,
 } from "./scheduled-action-persistence.js";
+import type {
+  ScheduledThreadCloseExecutionTransitionResult,
+  ScheduledThreadCloseStore,
+} from "./scheduled-thread-close-persistence.js";
 import type { ScheduledThreadCloseWorkerController } from "./scheduled-thread-close-worker.js";
 
 type RecoveryFailureCode =
@@ -16,11 +22,10 @@ type RecoveryFailureCode =
 
 type RecoveryStore = Pick<
   ScheduledActionStore,
-  | "findById"
-  | "findActiveThreadClosesPage"
-  | "findExecutingThreadClosesPage"
-  | "releaseExecutionForRetry"
+  "findActiveThreadClosesPage" | "findExecutingThreadClosesPage"
 >;
+
+type RecoveryScheduleStore = Pick<ScheduledThreadCloseStore, "releaseExecutionForRetry">;
 
 type RecoveryDelivery = Pick<
   ScheduledThreadCloseWorkerController,
@@ -31,6 +36,7 @@ type RecoveryLogger = Pick<Logger, "info" | "warn">;
 
 type RecoveryDependencies = {
   scheduledActions: RecoveryStore;
+  schedules: RecoveryScheduleStore;
   delivery: RecoveryDelivery;
   logger: RecoveryLogger;
 };
@@ -127,6 +133,7 @@ async function reconcileActiveScheduledThreadCloseDeliveries(
 
 export function createScheduledThreadCloseStartupReconciler({
   scheduledActions,
+  schedules,
   delivery,
   logger,
 }: RecoveryDependencies): ScheduledThreadCloseStartupReconciler {
@@ -159,27 +166,31 @@ export function createScheduledThreadCloseStartupReconciler({
         stats.executingScanned += 1;
         await cleanupStaleDeliveries(action.id, stats);
 
-        let current: ScheduledAction | undefined;
+        // One stable recovery audit ID per recovery attempt. The persistence boundary reuses it for
+        // read-only confirmation, so an ambiguous response never generates a second identifier.
+        const recoveryAuditId = randomUUID();
+        let release: ScheduledThreadCloseExecutionTransitionResult;
         try {
-          current = (await scheduledActions.releaseExecutionForRetry(action.id)).current;
+          release = await schedules.releaseExecutionForRetry({
+            scheduledActionId: action.id,
+            auditId: recoveryAuditId,
+            failureCode: "EXECUTION_INTERRUPTED",
+          });
         } catch {
-          try {
-            current = await scheduledActions.findById(action.id);
-          } catch {
-            throw new ScheduledThreadCloseStartupRecoveryError("EXECUTING_RELEASE_UNCONFIRMED");
-          }
+          throw new ScheduledThreadCloseStartupRecoveryError("EXECUTING_RELEASE_UNCONFIRMED");
         }
 
-        if (current?.status === "ACTIVE") {
+        if (release.outcome !== "NOT_TRANSITIONED") {
           stats.interruptedReleased += 1;
         } else if (
-          current === undefined ||
-          current.status === "CANCELLED" ||
-          current.status === "COMPLETED" ||
-          current.status === "FAILED"
+          release.current === undefined ||
+          release.current.status === "CANCELLED" ||
+          release.current.status === "COMPLETED" ||
+          release.current.status === "FAILED"
         ) {
           stats.skippedCurrentState += 1;
         } else {
+          // An ACTIVE action without this recovery attempt's exact audit is not a confirmed release.
           throw new ScheduledThreadCloseStartupRecoveryError("EXECUTING_RELEASE_UNCONFIRMED");
         }
       }

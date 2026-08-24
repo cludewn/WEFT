@@ -5,6 +5,7 @@ import type {
   ScheduledAction,
   ScheduledActionStore,
 } from "../../src/scheduled-action-persistence.js";
+import type { ScheduledThreadCloseStore } from "../../src/scheduled-thread-close-persistence.js";
 import {
   createScheduledThreadCloseRuntimeReconciler,
   createScheduledThreadCloseStartupReconciler,
@@ -15,11 +16,10 @@ import type { ScheduledThreadCloseWorkerController } from "../../src/scheduled-t
 
 type RecoveryStore = Pick<
   ScheduledActionStore,
-  | "findById"
-  | "findActiveThreadClosesPage"
-  | "findExecutingThreadClosesPage"
-  | "releaseExecutionForRetry"
+  "findActiveThreadClosesPage" | "findExecutingThreadClosesPage"
 >;
+
+type RecoverySchedules = Pick<ScheduledThreadCloseStore, "releaseExecutionForRetry">;
 
 type RecoveryDelivery = Pick<
   ScheduledThreadCloseWorkerController,
@@ -45,11 +45,15 @@ function createAction(
 
 function createFixture() {
   const scheduledActions: RecoveryStore = {
-    findById: vi.fn(() => Promise.resolve(undefined)),
     findActiveThreadClosesPage: vi.fn(() => Promise.resolve([])),
     findExecutingThreadClosesPage: vi.fn(() => Promise.resolve([])),
-    releaseExecutionForRetry: vi.fn((id: string) =>
-      Promise.resolve({ transitioned: true, current: createAction(id, "ACTIVE") }),
+  };
+  const schedules: RecoverySchedules = {
+    releaseExecutionForRetry: vi.fn<RecoverySchedules["releaseExecutionForRetry"]>((input) =>
+      Promise.resolve({
+        outcome: "TRANSITIONED",
+        action: createAction(input.scheduledActionId, "ACTIVE"),
+      }),
     ),
   };
   const delivery: RecoveryDelivery = {
@@ -63,10 +67,11 @@ function createFixture() {
   } as unknown as Pick<Logger, "info" | "warn">;
   const reconciler = createScheduledThreadCloseStartupReconciler({
     scheduledActions,
+    schedules,
     delivery,
     logger,
   });
-  return { delivery, logger, reconciler, scheduledActions };
+  return { delivery, logger, reconciler, scheduledActions, schedules };
 }
 
 function createRuntimeFixture() {
@@ -118,11 +123,11 @@ describe("scheduled thread close startup reconciliation", () => {
       calls.push("cleanup");
       return Promise.resolve(1);
     });
-    vi.mocked(fixture.scheduledActions.releaseExecutionForRetry).mockImplementation(() => {
+    vi.mocked(fixture.schedules.releaseExecutionForRetry).mockImplementation(() => {
       calls.push("release");
       return Promise.resolve({
-        transitioned: true,
-        current: { ...executing, status: "ACTIVE" },
+        outcome: "TRANSITIONED",
+        action: { ...executing, status: "ACTIVE" },
       });
     });
     vi.mocked(fixture.scheduledActions.findActiveThreadClosesPage).mockImplementation(() => {
@@ -204,8 +209,8 @@ describe("scheduled thread close startup reconciliation", () => {
       vi.mocked(fixture.scheduledActions.findExecutingThreadClosesPage)
         .mockResolvedValueOnce([executing])
         .mockResolvedValueOnce([]);
-      vi.mocked(fixture.scheduledActions.releaseExecutionForRetry).mockResolvedValue({
-        transitioned: false,
+      vi.mocked(fixture.schedules.releaseExecutionForRetry).mockResolvedValue({
+        outcome: "NOT_TRANSITIONED",
         current: { ...executing, status },
       });
 
@@ -215,24 +220,96 @@ describe("scheduled thread close startup reconciliation", () => {
     },
   );
 
-  it("confirms an applied release after its client promise rejects", async () => {
+  it("releases an interrupted execution with one stable recovery audit ID", async () => {
     const fixture = createFixture();
     const executing = createAction("executing", "EXECUTING");
     vi.mocked(fixture.scheduledActions.findExecutingThreadClosesPage)
       .mockResolvedValueOnce([executing])
       .mockResolvedValueOnce([]);
-    vi.mocked(fixture.scheduledActions.releaseExecutionForRetry).mockRejectedValue(
-      new Error("response lost"),
+
+    await fixture.reconciler.recoverAtStartup();
+
+    expect(fixture.schedules.releaseExecutionForRetry).toHaveBeenCalledOnce();
+    const [release] = vi.mocked(fixture.schedules.releaseExecutionForRetry).mock.calls[0]!;
+    expect(release.scheduledActionId).toBe(executing.id);
+    expect(release.failureCode).toBe("EXECUTION_INTERRUPTED");
+    expect(release.auditId).toMatch(/\S/);
+    expect(fixture.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ executingScanned: 1, interruptedReleased: 1 }),
+      expect.any(String),
     );
-    vi.mocked(fixture.scheduledActions.findById).mockResolvedValue({
-      ...executing,
-      status: "ACTIVE",
+  });
+
+  it("generates a distinct stable recovery audit ID for each interrupted action", async () => {
+    const fixture = createFixture();
+    const first = createAction("exec-one", "EXECUTING");
+    const second = createAction("exec-two", "EXECUTING");
+    vi.mocked(fixture.scheduledActions.findExecutingThreadClosesPage)
+      .mockResolvedValueOnce([first, second])
+      .mockResolvedValueOnce([]);
+
+    await fixture.reconciler.recoverAtStartup();
+
+    const auditIds = vi
+      .mocked(fixture.schedules.releaseExecutionForRetry)
+      .mock.calls.map(([input]) => input.auditId);
+    expect(auditIds).toHaveLength(2);
+    expect(new Set(auditIds).size).toBe(2);
+  });
+
+  it("accepts a release the persistence boundary confirmed as already committed", async () => {
+    const fixture = createFixture();
+    const executing = createAction("executing", "EXECUTING");
+    vi.mocked(fixture.scheduledActions.findExecutingThreadClosesPage)
+      .mockResolvedValueOnce([executing])
+      .mockResolvedValueOnce([]);
+    vi.mocked(fixture.schedules.releaseExecutionForRetry).mockResolvedValue({
+      outcome: "ALREADY_COMMITTED",
+      action: { ...executing, status: "ACTIVE" },
     });
 
     await expect(fixture.reconciler.recoverAtStartup()).resolves.toBeUndefined();
 
-    expect(fixture.scheduledActions.releaseExecutionForRetry).toHaveBeenCalledOnce();
-    expect(fixture.scheduledActions.findById).toHaveBeenCalledOnce();
+    expect(fixture.schedules.releaseExecutionForRetry).toHaveBeenCalledOnce();
+    expect(fixture.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ interruptedReleased: 1 }),
+      expect.any(String),
+    );
+  });
+
+  it("fails startup when an ACTIVE action lacks this attempt's recovery audit", async () => {
+    const fixture = createFixture();
+    const executing = createAction("executing", "EXECUTING");
+    vi.mocked(fixture.scheduledActions.findExecutingThreadClosesPage).mockResolvedValueOnce([
+      executing,
+    ]);
+    vi.mocked(fixture.schedules.releaseExecutionForRetry).mockResolvedValue({
+      outcome: "NOT_TRANSITIONED",
+      current: { ...executing, status: "ACTIVE" },
+    });
+
+    await expect(fixture.reconciler.recoverAtStartup()).rejects.toMatchObject({
+      name: "ScheduledThreadCloseStartupRecoveryError",
+      failureCode: "EXECUTING_RELEASE_UNCONFIRMED",
+    } satisfies Partial<ScheduledThreadCloseStartupRecoveryError>);
+    expect(fixture.schedules.releaseExecutionForRetry).toHaveBeenCalledOnce();
+  });
+
+  it("fails startup without repeating an unconfirmed release", async () => {
+    const fixture = createFixture();
+    const executing = createAction("executing", "EXECUTING");
+    vi.mocked(fixture.scheduledActions.findExecutingThreadClosesPage).mockResolvedValueOnce([
+      executing,
+    ]);
+    vi.mocked(fixture.schedules.releaseExecutionForRetry).mockRejectedValue(
+      new Error("response lost"),
+    );
+
+    await expect(fixture.reconciler.recoverAtStartup()).rejects.toMatchObject({
+      name: "ScheduledThreadCloseStartupRecoveryError",
+      failureCode: "EXECUTING_RELEASE_UNCONFIRMED",
+    } satisfies Partial<ScheduledThreadCloseStartupRecoveryError>);
+    expect(fixture.schedules.releaseExecutionForRetry).toHaveBeenCalledOnce();
   });
 
   it("continues recovery without enqueue when an interrupted action is missing", async () => {
@@ -241,15 +318,14 @@ describe("scheduled thread close startup reconciliation", () => {
     vi.mocked(fixture.scheduledActions.findExecutingThreadClosesPage)
       .mockResolvedValueOnce([executing])
       .mockResolvedValueOnce([]);
-    vi.mocked(fixture.scheduledActions.releaseExecutionForRetry).mockRejectedValue(
-      new Error("response lost"),
-    );
-    vi.mocked(fixture.scheduledActions.findById).mockResolvedValue(undefined);
+    vi.mocked(fixture.schedules.releaseExecutionForRetry).mockResolvedValue({
+      outcome: "NOT_TRANSITIONED",
+      current: undefined,
+    });
 
     await expect(fixture.reconciler.recoverAtStartup()).resolves.toBeUndefined();
 
-    expect(fixture.scheduledActions.releaseExecutionForRetry).toHaveBeenCalledOnce();
-    expect(fixture.scheduledActions.findById).toHaveBeenCalledWith(executing.id);
+    expect(fixture.schedules.releaseExecutionForRetry).toHaveBeenCalledOnce();
     expect(fixture.scheduledActions.findActiveThreadClosesPage).toHaveBeenCalledOnce();
     expect(fixture.delivery.enqueueScheduledThreadClose).not.toHaveBeenCalled();
     expect(fixture.delivery.hasCreatedOrRetryDelivery).not.toHaveBeenCalled();
@@ -265,8 +341,8 @@ describe("scheduled thread close startup reconciliation", () => {
     vi.mocked(fixture.scheduledActions.findExecutingThreadClosesPage).mockResolvedValueOnce([
       executing,
     ]);
-    vi.mocked(fixture.scheduledActions.releaseExecutionForRetry).mockResolvedValue({
-      transitioned: false,
+    vi.mocked(fixture.schedules.releaseExecutionForRetry).mockResolvedValue({
+      outcome: "NOT_TRANSITIONED",
       current: executing,
     });
 
@@ -377,7 +453,7 @@ describe("scheduled thread close runtime reconciliation", () => {
       id: futureOne.id,
     });
     expect(fixture.scheduledActions.findExecutingThreadClosesPage).not.toHaveBeenCalled();
-    expect(fixture.scheduledActions.releaseExecutionForRetry).not.toHaveBeenCalled();
+    expect(fixture.schedules.releaseExecutionForRetry).not.toHaveBeenCalled();
     expect(fixture.delivery.cancelStaleActiveDeliveries).not.toHaveBeenCalled();
     expect(fixture.delivery.hasCreatedOrRetryDelivery).not.toHaveBeenCalled();
     expect(fixture.logger.info).toHaveBeenCalledWith(

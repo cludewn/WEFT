@@ -5,6 +5,7 @@ import { check, index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
 import { scheduledActions, type ScheduledAction } from "./scheduled-action-persistence.js";
+import type { ThreadFailureCode } from "./thread-lifecycle.js";
 
 export const SCHEDULED_THREAD_CLOSE_AUDIT_EVENTS = [
   "CREATED",
@@ -103,13 +104,78 @@ export type CancelScheduledThreadCloseResult =
   | { outcome: "NOT_SCHEDULED" }
   | { outcome: "EXECUTION_IN_PROGRESS"; current: ScheduledAction };
 
+/**
+ * Failure codes that may be recorded on a scheduled-close execution audit.
+ *
+ * Claim and transition failures are intentionally excluded: they never complete an execution
+ * transition, so they must never produce an execution audit.
+ */
+export type ScheduledThreadCloseExecutionAuditFailureCode =
+  ThreadFailureCode | "THREAD_LIFECYCLE_UNEXPECTED_FAILURE" | "EXECUTION_INTERRUPTED";
+
+export type CompleteScheduledThreadCloseExecution = {
+  scheduledActionId: string;
+  auditId: string;
+};
+
+export type FinalizeScheduledThreadCloseExecutionFailure = {
+  scheduledActionId: string;
+  auditId: string;
+  failureCode: ScheduledThreadCloseExecutionAuditFailureCode;
+};
+
+export type ScheduledThreadCloseExecutionTransitionResult =
+  | { outcome: "TRANSITIONED"; action: ScheduledAction }
+  | { outcome: "ALREADY_COMMITTED"; action: ScheduledAction }
+  | { outcome: "NOT_TRANSITIONED"; current: ScheduledAction | undefined };
+
 export type ScheduledThreadCloseStore = {
   createOrReplace: (
     input: CreateOrReplaceScheduledThreadClose,
   ) => Promise<CreateOrReplaceScheduledThreadCloseResult>;
   cancel: (input: CancelScheduledThreadClose) => Promise<CancelScheduledThreadCloseResult>;
+  completeExecution: (
+    input: CompleteScheduledThreadCloseExecution,
+  ) => Promise<ScheduledThreadCloseExecutionTransitionResult>;
+  failExecution: (
+    input: FinalizeScheduledThreadCloseExecutionFailure,
+  ) => Promise<ScheduledThreadCloseExecutionTransitionResult>;
+  releaseExecutionForRetry: (
+    input: FinalizeScheduledThreadCloseExecutionFailure,
+  ) => Promise<ScheduledThreadCloseExecutionTransitionResult>;
   findAuditById: (id: string) => Promise<ScheduledThreadCloseAudit | undefined>;
 };
+
+type ExecutionTransitionDescriptor = {
+  scheduledActionId: string;
+  auditId: string;
+  nextStatus: "COMPLETED" | "FAILED" | "ACTIVE";
+  event: "EXECUTION_COMPLETED" | "EXECUTION_FAILED" | "EXECUTION_RETRY";
+  outcome: ScheduledThreadCloseAuditOutcome;
+  failureCode: ScheduledThreadCloseExecutionAuditFailureCode | null;
+};
+
+function matchesExecutionAudit(
+  audit: ScheduledThreadCloseAudit | undefined,
+  action: ScheduledAction,
+  transition: ExecutionTransitionDescriptor,
+): boolean {
+  return (
+    audit !== undefined &&
+    audit.id === transition.auditId &&
+    audit.scheduledActionId === action.id &&
+    audit.guildId === action.guildId &&
+    audit.threadId === action.targetId &&
+    audit.event === transition.event &&
+    audit.actorType === "SYSTEM" &&
+    audit.actorId === null &&
+    audit.previousScheduledActionId === null &&
+    audit.previousExecuteAt === null &&
+    audit.outcome === transition.outcome &&
+    audit.failureCode === transition.failureCode &&
+    audit.executeAt.getTime() === action.executeAt.getTime()
+  );
+}
 
 export type ScheduledThreadCloseAdvisoryLockKeys = readonly [number, number];
 
@@ -137,6 +203,91 @@ export function createScheduledThreadCloseStore(
       .where(eq(scheduledThreadCloseAudits.id, id))
       .limit(1);
     return audit;
+  };
+
+  const confirmCommittedExecutionTransition = async (
+    transition: ExecutionTransitionDescriptor,
+  ): Promise<ScheduledThreadCloseExecutionTransitionResult | undefined> => {
+    const [action, audit] = await Promise.all([
+      database
+        .select()
+        .from(scheduledActions)
+        .where(eq(scheduledActions.id, transition.scheduledActionId))
+        .limit(1)
+        .then((rows) => rows[0]),
+      findAuditById(transition.auditId),
+    ]);
+    if (action === undefined || action.status !== transition.nextStatus) {
+      return undefined;
+    }
+    return matchesExecutionAudit(audit, action, transition)
+      ? { outcome: "ALREADY_COMMITTED", action }
+      : undefined;
+  };
+
+  const applyExecutionTransition = async (
+    transition: ExecutionTransitionDescriptor,
+  ): Promise<ScheduledThreadCloseExecutionTransitionResult> => {
+    try {
+      return await database.transaction(
+        async (dbTransaction): Promise<ScheduledThreadCloseExecutionTransitionResult> => {
+          const [transitioned] = await dbTransaction
+            .update(scheduledActions)
+            .set({ status: transition.nextStatus, updatedAt: new Date() })
+            .where(
+              and(
+                eq(scheduledActions.id, transition.scheduledActionId),
+                eq(scheduledActions.status, "EXECUTING"),
+              ),
+            )
+            .returning();
+
+          if (transitioned === undefined) {
+            const [current] = await dbTransaction
+              .select()
+              .from(scheduledActions)
+              .where(eq(scheduledActions.id, transition.scheduledActionId))
+              .limit(1);
+            if (current === undefined || current.status !== transition.nextStatus) {
+              return { outcome: "NOT_TRANSITIONED", current };
+            }
+
+            const [audit] = await dbTransaction
+              .select()
+              .from(scheduledThreadCloseAudits)
+              .where(eq(scheduledThreadCloseAudits.id, transition.auditId))
+              .limit(1);
+            return matchesExecutionAudit(audit, current, transition)
+              ? { outcome: "ALREADY_COMMITTED", action: current }
+              : { outcome: "NOT_TRANSITIONED", current };
+          }
+
+          await dbTransaction.insert(scheduledThreadCloseAudits).values({
+            id: transition.auditId,
+            scheduledActionId: transitioned.id,
+            guildId: transitioned.guildId,
+            threadId: transitioned.targetId,
+            event: transition.event,
+            actorType: "SYSTEM",
+            executeAt: transitioned.executeAt,
+            outcome: transition.outcome,
+            ...(transition.failureCode === null ? {} : { failureCode: transition.failureCode }),
+          });
+
+          return { outcome: "TRANSITIONED", action: transitioned };
+        },
+      );
+    } catch (error) {
+      try {
+        const confirmed = await confirmCommittedExecutionTransition(transition);
+        if (confirmed !== undefined) {
+          return confirmed;
+        }
+      } catch {
+        // The original execution transition result remains unconfirmed.
+      }
+      throw error;
+    }
   };
 
   const confirmCommittedOperation = async (
@@ -239,6 +390,33 @@ export function createScheduledThreadCloseStore(
 
   return {
     findAuditById,
+    completeExecution: (input) =>
+      applyExecutionTransition({
+        scheduledActionId: input.scheduledActionId,
+        auditId: input.auditId,
+        nextStatus: "COMPLETED",
+        event: "EXECUTION_COMPLETED",
+        outcome: "SUCCESS",
+        failureCode: null,
+      }),
+    failExecution: (input) =>
+      applyExecutionTransition({
+        scheduledActionId: input.scheduledActionId,
+        auditId: input.auditId,
+        nextStatus: "FAILED",
+        event: "EXECUTION_FAILED",
+        outcome: "FAILURE",
+        failureCode: input.failureCode,
+      }),
+    releaseExecutionForRetry: (input) =>
+      applyExecutionTransition({
+        scheduledActionId: input.scheduledActionId,
+        auditId: input.auditId,
+        nextStatus: "ACTIVE",
+        event: "EXECUTION_RETRY",
+        outcome: "FAILURE",
+        failureCode: input.failureCode,
+      }),
     async createOrReplace(input) {
       try {
         return await database.transaction(async (transaction) => {
