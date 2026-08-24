@@ -115,6 +115,14 @@ The default closed prefix is:
 [CLOSED]
 ```
 
+The default guild timezone is:
+
+```text
+UTC
+```
+
+A guild administrator may configure another valid IANA timezone identifier.
+
 ### Thread command structure
 
 Thread operations are subcommands of the top-level `/thread` slash command.
@@ -469,10 +477,9 @@ WEFT is not intended to:
 
 The following decisions must be made before their corresponding implementation work:
 
-- the default guild timezone,
 - the default automatic-close inactivity duration,
 - the exact overdue grace period for one-time scheduled messages,
-- retry count and backoff parameters,
+- retry count and backoff parameters for scheduled messages,
 - the command input format for recurring schedules,
 - the final embed creation and editing interface,
 - whether audit retention will be configurable per guild.

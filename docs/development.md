@@ -218,6 +218,19 @@ jobs. The startup active-action pass is the initial reconciliation; periodic rec
 60 seconds after runtime startup and waits 60 seconds after each completed sweep before starting the
 next one.
 
+The implemented scheduled thread-close delivery queue uses:
+
+- queue policy: `exclusive`
+- retry limit: `3`
+- retry delay: `30` seconds
+- retry backoff: enabled
+- retry delay maximum: `900` seconds
+- expiration: `86399` seconds
+
+These values describe the scheduled thread-close delivery queue only. They are not defaults for
+other scheduled-action categories. Scheduled-message retry count and backoff parameters remain an
+unresolved product decision and must be decided before scheduled-message implementation.
+
 pg-boss retries each delivery for a finite cycle. If that cycle is exhausted while the authoritative
 application action remains active, a later runtime reconciliation sweep may create a new delivery
 cycle. Retry exhaustion alone does not make the application action terminal. Delivery retry
