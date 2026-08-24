@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  formatAutoCloseInactivitySeconds,
   InvalidAutoCloseInactivityError,
+  InvalidAutoCloseInactivityInputError,
   InvalidClosedPrefixError,
   InvalidTimezoneError,
   MAXIMUM_AUTO_CLOSE_INACTIVITY_SECONDS,
   MINIMUM_AUTO_CLOSE_INACTIVITY_SECONDS,
+  parseAutoCloseInactivityInput,
   validateAutoCloseInactivitySeconds,
   validateClosedPrefix,
   validateTimezone,
@@ -55,5 +58,56 @@ describe("automatic close inactivity validation", () => {
         InvalidAutoCloseInactivityError,
       );
     }
+  });
+});
+
+describe("automatic close inactivity input", () => {
+  it("parses the approved unit syntax and normalizes surrounding input", () => {
+    expect(parseAutoCloseInactivityInput("30m")).toBe(1_800);
+    expect(parseAutoCloseInactivityInput("12h")).toBe(43_200);
+    expect(parseAutoCloseInactivityInput("7d")).toBe(604_800);
+    expect(parseAutoCloseInactivityInput("  7D  ")).toBe(604_800);
+  });
+
+  it("accepts the exact supported bounds", () => {
+    expect(parseAutoCloseInactivityInput("5m")).toBe(MINIMUM_AUTO_CLOSE_INACTIVITY_SECONDS);
+    expect(parseAutoCloseInactivityInput("365d")).toBe(MAXIMUM_AUTO_CLOSE_INACTIVITY_SECONDS);
+  });
+
+  it("rejects durations outside the supported range", () => {
+    for (const value of ["1m", "4m", "366d", "8761h"]) {
+      expect(() => parseAutoCloseInactivityInput(value)).toThrow(
+        InvalidAutoCloseInactivityInputError,
+      );
+    }
+  });
+
+  it("rejects malformed input without throwing on overflow", () => {
+    for (const value of [
+      "",
+      "7",
+      "d",
+      "0m",
+      "-5m",
+      "1.5h",
+      "1h30m",
+      "07d",
+      "7 d",
+      "7w",
+      "999999999999999999999d",
+    ]) {
+      expect(() => parseAutoCloseInactivityInput(value)).toThrow(
+        InvalidAutoCloseInactivityInputError,
+      );
+    }
+  });
+
+  it("formats persisted seconds with the largest exact unit", () => {
+    expect(formatAutoCloseInactivitySeconds(604_800)).toBe("7d");
+    expect(formatAutoCloseInactivitySeconds(43_200)).toBe("12h");
+    expect(formatAutoCloseInactivitySeconds(1_800)).toBe("30m");
+    expect(formatAutoCloseInactivitySeconds(300)).toBe("5m");
+    expect(formatAutoCloseInactivitySeconds(90_000)).toBe("25h");
+    expect(formatAutoCloseInactivitySeconds(5_400)).toBe("90m");
   });
 });

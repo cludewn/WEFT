@@ -359,6 +359,272 @@ describe("automatic close thread activity persistence", () => {
   });
 });
 
+describe("automatic close parent enable persistence", () => {
+  const enabledAt = new Date("2030-05-01T00:00:00.000Z");
+  const older = new Date("2030-04-01T00:00:00.000Z");
+  const newer = new Date("2030-06-01T00:00:00.000Z");
+
+  const activityRows = (guildId: string) =>
+    database.client
+      .select()
+      .from(autoCloseThreadActivity)
+      .where(eq(autoCloseThreadActivity.guildId, guildId));
+
+  const findActivity = async (guildId: string, threadId: string) => {
+    const [row] = await database.client
+      .select()
+      .from(autoCloseThreadActivity)
+      .where(
+        and(
+          eq(autoCloseThreadActivity.guildId, guildId),
+          eq(autoCloseThreadActivity.threadId, threadId),
+        ),
+      )
+      .limit(1);
+    return row;
+  };
+
+  it("lists a guild's parent channels ordered by parent channel ID", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[1]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addParentChannel(guildIds[1], parentChannelIds[0]);
+
+    await expect(store.listParentChannels(guildIds[0])).resolves.toEqual([
+      parentChannelIds[0],
+      parentChannelIds[1],
+    ]);
+    await expect(store.listParentChannels(guildIds[1])).resolves.toEqual([parentChannelIds[0]]);
+  });
+
+  it("returns an empty list when no parent channel is configured", async () => {
+    await expect(store.listParentChannels(guildIds[0])).resolves.toEqual([]);
+  });
+
+  it("adds the parent and creates baselines for supplied active threads", async () => {
+    await expect(
+      store.enableParentChannelWithBaselines({
+        guildId: guildIds[0],
+        parentChannelId: parentChannelIds[0],
+        enabledAt,
+        activeThreadIds: [threadIds[0], threadIds[1]],
+      }),
+    ).resolves.toEqual({ outcome: "ENABLED", baselinesApplied: 2 });
+
+    await expect(store.listParentChannels(guildIds[0])).resolves.toEqual([parentChannelIds[0]]);
+    const rows = await activityRows(guildIds[0]);
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row).toMatchObject({
+        parentChannelId: parentChannelIds[0],
+        lastActivityAt: enabledAt,
+      });
+    }
+  });
+
+  it("advances an older activity row to the enable timestamp", async () => {
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[1],
+      occurredAt: older,
+    });
+
+    await expect(
+      store.enableParentChannelWithBaselines({
+        guildId: guildIds[0],
+        parentChannelId: parentChannelIds[0],
+        enabledAt,
+        activeThreadIds: [threadIds[0]],
+      }),
+    ).resolves.toEqual({ outcome: "ENABLED", baselinesApplied: 1 });
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      lastActivityAt: enabledAt,
+      parentChannelId: parentChannelIds[0],
+    });
+  });
+
+  it("preserves activity that is newer than the enable timestamp", async () => {
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[1],
+      occurredAt: newer,
+    });
+    const before = await findActivity(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.enableParentChannelWithBaselines({
+        guildId: guildIds[0],
+        parentChannelId: parentChannelIds[0],
+        enabledAt,
+        activeThreadIds: [threadIds[0]],
+      }),
+    ).resolves.toEqual({ outcome: "ENABLED", baselinesApplied: 0 });
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+  });
+
+  it("leaves an equal activity timestamp completely unchanged", async () => {
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[1],
+      occurredAt: enabledAt,
+    });
+    const before = await findActivity(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.enableParentChannelWithBaselines({
+        guildId: guildIds[0],
+        parentChannelId: parentChannelIds[0],
+        enabledAt,
+        activeThreadIds: [threadIds[0]],
+      }),
+    ).resolves.toEqual({ outcome: "ENABLED", baselinesApplied: 0 });
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+  });
+
+  it("never creates or advances a baseline for an excluded thread", async () => {
+    await store.addThreadExclusion(guildIds[0], threadIds[0]);
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[1],
+      parentChannelId: parentChannelIds[1],
+      occurredAt: older,
+    });
+    await store.addThreadExclusion(guildIds[0], threadIds[1]);
+
+    await expect(
+      store.enableParentChannelWithBaselines({
+        guildId: guildIds[0],
+        parentChannelId: parentChannelIds[0],
+        enabledAt,
+        activeThreadIds: [threadIds[0], threadIds[1]],
+      }),
+    ).resolves.toEqual({ outcome: "ENABLED", baselinesApplied: 0 });
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toBeUndefined();
+    await expect(findActivity(guildIds[0], threadIds[1])).resolves.toMatchObject({
+      lastActivityAt: older,
+      parentChannelId: parentChannelIds[1],
+    });
+  });
+
+  it("treats an already enabled parent as a no-op that never touches baselines", async () => {
+    await store.enableParentChannelWithBaselines({
+      guildId: guildIds[0],
+      parentChannelId: parentChannelIds[0],
+      enabledAt: older,
+      activeThreadIds: [threadIds[0]],
+    });
+    const before = await findActivity(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.enableParentChannelWithBaselines({
+        guildId: guildIds[0],
+        parentChannelId: parentChannelIds[0],
+        enabledAt: newer,
+        activeThreadIds: [threadIds[0], threadIds[1]],
+      }),
+    ).resolves.toEqual({ outcome: "ALREADY_ENABLED" });
+
+    await expect(store.listParentChannels(guildIds[0])).resolves.toEqual([parentChannelIds[0]]);
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+    await expect(findActivity(guildIds[0], threadIds[1])).resolves.toBeUndefined();
+  });
+
+  it("enables without baselines when no active thread is supplied", async () => {
+    await expect(
+      store.enableParentChannelWithBaselines({
+        guildId: guildIds[0],
+        parentChannelId: parentChannelIds[0],
+        enabledAt,
+        activeThreadIds: [],
+      }),
+    ).resolves.toEqual({ outcome: "ENABLED", baselinesApplied: 0 });
+
+    await expect(store.listParentChannels(guildIds[0])).resolves.toEqual([parentChannelIds[0]]);
+    await expect(activityRows(guildIds[0])).resolves.toEqual([]);
+  });
+
+  it("rolls back the parent row when baseline application fails", async () => {
+    await expect(
+      store.enableParentChannelWithBaselines({
+        guildId: guildIds[0],
+        parentChannelId: parentChannelIds[0],
+        enabledAt: new Date(Number.NaN),
+        activeThreadIds: [threadIds[0]],
+      }),
+    ).rejects.toThrow();
+
+    await expect(store.listParentChannels(guildIds[0])).resolves.toEqual([]);
+    await expect(activityRows(guildIds[0])).resolves.toEqual([]);
+  });
+
+  it("keeps activity rows when the parent is removed and re-added", async () => {
+    await store.enableParentChannelWithBaselines({
+      guildId: guildIds[0],
+      parentChannelId: parentChannelIds[0],
+      enabledAt: older,
+      activeThreadIds: [threadIds[0]],
+    });
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[1],
+      parentChannelId: parentChannelIds[0],
+      occurredAt: newer,
+    });
+
+    await expect(store.removeParentChannel(guildIds[0], parentChannelIds[0])).resolves.toBe(true);
+    await expect(store.listParentChannels(guildIds[0])).resolves.toEqual([]);
+    await expect(activityRows(guildIds[0])).resolves.toHaveLength(2);
+
+    await expect(
+      store.enableParentChannelWithBaselines({
+        guildId: guildIds[0],
+        parentChannelId: parentChannelIds[0],
+        enabledAt,
+        activeThreadIds: [threadIds[0], threadIds[1]],
+      }),
+    ).resolves.toEqual({ outcome: "ENABLED", baselinesApplied: 1 });
+
+    // The stale row advances to the new enable floor; the newer retained activity is preserved.
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      lastActivityAt: enabledAt,
+    });
+    await expect(findActivity(guildIds[0], threadIds[1])).resolves.toMatchObject({
+      lastActivityAt: newer,
+    });
+  });
+
+  it("ignores duplicate thread IDs in one enable operation", async () => {
+    await expect(
+      store.enableParentChannelWithBaselines({
+        guildId: guildIds[0],
+        parentChannelId: parentChannelIds[0],
+        enabledAt,
+        activeThreadIds: [threadIds[0], threadIds[0]],
+      }),
+    ).resolves.toEqual({ outcome: "ENABLED", baselinesApplied: 1 });
+
+    await expect(activityRows(guildIds[0])).resolves.toHaveLength(1);
+  });
+
+  it("keeps guilds independent", async () => {
+    await store.enableParentChannelWithBaselines({
+      guildId: guildIds[0],
+      parentChannelId: parentChannelIds[0],
+      enabledAt,
+      activeThreadIds: [threadIds[0]],
+    });
+
+    await expect(store.listParentChannels(guildIds[1])).resolves.toEqual([]);
+    await expect(activityRows(guildIds[1])).resolves.toEqual([]);
+  });
+});
+
 async function cleanup(): Promise<void> {
   await database.client
     .delete(autoCloseParentChannels)

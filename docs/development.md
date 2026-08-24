@@ -714,6 +714,28 @@ Automatic-close participation does not require a `managed_threads` row. `managed
 WEFT's thread lifecycle state and only exists for threads WEFT has already closed, so requiring it
 would exclude exactly the threads inactivity management must be able to close.
 
+Automatic-close configuration is split between the Discord interaction boundary and a focused
+application boundary. The `/config` command handler performs routing, option extraction,
+Discord-specific validation, and response formatting. A separate automatic-close configuration
+service coordinates guild settings, automatic-close persistence, and an injected Discord
+active-thread enumeration boundary. The persistence store never calls Discord and never depends on
+the guild-settings store.
+
+Enabling a parent channel reads the guild's currently active threads once through the guild-level
+Discord active-thread route, filters them in application code by requested parent and supported
+thread type, and only then performs the database work. The enable timestamp is captured after
+successful enumeration and immediately before the database operation, so a slow Discord response
+cannot shorten the resulting grace period. A failed enumeration leaves the parent disabled and
+writes nothing. No PostgreSQL transaction is held across the Discord call.
+
+The database portion of parent enablement is one transaction. The allowlist row is added only when
+absent, and baselines are applied only when the parent was newly added. Baselines apply
+`last_activity_at = max(existing, enabled_at)` for each supplied non-excluded thread, so an enable
+never moves activity backward and a stale or equal baseline leaves `last_activity_at`,
+`parent_channel_id`, and `updated_at` untouched. Individually excluded threads receive no baseline.
+Removing a parent deletes only the allowlist row; activity rows are retained so that a later
+re-enable preserves legitimately newer activity while advancing stale rows to the new floor.
+
 ### Phase 7: Managed messages
 
 - Implement `/message send`.

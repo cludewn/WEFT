@@ -72,6 +72,13 @@ export class InvalidAutoCloseInactivityError extends Error {
   }
 }
 
+export class InvalidAutoCloseInactivityInputError extends Error {
+  constructor() {
+    super("Automatic close inactivity must be one duration from 5 minutes through 365 days");
+    this.name = "InvalidAutoCloseInactivityInputError";
+  }
+}
+
 export function validateTimezone(value: string): string {
   const timezone = value.trim();
 
@@ -117,6 +124,53 @@ export function validateAutoCloseInactivitySeconds(value: number): number {
     throw new InvalidAutoCloseInactivityError();
   }
   return value;
+}
+
+const AUTO_CLOSE_INACTIVITY_UNIT_SECONDS = {
+  m: 60n,
+  h: 3_600n,
+  d: 86_400n,
+} as const;
+
+/**
+ * Parses one automatic-close inactivity duration such as `30m`, `12h`, or `7d`.
+ *
+ * This is intentionally separate from the scheduled thread-close duration input, which has a
+ * different minimum and produces an absolute execution time.
+ */
+export function parseAutoCloseInactivityInput(value: string): number {
+  const match = /^([1-9][0-9]*)(m|h|d)$/.exec(value.trim().toLowerCase());
+  if (match === null) {
+    throw new InvalidAutoCloseInactivityInputError();
+  }
+
+  const unit = match[2] as keyof typeof AUTO_CLOSE_INACTIVITY_UNIT_SECONDS;
+  let seconds: bigint;
+  try {
+    seconds = BigInt(match[1]!) * AUTO_CLOSE_INACTIVITY_UNIT_SECONDS[unit];
+  } catch {
+    throw new InvalidAutoCloseInactivityInputError();
+  }
+
+  if (
+    seconds < BigInt(MINIMUM_AUTO_CLOSE_INACTIVITY_SECONDS) ||
+    seconds > BigInt(MAXIMUM_AUTO_CLOSE_INACTIVITY_SECONDS)
+  ) {
+    throw new InvalidAutoCloseInactivityInputError();
+  }
+
+  return validateAutoCloseInactivitySeconds(Number(seconds));
+}
+
+/** Formats persisted inactivity seconds with the largest unit that divides them exactly. */
+export function formatAutoCloseInactivitySeconds(seconds: number): string {
+  if (seconds % 86_400 === 0) {
+    return `${seconds / 86_400}d`;
+  }
+  if (seconds % 3_600 === 0) {
+    return `${seconds / 3_600}h`;
+  }
+  return `${Math.trunc(seconds / 60)}m`;
 }
 
 export function createGuildSettingsStore(database: DatabaseClient): GuildSettingsStore {
