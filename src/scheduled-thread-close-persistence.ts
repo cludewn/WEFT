@@ -91,10 +91,23 @@ export type CreateOrReplaceScheduledThreadCloseResult =
   | { outcome: "REPLACED"; action: ScheduledAction; previousAction: ScheduledAction }
   | { outcome: "EXECUTION_IN_PROGRESS"; current: ScheduledAction };
 
+export type CancelScheduledThreadClose = {
+  auditId: string;
+  guildId: string;
+  threadId: string;
+  actorId: string;
+};
+
+export type CancelScheduledThreadCloseResult =
+  | { outcome: "CANCELLED"; action: ScheduledAction }
+  | { outcome: "NOT_SCHEDULED" }
+  | { outcome: "EXECUTION_IN_PROGRESS"; current: ScheduledAction };
+
 export type ScheduledThreadCloseStore = {
   createOrReplace: (
     input: CreateOrReplaceScheduledThreadClose,
   ) => Promise<CreateOrReplaceScheduledThreadCloseResult>;
+  cancel: (input: CancelScheduledThreadClose) => Promise<CancelScheduledThreadCloseResult>;
   findAuditById: (id: string) => Promise<ScheduledThreadCloseAudit | undefined>;
 };
 
@@ -187,6 +200,43 @@ export function createScheduledThreadCloseStore(
     return { outcome: "REPLACED", action, previousAction };
   };
 
+  const confirmCommittedCancellation = async (
+    input: CancelScheduledThreadClose,
+  ): Promise<CancelScheduledThreadCloseResult | undefined> => {
+    const audit = await findAuditById(input.auditId);
+    if (
+      audit === undefined ||
+      audit.guildId !== input.guildId ||
+      audit.threadId !== input.threadId ||
+      audit.event !== "CANCELLED" ||
+      audit.actorType !== "USER" ||
+      audit.actorId !== input.actorId ||
+      audit.outcome !== "SUCCESS" ||
+      audit.failureCode !== null ||
+      audit.previousScheduledActionId !== null ||
+      audit.previousExecuteAt !== null
+    ) {
+      return undefined;
+    }
+
+    const [action] = await database
+      .select()
+      .from(scheduledActions)
+      .where(eq(scheduledActions.id, audit.scheduledActionId))
+      .limit(1);
+    if (
+      action === undefined ||
+      action.guildId !== input.guildId ||
+      action.actionType !== "CLOSE_THREAD" ||
+      action.targetId !== input.threadId ||
+      action.status !== "CANCELLED" ||
+      action.executeAt.getTime() !== audit.executeAt.getTime()
+    ) {
+      return undefined;
+    }
+    return { outcome: "CANCELLED", action };
+  };
+
   return {
     findAuditById,
     async createOrReplace(input) {
@@ -276,6 +326,70 @@ export function createScheduledThreadCloseStore(
           }
         } catch {
           // The original transaction result remains unconfirmed.
+        }
+        throw error;
+      }
+    },
+    async cancel(input) {
+      try {
+        return await database.transaction(async (transaction) => {
+          const [key1, key2] = scheduledThreadCloseAdvisoryLockKeys(input.guildId, input.threadId);
+          await transaction.execute(
+            sql`select pg_advisory_xact_lock(${key1}::integer, ${key2}::integer)`,
+          );
+
+          const [current] = await transaction
+            .select()
+            .from(scheduledActions)
+            .where(
+              and(
+                eq(scheduledActions.guildId, input.guildId),
+                eq(scheduledActions.actionType, "CLOSE_THREAD"),
+                eq(scheduledActions.targetId, input.threadId),
+                inArray(scheduledActions.status, ["ACTIVE", "EXECUTING"]),
+              ),
+            )
+            .limit(1)
+            .for("update");
+
+          if (current === undefined) {
+            return { outcome: "NOT_SCHEDULED" };
+          }
+          if (current.status === "EXECUTING") {
+            return { outcome: "EXECUTION_IN_PROGRESS", current };
+          }
+
+          const [cancelled] = await transaction
+            .update(scheduledActions)
+            .set({ status: "CANCELLED", updatedAt: new Date() })
+            .where(and(eq(scheduledActions.id, current.id), eq(scheduledActions.status, "ACTIVE")))
+            .returning();
+          if (cancelled === undefined) {
+            throw new Error("Scheduled thread close cancellation lost its conditional update");
+          }
+
+          await transaction.insert(scheduledThreadCloseAudits).values({
+            id: input.auditId,
+            scheduledActionId: cancelled.id,
+            guildId: cancelled.guildId,
+            threadId: cancelled.targetId,
+            event: "CANCELLED",
+            actorType: "USER",
+            actorId: input.actorId,
+            executeAt: cancelled.executeAt,
+            outcome: "SUCCESS",
+          });
+
+          return { outcome: "CANCELLED", action: cancelled };
+        });
+      } catch (error) {
+        try {
+          const confirmed = await confirmCommittedCancellation(input);
+          if (confirmed !== undefined) {
+            return confirmed;
+          }
+        } catch {
+          // The original cancellation result remains unconfirmed.
         }
         throw error;
       }

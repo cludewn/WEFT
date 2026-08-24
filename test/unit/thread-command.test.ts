@@ -26,11 +26,13 @@ describe("thread command", () => {
       "close",
       "open",
       "close-after",
+      "cancel-close",
     ]);
     expect(definition.options?.at(2)).toMatchObject({
       name: "close-after",
       options: [{ name: "after", required: true }],
     });
+    expect(definition.options?.at(3)).toMatchObject({ name: "cancel-close", options: [] });
     expect(DEFAULT_INTERACTION_IO_TIMEOUT_MS).toBe(2_500);
   });
 
@@ -307,6 +309,80 @@ describe("thread command", () => {
     expect(JSON.stringify(fixture.editReply.mock.calls)).not.toContain("retry");
   });
 
+  it.each([
+    [
+      { ok: true, outcome: "CANCELLED", action: createScheduledAction(new Date()) } as const,
+      "Scheduled thread close cancelled.",
+    ],
+    [
+      { ok: true, outcome: "NOT_SCHEDULED" } as const,
+      "No scheduled close is active for this thread.",
+    ],
+    [
+      { ok: false, code: "EXECUTION_IN_PROGRESS" } as const,
+      "The scheduled close is already executing and can no longer be cancelled.",
+    ],
+    [
+      { ok: false, code: "USER_MISSING_PERMISSION" } as const,
+      "You need the Manage Threads permission to use this command.",
+    ],
+    [
+      { ok: false, code: "UNSUPPORTED_CONTEXT" } as const,
+      "This command can only be used in a supported thread.",
+    ],
+    [
+      { ok: false, code: "CONTEXT_VALIDATION_FAILURE" } as const,
+      "WEFT could not verify the current thread or your permissions. Please try again later.",
+    ],
+    [
+      { ok: false, code: "PERSISTENCE_FAILURE" } as const,
+      "WEFT could not cancel the scheduled close. Please try again later.",
+    ],
+  ])("routes cancel-close result %# ephemerally", async (result, message) => {
+    const scheduledThreadClose = createScheduledThreadClose({
+      cancel: vi.fn(() => Promise.resolve(result)),
+    });
+    const fixture = createInteraction({ subcommand: "cancel-close" });
+
+    await handleThreadCommand(
+      fixture.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      scheduledThreadClose,
+    );
+
+    expect(scheduledThreadClose.cancel).toHaveBeenCalledWith("guild-id", "thread-id", "actor-id");
+    expect(fixture.reply).toHaveBeenCalledWith(ephemeral("Cancelling scheduled thread close…"));
+    expect(fixture.editReply).toHaveBeenCalledWith(edited(message));
+  });
+
+  it.each([
+    [
+      { outcome: "EXECUTION_IN_PROGRESS" } as const,
+      "A scheduled close is already executing for this thread. The manual close was not started.",
+    ],
+    [
+      { outcome: "PERSISTENCE_FAILURE" } as const,
+      "WEFT could not confirm cancellation of the scheduled close, so the thread was not changed.",
+    ],
+  ])("maps manual close preparation result %#", async (result, message) => {
+    const scheduledThreadClose = createScheduledThreadClose({
+      closeManually: vi.fn(() => Promise.resolve(result)),
+    });
+    const fixture = createInteraction({ subcommand: "close" });
+
+    await handleThreadCommand(
+      fixture.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      scheduledThreadClose,
+    );
+
+    expect(fixture.editReply).toHaveBeenCalledWith(edited(message));
+  });
+
   it("acknowledges before a delayed lifecycle result", async () => {
     let resolveLifecycle: ((result: { ok: true; changed: true }) => void) | undefined;
     const lifecycleResult = new Promise<{ ok: true; changed: true }>((resolve) => {
@@ -386,9 +462,17 @@ function createLifecycle(overrides: Partial<ThreadLifecycleService> = {}): Threa
 
 function createScheduledThreadClose(
   overrides: Partial<ScheduledThreadCloseCommandService> = {},
+  lifecycle = createLifecycle(),
 ): ScheduledThreadCloseCommandService {
   return {
     schedule: vi.fn(() => Promise.resolve({ ok: false, code: "PERSISTENCE_FAILURE" } as const)),
+    cancel: vi.fn(() => Promise.resolve({ ok: true, outcome: "NOT_SCHEDULED" } as const)),
+    closeManually: vi.fn<ScheduledThreadCloseCommandService["closeManually"]>(
+      async (guildId, threadId, actorId) => ({
+        outcome: "LIFECYCLE" as const,
+        result: await lifecycle.close(guildId, threadId, actorId),
+      }),
+    ),
     ...overrides,
   };
 }
@@ -398,12 +482,12 @@ function handleThreadCommand(
   lifecycle: ThreadLifecycleService,
   commandLogger: typeof logger,
   timeoutMs = DEFAULT_INTERACTION_IO_TIMEOUT_MS,
-  scheduledThreadClose = createScheduledThreadClose(),
+  scheduledThreadClose?: ScheduledThreadCloseCommandService,
 ): Promise<void> {
   return handleThreadCommandWithDependencies(
     interaction,
     lifecycle,
-    scheduledThreadClose,
+    scheduledThreadClose ?? createScheduledThreadClose({}, lifecycle),
     commandLogger,
     timeoutMs,
   );

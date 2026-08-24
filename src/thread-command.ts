@@ -17,11 +17,7 @@ import type {
   ScheduledThreadCloseCommandResult,
   ScheduledThreadCloseCommandService,
 } from "./scheduled-thread-close-command.js";
-import type {
-  ThreadFailureCode,
-  ThreadLifecycleResult,
-  ThreadLifecycleService,
-} from "./thread-lifecycle.js";
+import type { ThreadFailureCode, ThreadLifecycleService } from "./thread-lifecycle.js";
 
 export const threadCommandDefinition = new SlashCommandBuilder()
   .setName("thread")
@@ -44,6 +40,9 @@ export const threadCommandDefinition = new SlashCommandBuilder()
           .setDescription("Relative duration such as 30m, 2h, or 7d")
           .setRequired(true),
       ),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName("cancel-close").setDescription("Cancel the scheduled thread close"),
   );
 
 export const DEFAULT_INTERACTION_IO_TIMEOUT_MS = 2_500;
@@ -81,7 +80,7 @@ function failureMessage(code: ThreadFailureCode): string {
   return "WEFT could not update this thread. Please try again.";
 }
 
-type ThreadCommandOperation = "CLOSE" | "OPEN" | "CLOSE_AFTER";
+type ThreadCommandOperation = "CLOSE" | "OPEN" | "CLOSE_AFTER" | "CANCEL_CLOSE";
 type InteractionBoundary = "initial_response" | "final_response";
 
 async function runInteractionBoundary<T>(
@@ -161,17 +160,30 @@ export async function handleThreadCommand(
   }
 
   const subcommand = interaction.options.getSubcommand();
-  if (subcommand !== "close" && subcommand !== "open" && subcommand !== "close-after") {
+  if (
+    subcommand !== "close" &&
+    subcommand !== "open" &&
+    subcommand !== "close-after" &&
+    subcommand !== "cancel-close"
+  ) {
     throw new Error(`Unsupported thread subcommand: ${subcommand}`);
   }
   const operation: ThreadCommandOperation =
-    subcommand === "close" ? "CLOSE" : subcommand === "open" ? "OPEN" : "CLOSE_AFTER";
+    subcommand === "close"
+      ? "CLOSE"
+      : subcommand === "open"
+        ? "OPEN"
+        : subcommand === "close-after"
+          ? "CLOSE_AFTER"
+          : "CANCEL_CLOSE";
   const initialContent =
     operation === "CLOSE"
       ? "Closing thread…"
       : operation === "OPEN"
         ? "Opening thread…"
-        : "Scheduling thread close…";
+        : operation === "CLOSE_AFTER"
+          ? "Scheduling thread close…"
+          : "Cancelling scheduled thread close…";
   await runInteractionBoundary(
     interaction,
     logger,
@@ -187,19 +199,35 @@ export async function handleThreadCommand(
     },
   );
 
-  let result: ThreadLifecycleResult;
   let finalContent: string;
   if (subcommand === "close") {
-    result = await lifecycle.close(interaction.guildId, interaction.channelId, interaction.user.id);
-    finalContent = result.ok
-      ? result.changed
-        ? "Thread closed."
-        : "Thread is already closed."
-      : result.pending
-        ? "Discord is still processing this thread update. This can happen when Discord rate-limits thread name changes, and completion may take several minutes."
-        : failureMessage(result.code);
+    const manualClose = await scheduledThreadClose.closeManually(
+      interaction.guildId,
+      interaction.channelId,
+      interaction.user.id,
+    );
+    if (manualClose.outcome === "EXECUTION_IN_PROGRESS") {
+      finalContent =
+        "A scheduled close is already executing for this thread. The manual close was not started.";
+    } else if (manualClose.outcome === "PERSISTENCE_FAILURE") {
+      finalContent =
+        "WEFT could not confirm cancellation of the scheduled close, so the thread was not changed.";
+    } else {
+      const result = manualClose.result;
+      finalContent = result.ok
+        ? result.changed
+          ? "Thread closed."
+          : "Thread is already closed."
+        : result.pending
+          ? "Discord is still processing this thread update. This can happen when Discord rate-limits thread name changes, and completion may take several minutes."
+          : failureMessage(result.code);
+    }
   } else if (subcommand === "open") {
-    result = await lifecycle.open(interaction.guildId, interaction.channelId, interaction.user.id);
+    const result = await lifecycle.open(
+      interaction.guildId,
+      interaction.channelId,
+      interaction.user.id,
+    );
     finalContent = result.ok
       ? result.changed
         ? "Thread opened."
@@ -207,7 +235,7 @@ export async function handleThreadCommand(
       : result.pending
         ? "Discord is still processing this thread update. This can happen when Discord rate-limits thread name changes, and completion may take several minutes."
         : failureMessage(result.code);
-  } else {
+  } else if (subcommand === "close-after") {
     const scheduleResult = await scheduledThreadClose.schedule(
       interaction.guildId,
       interaction.channelId,
@@ -215,11 +243,41 @@ export async function handleThreadCommand(
       interaction.options.getString("after", true),
     );
     finalContent = scheduledThreadCloseMessage(scheduleResult);
+  } else {
+    const cancellationResult = await scheduledThreadClose.cancel(
+      interaction.guildId,
+      interaction.channelId,
+      interaction.user.id,
+    );
+    finalContent = scheduledThreadCloseCancellationMessage(cancellationResult);
   }
 
   await runInteractionBoundary(interaction, logger, operation, "final_response", timeoutMs, () =>
     interaction.editReply(editReply(finalContent)),
   );
+}
+
+function scheduledThreadCloseCancellationMessage(
+  result: Awaited<ReturnType<ScheduledThreadCloseCommandService["cancel"]>>,
+): string {
+  if (result.ok) {
+    return result.outcome === "CANCELLED"
+      ? "Scheduled thread close cancelled."
+      : "No scheduled close is active for this thread.";
+  }
+
+  switch (result.code) {
+    case "EXECUTION_IN_PROGRESS":
+      return "The scheduled close is already executing and can no longer be cancelled.";
+    case "UNSUPPORTED_CONTEXT":
+      return "This command can only be used in a supported thread.";
+    case "USER_MISSING_PERMISSION":
+      return "You need the Manage Threads permission to use this command.";
+    case "CONTEXT_VALIDATION_FAILURE":
+      return "WEFT could not verify the current thread or your permissions. Please try again later.";
+    case "PERSISTENCE_FAILURE":
+      return "WEFT could not cancel the scheduled close. Please try again later.";
+  }
 }
 
 function scheduledThreadCloseMessage(result: ScheduledThreadCloseCommandResult): string {

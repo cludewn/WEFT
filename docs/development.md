@@ -235,6 +235,20 @@ pending result; the existing runtime reconciliation loop repairs missing deliver
 not cancel an older pg-boss delivery during replacement because workers reload the authoritative
 application action before attempting execution.
 
+`/thread cancel-close` idempotently cancels the current thread's `ACTIVE` scheduled close. It
+requires the invoking user's current Manage Threads permission, but it does not require an active
+or unlocked thread or the bot's mutation permission because it does not mutate Discord.
+Cancellation and close creation/replacement share the same per-guild/thread PostgreSQL advisory-
+lock domain. The `ACTIVE` to `CANCELLED` transition and its `CANCELLED` user audit commit atomically;
+no matching active close is a successful no-op, while an `EXECUTING` close cannot be cancelled.
+
+A valid manual `/thread close` cancels an `ACTIVE` scheduled close after the lifecycle's initial
+resource, locked-state, user-permission, and bot-permission checks, but before managed-state or
+Discord mutation work begins. A cancellation that cannot be confirmed stops the manual close.
+Once committed, the cancellation is not restored if later lifecycle work is unchanged, pending, or
+fails. WEFT does not directly cancel the stale pg-boss delivery; the existing worker reloads the
+authoritative action and safely ignores `CANCELLED` state.
+
 ## Startup and shutdown
 
 Startup must initialize components in a controlled order.

@@ -114,6 +114,76 @@ describe("thread lifecycle", () => {
     expect(fixture.state?.lifecycleState).toBe("CLOSED");
   });
 
+  it("runs manual-close preparation after initial validation and before state or Discord effects", async () => {
+    const fixture = createFixture();
+
+    await expect(
+      fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, () => {
+        fixture.calls.push("prepare");
+        return Promise.resolve();
+      }),
+    ).resolves.toEqual({ ok: true, changed: true });
+
+    expect(fixture.calls.slice(0, 5)).toEqual([
+      "fetch",
+      "actor-permission",
+      "bot-permission",
+      "prepare",
+      "settings",
+    ]);
+    expect(fixture.calls.indexOf("prepare")).toBeLessThan(
+      fixture.calls.indexOf("state-closed:[CLOSED]"),
+    );
+    expect(fixture.calls.indexOf("prepare")).toBeLessThan(fixture.calls.indexOf("archive"));
+  });
+
+  it.each([
+    ["unsupported", { supported: false }],
+    ["locked", { locked: true }],
+    ["actor denied", { actorCanManage: false }],
+    ["bot denied", { botCanManage: false }],
+  ] as const)("does not prepare an invalid manual close: %s", async (_name, options) => {
+    const fixture = createFixture(options);
+    const prepare = vi.fn(() => Promise.resolve());
+
+    await fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, prepare);
+
+    expect(prepare).not.toHaveBeenCalled();
+  });
+
+  it("propagates a stopped preparation without state, Discord mutation, or lifecycle audit", async () => {
+    const fixture = createFixture();
+    const stop = new Error("opaque preparation stop");
+
+    await expect(
+      fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, () => Promise.reject(stop)),
+    ).rejects.toBe(stop);
+
+    expect(fixture.managedThreads.saveClosed).not.toHaveBeenCalled();
+    expect(fixture.discord.archiveThread).not.toHaveBeenCalled();
+    expect(fixture.auditStore.record).not.toHaveBeenCalled();
+  });
+
+  it("does not run preparation while a same-thread Discord mutation guard is pending", async () => {
+    const fixture = createFixture({ mutationWaitMs: 5 });
+    const mutation = deferred<void>();
+    fixture.discord.archiveThread = vi.fn(() => mutation.promise);
+
+    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
+      ok: false,
+      pending: true,
+    });
+    const prepare = vi.fn(() => Promise.resolve());
+    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, prepare)).resolves.toEqual({
+      ok: false,
+      pending: true,
+    });
+    expect(prepare).not.toHaveBeenCalled();
+
+    mutation.resolve(undefined);
+    await vi.waitFor(() => expect(fixture.auditStore.record).toHaveBeenCalledOnce());
+  });
+
   it("treats a mutation resolved within caller wait as confirmed without reconciliation fetch", async () => {
     const fixture = createFixture({ mutationWaitMs: 50 });
 
@@ -537,12 +607,19 @@ describe("thread lifecycle", () => {
 
   it("closes again with one Discord mutation after automatic open reconciliation", async () => {
     const fixture = createFixture();
+    const scheduledThreadClose = {
+      ...scheduledThreadCloseCommandStub,
+      closeManually: async (guildId: string, threadId: string, actorId: string) => ({
+        outcome: "LIFECYCLE" as const,
+        result: await fixture.service.close(guildId, threadId, actorId),
+      }),
+    };
     const firstClose = createThreadInteraction("close");
 
     await handleThreadCommand(
       firstClose.interaction,
       fixture.service,
-      scheduledThreadCloseCommandStub,
+      scheduledThreadClose,
       fixture.logger,
       50,
     );
@@ -568,7 +645,7 @@ describe("thread lifecycle", () => {
     await handleThreadCommand(
       secondClose.interaction,
       fixture.service,
-      scheduledThreadCloseCommandStub,
+      scheduledThreadClose,
       fixture.logger,
       50,
     );
@@ -1825,6 +1902,7 @@ function createFixture({
   archived = false,
   actorCanManage = true,
   botCanManage = true,
+  supported = true,
   locked = false,
   deadlineMs,
   mutationWaitMs,
@@ -1837,6 +1915,7 @@ function createFixture({
   archived?: boolean;
   actorCanManage?: boolean;
   botCanManage?: boolean;
+  supported?: boolean;
   locked?: boolean;
   deadlineMs?: number;
   mutationWaitMs?: number;
@@ -1865,7 +1944,7 @@ function createFixture({
   const discord: ThreadLifecycleDiscord = {
     fetchThread: vi.fn<ThreadLifecycleDiscord["fetchThread"]>(() => {
       calls.push("fetch");
-      return Promise.resolve({ ...thread });
+      return Promise.resolve(supported ? { ...thread } : undefined);
     }),
     actorCanManage: vi.fn<ThreadLifecycleDiscord["actorCanManage"]>(() => {
       calls.push("actor-permission");

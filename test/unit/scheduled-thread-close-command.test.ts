@@ -8,6 +8,7 @@ import {
   parseScheduledThreadCloseDuration,
 } from "../../src/scheduled-thread-close-command.js";
 import type {
+  CancelScheduledThreadCloseResult,
   CreateOrReplaceScheduledThreadCloseResult,
   ScheduledThreadCloseStore,
 } from "../../src/scheduled-thread-close-persistence.js";
@@ -15,6 +16,8 @@ import type { ScheduledThreadCloseWorkerController } from "../../src/scheduled-t
 import type {
   SupportedThreadType,
   ThreadLifecycleDiscord,
+  ThreadLifecycleResult,
+  ThreadLifecycleService,
   ThreadSnapshot,
 } from "../../src/thread-lifecycle.js";
 
@@ -234,6 +237,154 @@ describe("scheduled thread close command service", () => {
     expect(fixture.delivery.enqueueScheduledThreadClose).not.toHaveBeenCalled();
     expect(JSON.stringify(fixture.logger.warn.mock.calls)).not.toContain("sensitive DB failure");
   });
+
+  it.each<[string, SupportedThreadType]>([
+    ["public thread", ChannelType.PublicThread],
+    ["private thread", ChannelType.PrivateThread],
+    ["forum post", ChannelType.PublicThread],
+  ])("cancels an active close for a supported %s", async (_description, type) => {
+    const action = createAction({ status: "CANCELLED" });
+    const fixture = createFixture({
+      thread: createThread({ type, archived: true, locked: true }),
+      cancellationResult: { outcome: "CANCELLED", action },
+      generatedIds: ["cancellation-audit-id"],
+    });
+
+    await expect(fixture.service.cancel("guild-id", "thread-id", "actor-id")).resolves.toEqual({
+      ok: true,
+      outcome: "CANCELLED",
+      action,
+    });
+
+    expect(fixture.discord.actorCanManage).toHaveBeenCalledOnce();
+    expect(fixture.discord.botCanManage).not.toHaveBeenCalled();
+    expect(fixture.schedules.cancel).toHaveBeenCalledWith({
+      auditId: "cancellation-audit-id",
+      guildId: "guild-id",
+      threadId: "thread-id",
+      actorId: "actor-id",
+    });
+  });
+
+  it.each([
+    [null, "UNSUPPORTED_CONTEXT"],
+    [createThread(), "USER_MISSING_PERMISSION"],
+  ] as const)("rejects invalid or unauthorized explicit cancellation", async (thread, code) => {
+    const fixture = createFixture({ thread, actorCanManage: thread === null ? true : false });
+
+    await expect(fixture.service.cancel("guild-id", "thread-id", "actor-id")).resolves.toEqual({
+      ok: false,
+      code,
+    });
+
+    expect(fixture.schedules.cancel).not.toHaveBeenCalled();
+    expect(fixture.discord.botCanManage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ outcome: "NOT_SCHEDULED" } as const, { ok: true, outcome: "NOT_SCHEDULED" }],
+    [
+      { outcome: "EXECUTION_IN_PROGRESS", current: createAction({ status: "EXECUTING" }) } as const,
+      { ok: false, code: "EXECUTION_IN_PROGRESS" },
+    ],
+  ])("maps cancellation persistence result %#", async (cancellationResult, expected) => {
+    const fixture = createFixture({ cancellationResult });
+
+    await expect(fixture.service.cancel("guild-id", "thread-id", "actor-id")).resolves.toEqual(
+      expected,
+    );
+  });
+
+  it("keeps repeated no-schedule cancellation idempotent", async () => {
+    const fixture = createFixture({
+      cancellationResult: { outcome: "NOT_SCHEDULED" },
+      generatedIds: ["audit-one", "audit-two"],
+    });
+
+    await expect(fixture.service.cancel("guild-id", "thread-id", "actor-id")).resolves.toEqual({
+      ok: true,
+      outcome: "NOT_SCHEDULED",
+    });
+    await expect(fixture.service.cancel("guild-id", "thread-id", "actor-id")).resolves.toEqual({
+      ok: true,
+      outcome: "NOT_SCHEDULED",
+    });
+    expect(fixture.schedules.cancel).toHaveBeenCalledTimes(2);
+  });
+
+  it("maps cancellation persistence failure without exposing the raw error", async () => {
+    const fixture = createFixture({ cancellationFailure: new Error("sensitive database detail") });
+
+    await expect(fixture.service.cancel("guild-id", "thread-id", "actor-id")).resolves.toEqual({
+      ok: false,
+      code: "PERSISTENCE_FAILURE",
+    });
+    expect(JSON.stringify(fixture.logger.warn.mock.calls)).not.toContain("sensitive");
+  });
+
+  it("maps explicit cancellation context boundary failure without persistence work", async () => {
+    const fixture = createFixture();
+    vi.mocked(fixture.discord.fetchThread).mockRejectedValueOnce(new Error("sensitive Discord"));
+
+    await expect(fixture.service.cancel("guild-id", "thread-id", "actor-id")).resolves.toEqual({
+      ok: false,
+      code: "CONTEXT_VALIDATION_FAILURE",
+    });
+    expect(fixture.schedules.cancel).not.toHaveBeenCalled();
+  });
+
+  it("cancels scheduling before allowing the shared lifecycle close to continue", async () => {
+    const order: string[] = [];
+    const fixture = createFixture({
+      cancellationResult: { outcome: "CANCELLED", action: createAction({ status: "CANCELLED" }) },
+      onCancellation: () => order.push("cancel"),
+      onLifecycleEffect: () => order.push("lifecycle"),
+    });
+
+    await expect(
+      fixture.service.closeManually("guild-id", "thread-id", "actor-id"),
+    ).resolves.toEqual({ outcome: "LIFECYCLE", result: { ok: true, changed: true } });
+    expect(order).toEqual(["cancel", "lifecycle"]);
+  });
+
+  it.each([
+    [
+      { outcome: "EXECUTION_IN_PROGRESS", current: createAction({ status: "EXECUTING" }) } as const,
+      { outcome: "EXECUTION_IN_PROGRESS" },
+    ],
+    [new Error("opaque persistence failure"), { outcome: "PERSISTENCE_FAILURE" }],
+  ])("stops manual close when cancellation preparation cannot proceed", async (value, expected) => {
+    const lifecycleEffect = vi.fn();
+    const fixture = createFixture({
+      ...(value instanceof Error ? { cancellationFailure: value } : { cancellationResult: value }),
+      onLifecycleEffect: lifecycleEffect,
+    });
+
+    await expect(
+      fixture.service.closeManually("guild-id", "thread-id", "actor-id"),
+    ).resolves.toEqual(expected);
+    expect(lifecycleEffect).not.toHaveBeenCalled();
+  });
+
+  it.each<ThreadLifecycleResult>([
+    { ok: true, changed: false },
+    { ok: false, pending: true },
+    { ok: false, code: "DISCORD_ARCHIVE_FAILED" },
+  ])("does not restore a cancelled schedule after lifecycle result %#", async (lifecycleResult) => {
+    const fixture = createFixture({
+      lifecycleResult,
+      cancellationResult: {
+        outcome: "CANCELLED",
+        action: createAction({ status: "CANCELLED" }),
+      },
+    });
+
+    await expect(
+      fixture.service.closeManually("guild-id", "thread-id", "actor-id"),
+    ).resolves.toEqual({ outcome: "LIFECYCLE", result: lifecycleResult });
+    expect(fixture.schedules.cancel).toHaveBeenCalledOnce();
+    expect(fixture.close).toHaveBeenCalledOnce();
+  });
 });
 
 function createFixture({
@@ -242,18 +393,30 @@ function createFixture({
   botCanManage = true,
   persistenceResult,
   persistenceFailure,
+  cancellationResult,
+  cancellationFailure,
   enqueueResult = "ENQUEUED",
   enqueueFailure,
   deliveryExists = false,
+  lifecycleResult = { ok: true, changed: true },
+  onCancellation,
+  onLifecycleEffect,
+  generatedIds = ["scheduled-action-id", "audit-id"],
 }: {
   thread?: ThreadSnapshot | null;
   actorCanManage?: boolean;
   botCanManage?: boolean;
   persistenceResult?: CreateOrReplaceScheduledThreadCloseResult;
   persistenceFailure?: Error;
+  cancellationResult?: CancelScheduledThreadCloseResult;
+  cancellationFailure?: Error;
   enqueueResult?: "ENQUEUED" | "ALREADY_PRESENT";
   enqueueFailure?: Error;
   deliveryExists?: boolean | Error;
+  lifecycleResult?: ThreadLifecycleResult;
+  onCancellation?: () => void;
+  onLifecycleEffect?: () => void;
+  generatedIds?: string[];
 } = {}) {
   const action = createAction();
   const discord = {
@@ -266,6 +429,13 @@ function createFixture({
       return Promise.reject(persistenceFailure);
     }
     return Promise.resolve(persistenceResult ?? { outcome: "CREATED", action });
+  });
+  const cancel = vi.fn<ScheduledThreadCloseStore["cancel"]>(() => {
+    onCancellation?.();
+    if (cancellationFailure !== undefined) {
+      return Promise.reject(cancellationFailure);
+    }
+    return Promise.resolve(cancellationResult ?? { outcome: "NOT_SCHEDULED" });
   });
   const enqueueScheduledThreadClose = vi.fn<
     ScheduledThreadCloseWorkerController["enqueueScheduledThreadClose"]
@@ -286,17 +456,25 @@ function createFixture({
     cancelStaleActiveDeliveries,
   } as unknown as ScheduledThreadCloseWorkerController;
   const logger = { warn: vi.fn() };
-  const ids = ["scheduled-action-id", "audit-id"];
+  const ids = [...generatedIds];
+  const close = vi.fn<ThreadLifecycleService["close"]>(
+    async (_guildId, _threadId, _actorId, prepareManualClose) => {
+      await prepareManualClose?.();
+      onLifecycleEffect?.();
+      return lifecycleResult;
+    },
+  );
   const service = createScheduledThreadCloseCommandService({
     discord,
-    schedules: { createOrReplace },
+    schedules: { createOrReplace, cancel },
     delivery,
+    threadLifecycle: { close },
     logger,
     now: () => NOW,
     generateId: () => ids.shift()!,
   });
 
-  return { service, discord, schedules: { createOrReplace }, delivery, logger };
+  return { service, discord, schedules: { createOrReplace, cancel }, delivery, logger, close };
 }
 
 function createThread(overrides: Partial<ThreadSnapshot> = {}): ThreadSnapshot {
