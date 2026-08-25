@@ -2,6 +2,7 @@ import { Client, Events, GatewayIntentBits, RESTEvents } from "discord.js";
 
 import type { Logger } from "pino";
 
+import type { AutomaticCloseActivityService } from "./automatic-close-activity.js";
 import { handleCommand, type CommandDependencies } from "./commands.js";
 import { createThreadLifecycleDiscord, isSupportedThreadType } from "./thread-discord.js";
 import { createThreadLifecycleService, type ThreadLifecycleDiscord } from "./thread-lifecycle.js";
@@ -72,7 +73,11 @@ export function createDiscordRuntime(
   dependencies: DiscordDependencies,
   threadLifecycleOverride?: ReturnType<typeof createThreadLifecycleService>,
 ): DiscordRuntime {
-  const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+  const client = new Client({
+    // GuildMessages delivers the message metadata automatic-close activity needs. Message content
+    // is never read, so the privileged MessageContent intent stays disabled.
+    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+  });
   const threadDiscord = createThreadLifecycleDiscord(client);
   const threadLifecycle =
     threadLifecycleOverride ??
@@ -171,6 +176,78 @@ export function registerDiscordCommandHandler(
           "Discord command failed",
         );
       });
+  });
+}
+
+export type AutomaticCloseActivityDependencies = {
+  activity: AutomaticCloseActivityService;
+  logger: Pick<Logger, "debug">;
+};
+
+export function registerAutomaticCloseActivityHandlers(
+  client: Client,
+  dependencies: AutomaticCloseActivityDependencies,
+): void {
+  client.on(Events.MessageCreate, (message) => {
+    if (!message.inGuild() || message.system) {
+      return;
+    }
+
+    // Cache-only resolution. An unresolved thread is skipped rather than fetched, so the
+    // high-volume message path never performs a REST request.
+    const channel = message.channel as typeof message.channel | null | undefined;
+    if (channel === null || channel === undefined) {
+      dependencies.logger.debug(
+        {
+          event: "automatic_close_message_channel_unresolved",
+          guildId: message.guildId,
+          channelId: message.channelId,
+        },
+        "Automatic close activity skipped an unresolved message channel",
+      );
+      return;
+    }
+
+    if (!channel.isThread() || !isSupportedThreadType(channel.type)) {
+      return;
+    }
+
+    const parentChannelId = channel.parentId;
+    if (parentChannelId === null) {
+      return;
+    }
+
+    void dependencies.activity.recordMessageActivity({
+      guildId: message.guildId,
+      threadId: channel.id,
+      parentChannelId,
+      occurredAt: message.createdAt,
+      authorIsBot: message.author.bot,
+    });
+  });
+
+  client.on(Events.ThreadCreate, (thread, newlyCreated) => {
+    if (!isSupportedThreadType(thread.type)) {
+      return;
+    }
+
+    const parentChannelId = thread.parentId;
+    if (parentChannelId === null) {
+      return;
+    }
+
+    // A thread that only became observable now may have been created long ago, so its historical
+    // creation time must not become the baseline.
+    const createdTimestamp = thread.createdTimestamp;
+    const baselineAt =
+      newlyCreated && createdTimestamp !== null ? new Date(createdTimestamp) : new Date();
+
+    void dependencies.activity.initializeThreadBaseline({
+      guildId: thread.guildId,
+      threadId: thread.id,
+      parentChannelId,
+      baselineAt,
+    });
   });
 }
 

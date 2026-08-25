@@ -7,7 +7,7 @@ import {
 } from "../../src/application-startup.js";
 
 function createLogger(): Logger {
-  return { info: vi.fn(), error: vi.fn() } as unknown as Logger;
+  return { info: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Logger;
 }
 
 function createDependencies(): ApplicationStartupDependencies {
@@ -19,6 +19,7 @@ function createDependencies(): ApplicationStartupDependencies {
     startDiscord: vi.fn(() => Promise.resolve()),
     startScheduledThreadCloseWorkers: vi.fn(() => Promise.resolve()),
     startScheduledThreadCloseRuntimeReconciliation: vi.fn(() => Promise.resolve()),
+    reconcileAutomaticCloseBaselines: vi.fn(() => Promise.resolve()),
     shutdown: vi.fn(() => Promise.resolve()),
   };
 }
@@ -105,6 +106,65 @@ describe("application startup", () => {
     runtimeReconciliationStarted.resolve();
     await startup;
     expect(dependencies.shutdown).not.toHaveBeenCalled();
+  });
+
+  it("reconciles automatic close baselines after Discord and scheduled runtime startup", async () => {
+    const dependencies = createDependencies();
+    const logger = createLogger();
+    const calls: string[] = [];
+    vi.mocked(dependencies.startDiscord).mockImplementation(() => {
+      calls.push("discord");
+      return Promise.resolve();
+    });
+    vi.mocked(dependencies.startScheduledThreadCloseRuntimeReconciliation).mockImplementation(
+      () => {
+        calls.push("scheduled-runtime-reconciliation");
+        return Promise.resolve();
+      },
+    );
+    vi.mocked(dependencies.reconcileAutomaticCloseBaselines).mockImplementation(() => {
+      calls.push("automatic-close-baselines");
+      return Promise.resolve();
+    });
+
+    await runApplicationStartup(dependencies, logger);
+
+    expect(calls).toEqual([
+      "discord",
+      "scheduled-runtime-reconciliation",
+      "automatic-close-baselines",
+    ]);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "application_ready" }),
+      expect.any(String),
+    );
+    expect(dependencies.shutdown).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it("treats automatic close baseline reconciliation failure as non-fatal", async () => {
+    const dependencies = createDependencies();
+    const logger = createLogger();
+    vi.mocked(dependencies.reconcileAutomaticCloseBaselines).mockRejectedValue(
+      new RangeError("reconciliation exploded"),
+    );
+
+    await runApplicationStartup(dependencies, logger);
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "automatic_close_baseline_reconciliation_failed",
+        errorName: "RangeError",
+      }),
+      expect.any(String),
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "application_ready" }),
+      expect.any(String),
+    );
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(dependencies.shutdown).not.toHaveBeenCalled();
+    expect(process.exitCode).toBeUndefined();
   });
 
   it("does not start pg-boss or Discord when database verification fails", async () => {

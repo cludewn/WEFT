@@ -262,6 +262,9 @@ By default, activity excludes:
 
 Bot messages do not count as activity by default.
 
+Discord system messages never count as activity. This remains true when the guild enables
+bot-message activity.
+
 The default inactivity duration is 7 days.
 
 The supported configurable inactivity range is 5 minutes through 365 days.
