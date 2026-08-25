@@ -11,6 +11,7 @@ export type ApplicationStartupDependencies = {
   startDiscord: () => Promise<void>;
   startScheduledThreadCloseWorkers: () => Promise<void>;
   startScheduledThreadCloseRuntimeReconciliation: () => Promise<void>;
+  reconcileAutomaticCloseBaselines: () => Promise<void>;
   shutdown: (reason: string) => Promise<void>;
 };
 
@@ -29,6 +30,20 @@ export async function runApplicationStartup(
     logger.info({ event: "discord_ready" }, "Discord client is ready");
     await dependencies.startScheduledThreadCloseWorkers();
     await dependencies.startScheduledThreadCloseRuntimeReconciliation();
+    // Automatic-close baseline reconciliation is a best-effort repair. A failure is recorded once
+    // here and never fails application startup, because ThreadCreate, MessageCreate, and a later
+    // restart can all recover the missing baselines.
+    try {
+      await dependencies.reconcileAutomaticCloseBaselines();
+    } catch (error) {
+      logger.warn(
+        {
+          event: "automatic_close_baseline_reconciliation_failed",
+          errorName: getErrorName(error),
+        },
+        "Automatic close baseline reconciliation failed",
+      );
+    }
     logger.info({ event: "application_ready" }, "Application startup completed");
   } catch (error) {
     if (error instanceof DiscordStartupAbortedError) {

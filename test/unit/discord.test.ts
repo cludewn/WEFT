@@ -9,9 +9,11 @@ import {
   type DiscordDependencies,
   DiscordStartupAbortedError,
   type DiscordStartupClient,
+  registerAutomaticCloseActivityHandlers,
   registerDiscordCommandHandler,
   startDiscordClient,
 } from "../../src/discord.js";
+import type { AutomaticCloseActivityService } from "../../src/automatic-close-activity.js";
 import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
 
 const discordDependencies = {
@@ -47,10 +49,13 @@ describe("Discord client", () => {
     await runtime.client.destroy();
   });
 
-  it("requests only the Guilds gateway intent", async () => {
+  it("requests the Guilds and GuildMessages gateway intents without MessageContent", async () => {
     const client = createDiscordClient(createLogger(), discordDependencies);
 
-    expect(client.options.intents.bitfield).toBe(GatewayIntentBits.Guilds);
+    expect(client.options.intents.bitfield).toBe(
+      GatewayIntentBits.Guilds | GatewayIntentBits.GuildMessages,
+    );
+    expect(client.options.intents.has(GatewayIntentBits.MessageContent)).toBe(false);
     await client.destroy();
   });
 
@@ -339,6 +344,123 @@ describe("Discord client", () => {
   });
 });
 
+describe("automatic close activity gateway handlers", () => {
+  it("forwards a qualifying human message with Discord metadata only", async () => {
+    const fixture = await createActivityFixture();
+
+    fixture.client.emit(Events.MessageCreate, createMessage({ authorIsBot: false }) as never);
+
+    expect(fixture.activity.recordMessageActivity).toHaveBeenCalledExactlyOnceWith({
+      guildId: "guild-id",
+      threadId: "thread-id",
+      parentChannelId: "parent-id",
+      occurredAt: new Date("2030-01-01T00:00:00.000Z"),
+      authorIsBot: false,
+    });
+    expect(fixture.activity.initializeThreadBaseline).not.toHaveBeenCalled();
+    await fixture.client.destroy();
+  });
+
+  it("forwards a bot message with the bot author flag", async () => {
+    const fixture = await createActivityFixture();
+
+    fixture.client.emit(Events.MessageCreate, createMessage({ authorIsBot: true }) as never);
+
+    expect(fixture.activity.recordMessageActivity).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ authorIsBot: true }),
+    );
+    await fixture.client.destroy();
+  });
+
+  it.each([
+    ["non-guild", createMessage({ inGuild: false })],
+    ["system", createMessage({ system: true })],
+    ["non-thread", createMessage({ isThread: false })],
+    ["unsupported thread type", createMessage({ channelType: ChannelType.GuildText })],
+    ["parentless thread", createMessage({ parentId: null })],
+  ])("skips a %s message without calling the activity service", async (_label, message) => {
+    const fixture = await createActivityFixture();
+
+    fixture.client.emit(Events.MessageCreate, message as never);
+
+    expect(fixture.activity.recordMessageActivity).not.toHaveBeenCalled();
+    expect(fixture.logger.debug).not.toHaveBeenCalled();
+    await fixture.client.destroy();
+  });
+
+  it("skips an unresolved message channel without any REST fallback", async () => {
+    const fixture = await createActivityFixture();
+    const fetchChannel = vi.spyOn(fixture.client.channels, "fetch");
+
+    fixture.client.emit(Events.MessageCreate, createMessage({ channel: null }) as never);
+
+    expect(fixture.activity.recordMessageActivity).not.toHaveBeenCalled();
+    expect(fetchChannel).not.toHaveBeenCalled();
+    expect(fixture.logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "automatic_close_message_channel_unresolved" }),
+      expect.any(String),
+    );
+    await fixture.client.destroy();
+  });
+
+  it("does not log anything on the successful message path", async () => {
+    const fixture = await createActivityFixture();
+
+    fixture.client.emit(Events.MessageCreate, createMessage({}) as never);
+    await Promise.resolve();
+
+    expect(fixture.logger.debug).not.toHaveBeenCalled();
+    expect(fixture.logger.info).not.toHaveBeenCalled();
+    expect(fixture.logger.warn).not.toHaveBeenCalled();
+    await fixture.client.destroy();
+  });
+
+  it("uses the thread creation timestamp for a newly created thread", async () => {
+    const fixture = await createActivityFixture();
+
+    fixture.client.emit(
+      Events.ThreadCreate,
+      createThread({ createdTimestamp: Date.parse("2030-02-02T00:00:00.000Z") }) as never,
+      true,
+    );
+
+    expect(fixture.activity.initializeThreadBaseline).toHaveBeenCalledExactlyOnceWith({
+      guildId: "guild-id",
+      threadId: "thread-id",
+      parentChannelId: "parent-id",
+      baselineAt: new Date("2030-02-02T00:00:00.000Z"),
+    });
+    await fixture.client.destroy();
+  });
+
+  it.each([
+    ["a null creation timestamp", createThread({ createdTimestamp: null }), true],
+    ["an already existing thread", createThread({}), false],
+  ])("uses the observation time for %s", async (_label, thread, newlyCreated) => {
+    const fixture = await createActivityFixture();
+    const before = Date.now();
+
+    fixture.client.emit(Events.ThreadCreate, thread as never, newlyCreated);
+
+    const [event] = vi.mocked(fixture.activity.initializeThreadBaseline).mock.calls[0]!;
+    expect(event.baselineAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(event.baselineAt.getTime()).not.toBe(Date.parse("2020-01-01T00:00:00.000Z"));
+    await fixture.client.destroy();
+  });
+
+  it.each([
+    ["unsupported", createThread({ type: ChannelType.GuildText })],
+    ["parentless", createThread({ parentId: null })],
+  ])("skips a %s thread", async (_label, thread) => {
+    const fixture = await createActivityFixture();
+
+    fixture.client.emit(Events.ThreadCreate, thread as never, true);
+
+    expect(fixture.activity.initializeThreadBaseline).not.toHaveBeenCalled();
+    await fixture.client.destroy();
+  });
+});
+
 function registerTestCommandHandler(
   client: ReturnType<typeof createDiscordClient>,
   logger: Logger,
@@ -390,4 +512,67 @@ function createStartupClient(loginImplementation: () => Promise<string>): {
     login,
     off,
   };
+}
+
+async function createActivityFixture(): Promise<{
+  client: ReturnType<typeof createDiscordClient>;
+  activity: AutomaticCloseActivityService;
+  logger: Logger;
+}> {
+  const logger = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  } as unknown as Logger;
+  const client = createDiscordClient(logger, discordDependencies);
+  const activity: AutomaticCloseActivityService = {
+    recordMessageActivity: vi.fn(() => Promise.resolve()),
+    initializeThreadBaseline: vi.fn(() => Promise.resolve()),
+  };
+  registerAutomaticCloseActivityHandlers(client, { activity, logger });
+  return await Promise.resolve({ client, activity, logger });
+}
+
+function createMessage({
+  inGuild = true,
+  system = false,
+  isThread = true,
+  channelType = ChannelType.PublicThread,
+  parentId = "parent-id",
+  authorIsBot = false,
+  channel,
+}: {
+  inGuild?: boolean;
+  system?: boolean;
+  isThread?: boolean;
+  channelType?: ChannelType;
+  parentId?: string | null;
+  authorIsBot?: boolean;
+  channel?: null;
+} = {}) {
+  return {
+    inGuild: () => inGuild,
+    system,
+    guildId: inGuild ? "guild-id" : null,
+    channelId: "thread-id",
+    createdAt: new Date("2030-01-01T00:00:00.000Z"),
+    author: { bot: authorIsBot },
+    channel:
+      channel === null
+        ? null
+        : { id: "thread-id", isThread: () => isThread, type: channelType, parentId },
+  };
+}
+
+function createThread({
+  type = ChannelType.PublicThread,
+  parentId = "parent-id",
+  createdTimestamp = Date.parse("2020-01-01T00:00:00.000Z"),
+}: {
+  type?: ChannelType;
+  parentId?: string | null;
+  createdTimestamp?: number | null;
+} = {}) {
+  return { id: "thread-id", guildId: "guild-id", type, parentId, createdTimestamp };
 }

@@ -1,12 +1,15 @@
 import pino from "pino";
 
 import { runApplicationStartup } from "./application-startup.js";
+import { createAutomaticCloseActivityService } from "./automatic-close-activity.js";
 import { createAutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
 import { createAutomaticClosePersistenceStore } from "./automatic-close-persistence.js";
+import { createAutomaticCloseBaselineReconciler } from "./automatic-close-reconciler.js";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { createDatabase } from "./database.js";
 import {
   createDiscordRuntime,
+  registerAutomaticCloseActivityHandlers,
   registerDiscordCommandHandler,
   startDiscordClient,
 } from "./discord.js";
@@ -47,10 +50,24 @@ async function main(): Promise<void> {
   const scheduledThreadCloses = createScheduledThreadCloseStore(database.client);
   const automaticCloses = createAutomaticClosePersistenceStore(database.client);
   const discordRuntime = createDiscordRuntime(logger, { guildSettings, managedThreads, audits });
+  const autoCloseDiscord = createAutoCloseDiscord(discordRuntime.client);
   const automaticCloseConfiguration = createAutomaticCloseConfigurationService({
     guildSettings,
     schedules: automaticCloses,
-    discord: createAutoCloseDiscord(discordRuntime.client),
+    discord: autoCloseDiscord,
+    logger,
+  });
+  const automaticCloseActivity = createAutomaticCloseActivityService({
+    persistence: automaticCloses,
+    logger,
+  });
+  const automaticCloseBaselineReconciler = createAutomaticCloseBaselineReconciler({
+    persistence: automaticCloses,
+    discord: autoCloseDiscord,
+    logger,
+  });
+  registerAutomaticCloseActivityHandlers(discordRuntime.client, {
+    activity: automaticCloseActivity,
     logger,
   });
   const scheduledThreadCloseExecutor = createScheduledThreadCloseExecutor({
@@ -130,6 +147,8 @@ async function main(): Promise<void> {
       startScheduledThreadCloseWorkers: () => scheduledThreadCloseWorkers.start(),
       startScheduledThreadCloseRuntimeReconciliation: () =>
         scheduledThreadCloseRuntimeReconciler.start(),
+      reconcileAutomaticCloseBaselines: () =>
+        automaticCloseBaselineReconciler.reconcileMissingBaselines(),
       shutdown,
     },
     logger,

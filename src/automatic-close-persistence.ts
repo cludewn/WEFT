@@ -2,6 +2,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
+import { guildSettings } from "./guild-settings.js";
 
 /**
  * Parent channels whose threads may participate in automatic inactivity closing.
@@ -77,6 +78,30 @@ export type EnableAutoCloseParentChannel = {
 export type EnableAutoCloseParentChannelResult =
   { outcome: "ENABLED"; baselinesApplied: number } | { outcome: "ALREADY_ENABLED" };
 
+export type RecordQualifyingMessageActivity = {
+  guildId: string;
+  threadId: string;
+  parentChannelId: string;
+  occurredAt: Date;
+  authorIsBot: boolean;
+};
+
+export type MissingActivityBaselineCandidate = {
+  threadId: string;
+  parentChannelId: string;
+};
+
+export type InitializeMissingActivityBaselines = {
+  guildId: string;
+  baselineAt: Date;
+  candidates: readonly MissingActivityBaselineCandidate[];
+};
+
+export type AutoCloseParentChannelRef = {
+  guildId: string;
+  parentChannelId: string;
+};
+
 export type AutomaticClosePersistenceStore = {
   /** Returns whether the allowlist changed. Adding an existing pair is a successful no-op. */
   addParentChannel: (guildId: string, parentChannelId: string) => Promise<boolean>;
@@ -105,6 +130,28 @@ export type AutomaticClosePersistenceStore = {
   enableParentChannelWithBaselines: (
     input: EnableAutoCloseParentChannel,
   ) => Promise<EnableAutoCloseParentChannelResult>;
+  /**
+   * Evaluates automatic-close eligibility and applies the monotonic activity update in one
+   * statement.
+   *
+   * Eligibility requires a currently allowlisted parent, no individual thread exclusion, and, for
+   * bot authors, an enabled guild bot-message activity policy. A guild without a settings row
+   * falls back to the approved defaults, so a human message still qualifies while a bot message
+   * does not. Returns whether the activity row was inserted or advanced.
+   */
+  recordQualifyingMessageActivity: (input: RecordQualifyingMessageActivity) => Promise<boolean>;
+  /**
+   * Creates activity rows only for candidates that have none, in one statement.
+   *
+   * Candidates must currently sit under an allowlisted parent and must not be individually
+   * excluded. An existing activity row is left completely unchanged: this never advances
+   * `last_activity_at`, `parent_channel_id`, or `updated_at`. Returns how many rows were created.
+   */
+  initializeMissingActivityBaselines: (
+    input: InitializeMissingActivityBaselines,
+  ) => Promise<number>;
+  /** Every configured automatic-close parent channel, ordered by guild then parent channel. */
+  listAllParentChannels: () => Promise<AutoCloseParentChannelRef[]>;
 };
 
 export function createAutomaticClosePersistenceStore(
@@ -215,6 +262,94 @@ export function createAutomaticClosePersistenceStore(
           return { outcome: "ENABLED", baselinesApplied: applied.rows.length };
         },
       );
+    },
+    async listAllParentChannels() {
+      return database
+        .select({
+          guildId: autoCloseParentChannels.guildId,
+          parentChannelId: autoCloseParentChannels.parentChannelId,
+        })
+        .from(autoCloseParentChannels)
+        .orderBy(
+          asc(autoCloseParentChannels.guildId),
+          asc(autoCloseParentChannels.parentChannelId),
+        );
+    },
+    async recordQualifyingMessageActivity({
+      guildId,
+      threadId,
+      parentChannelId,
+      occurredAt,
+      authorIsBot,
+    }) {
+      // One statement evaluates the current allowlist, exclusion, and bot-message policy, then
+      // applies `last_activity_at = max(existing, incoming)`. A guild without a settings row falls
+      // back to the approved defaults through the left join, so a human message still qualifies
+      // while a bot message does not.
+      const applied = await database.execute(sql`
+        insert into ${autoCloseThreadActivity}
+          (guild_id, thread_id, parent_channel_id, last_activity_at, updated_at)
+        select ${guildId}, ${threadId}, ${parentChannelId}, ${occurredAt}, ${new Date()}
+        from ${autoCloseParentChannels} as parent
+        left join ${guildSettings} as settings on settings.guild_id = parent.guild_id
+        where parent.guild_id = ${guildId}
+          and parent.parent_channel_id = ${parentChannelId}
+          and (
+            not ${authorIsBot}::boolean
+            or coalesce(settings.auto_close_bot_messages_count_as_activity, false)
+          )
+          and not exists (
+            select 1
+            from ${autoCloseThreadExclusions} as excluded_thread
+            where excluded_thread.guild_id = ${guildId}
+              and excluded_thread.thread_id = ${threadId}
+          )
+        on conflict (guild_id, thread_id) do update
+        set last_activity_at  = excluded.last_activity_at,
+            parent_channel_id = excluded.parent_channel_id,
+            updated_at        = excluded.updated_at
+        where ${autoCloseThreadActivity}.last_activity_at < excluded.last_activity_at
+        returning thread_id
+      `);
+      return applied.rows.length > 0;
+    },
+    async initializeMissingActivityBaselines({ guildId, baselineAt, candidates }) {
+      // Keep the first parent channel seen for a thread so the inserted row and the returned count
+      // stay deterministic when a caller supplies duplicates.
+      const unique = new Map<string, string>();
+      for (const candidate of candidates) {
+        if (!unique.has(candidate.threadId)) {
+          unique.set(candidate.threadId, candidate.parentChannelId);
+        }
+      }
+      if (unique.size === 0) {
+        return 0;
+      }
+
+      const threadIds = [...unique.keys()];
+      const parentChannelIds = [...unique.values()];
+
+      // Insert-only. An existing activity row keeps its `last_activity_at`, `parent_channel_id`,
+      // and `updated_at`, which is deliberately different from the parent-enable activity floor.
+      const inserted = await database.execute(sql`
+        insert into ${autoCloseThreadActivity}
+          (guild_id, thread_id, parent_channel_id, last_activity_at)
+        select ${guildId}, candidate.thread_id, candidate.parent_channel_id, ${baselineAt}
+        from unnest(${sql.param(threadIds)}::text[], ${sql.param(parentChannelIds)}::text[])
+          as candidate(thread_id, parent_channel_id)
+        join ${autoCloseParentChannels} as parent
+          on parent.guild_id = ${guildId}
+          and parent.parent_channel_id = candidate.parent_channel_id
+        where not exists (
+          select 1
+          from ${autoCloseThreadExclusions} as excluded_thread
+          where excluded_thread.guild_id = ${guildId}
+            and excluded_thread.thread_id = candidate.thread_id
+        )
+        on conflict (guild_id, thread_id) do nothing
+        returning thread_id
+      `);
+      return inserted.rows.length;
     },
     async recordActivity({ guildId, threadId, parentChannelId, occurredAt }) {
       await database

@@ -625,6 +625,397 @@ describe("automatic close parent enable persistence", () => {
   });
 });
 
+describe("automatic close qualifying message activity persistence", () => {
+  const earlier = new Date("2030-03-01T00:00:00.000Z");
+  const occurredAt = new Date("2030-04-01T00:00:00.000Z");
+  const later = new Date("2030-05-01T00:00:00.000Z");
+
+  const findActivity = async (guildId: string, threadId: string) => {
+    const [row] = await database.client
+      .select()
+      .from(autoCloseThreadActivity)
+      .where(
+        and(
+          eq(autoCloseThreadActivity.guildId, guildId),
+          eq(autoCloseThreadActivity.threadId, threadId),
+        ),
+      )
+      .limit(1);
+    return row;
+  };
+
+  const message = (overrides: { authorIsBot?: boolean; occurredAt?: Date } = {}) => ({
+    guildId: guildIds[0],
+    threadId: threadIds[0],
+    parentChannelId: parentChannelIds[0],
+    occurredAt: overrides.occurredAt ?? occurredAt,
+    authorIsBot: overrides.authorIsBot ?? false,
+  });
+
+  it("records a human message under an allowlisted parent", async () => {
+    await settingsStore.getOrCreate(guildIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+
+    await expect(store.recordQualifyingMessageActivity(message())).resolves.toBe(true);
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      parentChannelId: parentChannelIds[0],
+      lastActivityAt: occurredAt,
+    });
+  });
+
+  it("does not record a message whose parent is not allowlisted", async () => {
+    await settingsStore.getOrCreate(guildIds[0]);
+
+    await expect(store.recordQualifyingMessageActivity(message())).resolves.toBe(false);
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toBeUndefined();
+  });
+
+  it("does not record a message in an individually excluded thread", async () => {
+    await settingsStore.getOrCreate(guildIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addThreadExclusion(guildIds[0], threadIds[0]);
+
+    await expect(store.recordQualifyingMessageActivity(message())).resolves.toBe(false);
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toBeUndefined();
+  });
+
+  it("applies the guild bot-message activity policy", async () => {
+    await settingsStore.getOrCreate(guildIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+
+    await expect(
+      store.recordQualifyingMessageActivity(message({ authorIsBot: true })),
+    ).resolves.toBe(false);
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toBeUndefined();
+
+    await settingsStore.setAutoCloseBotMessagesCountAsActivity(guildIds[0], true);
+
+    await expect(
+      store.recordQualifyingMessageActivity(message({ authorIsBot: true })),
+    ).resolves.toBe(true);
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      lastActivityAt: occurredAt,
+    });
+  });
+
+  it("falls back to approved defaults when the guild settings row is missing", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await expect(
+      database.client.select().from(guildSettings).where(eq(guildSettings.guildId, guildIds[0])),
+    ).resolves.toEqual([]);
+
+    await expect(
+      store.recordQualifyingMessageActivity(message({ authorIsBot: true })),
+    ).resolves.toBe(false);
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toBeUndefined();
+
+    await expect(store.recordQualifyingMessageActivity(message())).resolves.toBe(true);
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      lastActivityAt: occurredAt,
+    });
+  });
+
+  it("advances last activity and parent channel for newer activity", async () => {
+    await settingsStore.getOrCreate(guildIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[1]);
+    await store.recordQualifyingMessageActivity({
+      ...message({ occurredAt: earlier }),
+      parentChannelId: parentChannelIds[1],
+    });
+
+    await expect(
+      store.recordQualifyingMessageActivity(message({ occurredAt: later })),
+    ).resolves.toBe(true);
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      lastActivityAt: later,
+      parentChannelId: parentChannelIds[0],
+    });
+  });
+
+  it.each([
+    ["older", earlier],
+    ["equal", later],
+  ])("leaves the row completely unchanged for %s activity", async (_label, staleAt) => {
+    await settingsStore.getOrCreate(guildIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[1]);
+    await store.recordQualifyingMessageActivity(message({ occurredAt: later }));
+    const before = await findActivity(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.recordQualifyingMessageActivity({
+        ...message({ occurredAt: staleAt }),
+        parentChannelId: parentChannelIds[1],
+      }),
+    ).resolves.toBe(false);
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+  });
+
+  it("converges on the maximum timestamp under concurrent writes", async () => {
+    await settingsStore.getOrCreate(guildIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+
+    await Promise.all([
+      store.recordQualifyingMessageActivity(message({ occurredAt: later })),
+      store.recordQualifyingMessageActivity(message({ occurredAt: earlier })),
+    ]);
+
+    const rows = await database.client
+      .select()
+      .from(autoCloseThreadActivity)
+      .where(eq(autoCloseThreadActivity.guildId, guildIds[0]));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ lastActivityAt: later });
+  });
+
+  it("keeps the maximum timestamp when an older write settles after a newer write", async () => {
+    await settingsStore.getOrCreate(guildIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.recordQualifyingMessageActivity(message({ occurredAt: earlier }));
+
+    const newerApplied = deferred<void>();
+    const releaseNewer = deferred<void>();
+    const newerWrite = database.client.transaction(async (transaction) => {
+      await transaction
+        .update(autoCloseThreadActivity)
+        .set({ lastActivityAt: later, updatedAt: new Date() })
+        .where(
+          and(
+            eq(autoCloseThreadActivity.guildId, guildIds[0]),
+            eq(autoCloseThreadActivity.threadId, threadIds[0]),
+          ),
+        );
+      newerApplied.resolve(undefined);
+      await releaseNewer.promise;
+    });
+
+    await newerApplied.promise;
+    const olderWrite = store.recordQualifyingMessageActivity(message({ occurredAt: earlier }));
+    releaseNewer.resolve(undefined);
+
+    await newerWrite;
+    await expect(olderWrite).resolves.toBe(false);
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      lastActivityAt: later,
+    });
+  });
+});
+
+describe("automatic close missing baseline persistence", () => {
+  const baselineAt = new Date("2030-06-01T00:00:00.000Z");
+  const existingAt = new Date("2030-01-01T00:00:00.000Z");
+
+  const activityRows = (guildId: string) =>
+    database.client
+      .select()
+      .from(autoCloseThreadActivity)
+      .where(eq(autoCloseThreadActivity.guildId, guildId));
+
+  const findActivity = async (guildId: string, threadId: string) => {
+    const [row] = await database.client
+      .select()
+      .from(autoCloseThreadActivity)
+      .where(
+        and(
+          eq(autoCloseThreadActivity.guildId, guildId),
+          eq(autoCloseThreadActivity.threadId, threadId),
+        ),
+      )
+      .limit(1);
+    return row;
+  };
+
+  it("creates a baseline for an allowlisted non-excluded thread with no activity", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+
+    await expect(
+      store.initializeMissingActivityBaselines({
+        guildId: guildIds[0],
+        baselineAt,
+        candidates: [{ threadId: threadIds[0], parentChannelId: parentChannelIds[0] }],
+      }),
+    ).resolves.toBe(1);
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      parentChannelId: parentChannelIds[0],
+      lastActivityAt: baselineAt,
+    });
+  });
+
+  it("does not create a baseline for a non-allowlisted parent", async () => {
+    await expect(
+      store.initializeMissingActivityBaselines({
+        guildId: guildIds[0],
+        baselineAt,
+        candidates: [{ threadId: threadIds[0], parentChannelId: parentChannelIds[0] }],
+      }),
+    ).resolves.toBe(0);
+
+    await expect(activityRows(guildIds[0])).resolves.toEqual([]);
+  });
+
+  it("does not create a baseline for an excluded thread", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addThreadExclusion(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.initializeMissingActivityBaselines({
+        guildId: guildIds[0],
+        baselineAt,
+        candidates: [{ threadId: threadIds[0], parentChannelId: parentChannelIds[0] }],
+      }),
+    ).resolves.toBe(0);
+
+    await expect(activityRows(guildIds[0])).resolves.toEqual([]);
+  });
+
+  it("leaves an existing older activity row completely unchanged", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[1]);
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[1],
+      occurredAt: existingAt,
+    });
+    const before = await findActivity(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.initializeMissingActivityBaselines({
+        guildId: guildIds[0],
+        baselineAt,
+        candidates: [{ threadId: threadIds[0], parentChannelId: parentChannelIds[0] }],
+      }),
+    ).resolves.toBe(0);
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+  });
+
+  it("initializes several candidates across parents in one batch", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[1]);
+
+    await expect(
+      store.initializeMissingActivityBaselines({
+        guildId: guildIds[0],
+        baselineAt,
+        candidates: [
+          { threadId: threadIds[0], parentChannelId: parentChannelIds[0] },
+          { threadId: threadIds[1], parentChannelId: parentChannelIds[1] },
+        ],
+      }),
+    ).resolves.toBe(2);
+
+    await expect(activityRows(guildIds[0])).resolves.toHaveLength(2);
+  });
+
+  it("checks every candidate against current allowlist state", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+
+    await expect(
+      store.initializeMissingActivityBaselines({
+        guildId: guildIds[0],
+        baselineAt,
+        candidates: [
+          { threadId: threadIds[0], parentChannelId: parentChannelIds[0] },
+          { threadId: threadIds[1], parentChannelId: parentChannelIds[1] },
+        ],
+      }),
+    ).resolves.toBe(1);
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toBeDefined();
+    await expect(findActivity(guildIds[0], threadIds[1])).resolves.toBeUndefined();
+  });
+
+  it("handles duplicate candidate thread IDs safely", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+
+    await expect(
+      store.initializeMissingActivityBaselines({
+        guildId: guildIds[0],
+        baselineAt,
+        candidates: [
+          { threadId: threadIds[0], parentChannelId: parentChannelIds[0] },
+          { threadId: threadIds[0], parentChannelId: parentChannelIds[0] },
+        ],
+      }),
+    ).resolves.toBe(1);
+
+    await expect(activityRows(guildIds[0])).resolves.toHaveLength(1);
+  });
+
+  it("returns zero without writing for an empty candidate list", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+
+    await expect(
+      store.initializeMissingActivityBaselines({
+        guildId: guildIds[0],
+        baselineAt,
+        candidates: [],
+      }),
+    ).resolves.toBe(0);
+
+    await expect(activityRows(guildIds[0])).resolves.toEqual([]);
+  });
+
+  it("becomes a no-op when message activity was recorded first", async () => {
+    await settingsStore.getOrCreate(guildIds[0]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.recordQualifyingMessageActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[0],
+      occurredAt: existingAt,
+      authorIsBot: false,
+    });
+    const before = await findActivity(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.initializeMissingActivityBaselines({
+        guildId: guildIds[0],
+        baselineAt,
+        candidates: [{ threadId: threadIds[0], parentChannelId: parentChannelIds[0] }],
+      }),
+    ).resolves.toBe(0);
+
+    await expect(findActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+  });
+
+  it("keeps guilds independent", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addParentChannel(guildIds[1], parentChannelIds[0]);
+
+    await store.initializeMissingActivityBaselines({
+      guildId: guildIds[0],
+      baselineAt,
+      candidates: [{ threadId: threadIds[0], parentChannelId: parentChannelIds[0] }],
+    });
+
+    await expect(activityRows(guildIds[1])).resolves.toEqual([]);
+  });
+});
+
+describe("automatic close parent discovery persistence", () => {
+  it("lists every configured parent channel ordered by guild and parent", async () => {
+    await store.addParentChannel(guildIds[1], parentChannelIds[1]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[1]);
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+
+    await expect(store.listAllParentChannels()).resolves.toEqual([
+      { guildId: guildIds[0], parentChannelId: parentChannelIds[0] },
+      { guildId: guildIds[0], parentChannelId: parentChannelIds[1] },
+      { guildId: guildIds[1], parentChannelId: parentChannelIds[1] },
+    ]);
+  });
+});
+
 async function cleanup(): Promise<void> {
   await database.client
     .delete(autoCloseParentChannels)

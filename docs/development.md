@@ -736,6 +736,40 @@ never moves activity backward and a stale or equal baseline leaves `last_activit
 Removing a parent deletes only the allowlist row; activity rows are retained so that a later
 re-enable preserves legitimately newer activity while advancing stale rows to the new floor.
 
+Automatic-close activity tracking uses the `GuildMessages` gateway intent without the privileged
+`MessageContent` intent. The message event boundary reads only metadata: guild, thread, parent
+channel, supported thread type, the Discord message creation timestamp, whether the author is a
+bot, and whether the message is a Discord system message. Message content is never read, passed on,
+persisted, or logged. Events that Discord metadata alone can reject, such as non-guild, non-thread,
+unsupported, parentless, and system messages, never reach PostgreSQL. The thread channel is
+resolved from the client cache only; an unresolved channel is skipped rather than fetched, so the
+high-volume message path performs no REST request.
+
+A qualifying message evaluates its policy and writes its activity in one PostgreSQL statement. That
+statement checks current parent allowlist membership, the absence of an individual exclusion, and
+the guild bot-message activity policy, then applies `last_activity_at = max(existing, incoming)`.
+A guild without a settings row falls back to the approved defaults, so a human message still
+qualifies while a bot message does not. Message activity never calls the guild-settings store, uses
+no application-level read-modify-write, and takes no advisory lock. Successful tracking is silent;
+only persistence failures are logged, with safe identifiers and a safe error name.
+
+`ThreadCreate` and startup reconciliation share a missing-only baseline operation. It creates an
+activity row solely when the thread has none, and never advances an existing row's
+`last_activity_at`, `parent_channel_id`, or `updated_at`. This is deliberately weaker than the
+parent-enable activity floor. `ThreadCreate` uses the thread creation timestamp only for a thread
+that is genuinely new and reports one; otherwise it uses the observation time, so a thread that
+merely became visible does not inherit an old creation time.
+
+Startup missing-baseline reconciliation runs after the Discord client is ready. It discovers
+configured parents in one query, so a guild with no automatic-close configuration is never fetched
+from Discord, and it reads each relevant guild's active threads once rather than once per thread.
+Each guild's baseline timestamp is captured after that guild's enumeration succeeds, so a slow
+Discord response cannot shorten another guild's grace period. A guild whose enumeration or batch
+fails is skipped while the remaining guilds are still reconciled, and the whole reconciliation is
+non-fatal: application startup continues and the missing baselines are recovered later by a
+restart, `ThreadCreate`, or `MessageCreate`. No per-message job, timer, or periodic inactivity
+sweep exists yet.
+
 ### Phase 7: Managed messages
 
 - Implement `/message send`.
