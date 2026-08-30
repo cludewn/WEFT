@@ -805,6 +805,27 @@ concurrently and neither repairs state.
 Phase 6C uses the existing schema and adds no migration, table, column, constraint, or index. It
 does not implement the Phase 6D inactivity sweep or automatic-close execution path.
 
+Phase 6D-1 adds database-only automatic-close candidate discovery to the existing automatic-close
+persistence store. Activity rows are the driving source. One read-only PostgreSQL statement joins
+each row to the matching current parent allowlist entry, left joins current guild settings, rejects
+a matching guild/thread exclusion with `NOT EXISTS`, and applies the inclusive inactivity
+threshold. Missing guild settings use the approved 604800-second default without creating a row.
+Candidate discovery does not inspect `managed_threads`, scheduled actions, or the bot-message
+policy because qualifying activity has already been classified when recorded.
+
+Candidate pages use a fixed size of 100 and deterministic keyset ordering by
+`last_activity_at ASC`, `guild_id ASC`, then `thread_id ASC`. The cursor contains that complete
+tuple and selects only rows strictly after it; OFFSET pagination is not used. A future sweep will
+capture one `asOf` timestamp and supply that same value to every page, so page duration does not
+change the inactivity boundary. The query never uses PostgreSQL `now()` as the sweep authority.
+
+Candidate selection is provisional and creates no claim or lock. Activity can move forward and
+parent or exclusion policy can change while pages are read; a later execution slice must revalidate
+policy and fresh Discord state immediately before acting. Phase 6D-1 performs no Discord access or
+mutation, writes no audit, and starts no runtime sweep or timer. The activity table has one
+candidate-pagination index on `last_activity_at`, `guild_id`, and `thread_id`; no other index or
+runtime dependency is added by this slice.
+
 ### Phase 7: Managed messages
 
 - Implement `/message send`.

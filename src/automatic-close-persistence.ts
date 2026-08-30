@@ -1,5 +1,5 @@
-import { and, asc, eq, sql } from "drizzle-orm";
-import { pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
+import { and, asc, eq, gt, lte, or, sql } from "drizzle-orm";
+import { index, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
 import { DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS, guildSettings } from "./guild-settings.js";
@@ -54,8 +54,17 @@ export const autoCloseThreadActivity = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [primaryKey({ columns: [table.guildId, table.threadId] })],
+  (table) => [
+    primaryKey({ columns: [table.guildId, table.threadId] }),
+    index("auto_close_thread_activity_last_activity_guild_thread_idx").on(
+      table.lastActivityAt,
+      table.guildId,
+      table.threadId,
+    ),
+  ],
 );
+
+const AUTOMATIC_CLOSE_CANDIDATE_PAGE_SIZE = 100;
 
 export type AutoCloseParentChannel = typeof autoCloseParentChannels.$inferSelect;
 export type AutoCloseThreadExclusion = typeof autoCloseThreadExclusions.$inferSelect;
@@ -121,7 +130,34 @@ export type AutomaticCloseThreadStatus = {
   lastActivityAt: Date | null;
 };
 
+export type AutomaticCloseCandidate = {
+  guildId: string;
+  threadId: string;
+  parentChannelId: string;
+  lastActivityAt: Date;
+};
+
+export type AutomaticCloseCandidateCursor = {
+  lastActivityAt: Date;
+  guildId: string;
+  threadId: string;
+};
+
+export type FindInactiveAutomaticCloseCandidatesPage = {
+  asOf: Date;
+  cursor?: AutomaticCloseCandidateCursor;
+};
+
 export type AutomaticClosePersistenceStore = {
+  /**
+   * Returns one provisional, read-only page of policy-eligible inactivity candidates.
+   *
+   * The caller supplies the stable sweep timestamp. Results are ordered by activity time, guild,
+   * and thread and use the same tuple as a strictly-after keyset cursor.
+   */
+  findInactiveCandidatesPage: (
+    input: FindInactiveAutomaticCloseCandidatesPage,
+  ) => Promise<AutomaticCloseCandidate[]>;
   /** Returns whether the allowlist changed. Adding an existing pair is a successful no-op. */
   addParentChannel: (guildId: string, parentChannelId: string) => Promise<boolean>;
   /** Returns whether the allowlist changed. Removing an absent pair is a successful no-op. */
@@ -185,6 +221,65 @@ export function createAutomaticClosePersistenceStore(
   database: DatabaseClient,
 ): AutomaticClosePersistenceStore {
   return {
+    async findInactiveCandidatesPage({ asOf, cursor }) {
+      const afterCursor =
+        cursor === undefined
+          ? undefined
+          : or(
+              gt(autoCloseThreadActivity.lastActivityAt, cursor.lastActivityAt),
+              and(
+                eq(autoCloseThreadActivity.lastActivityAt, cursor.lastActivityAt),
+                gt(autoCloseThreadActivity.guildId, cursor.guildId),
+              ),
+              and(
+                eq(autoCloseThreadActivity.lastActivityAt, cursor.lastActivityAt),
+                eq(autoCloseThreadActivity.guildId, cursor.guildId),
+                gt(autoCloseThreadActivity.threadId, cursor.threadId),
+              ),
+            );
+
+      return database
+        .select({
+          guildId: autoCloseThreadActivity.guildId,
+          threadId: autoCloseThreadActivity.threadId,
+          parentChannelId: autoCloseThreadActivity.parentChannelId,
+          // Selecting the TIMESTAMPTZ column directly applies Drizzle's runtime Date decoder.
+          lastActivityAt: autoCloseThreadActivity.lastActivityAt,
+        })
+        .from(autoCloseThreadActivity)
+        .innerJoin(
+          autoCloseParentChannels,
+          and(
+            eq(autoCloseParentChannels.guildId, autoCloseThreadActivity.guildId),
+            eq(autoCloseParentChannels.parentChannelId, autoCloseThreadActivity.parentChannelId),
+          ),
+        )
+        .leftJoin(guildSettings, eq(guildSettings.guildId, autoCloseThreadActivity.guildId))
+        .where(
+          and(
+            sql`not exists (
+              select 1
+              from ${autoCloseThreadExclusions} as excluded_thread
+              where excluded_thread.guild_id = ${autoCloseThreadActivity.guildId}
+                and excluded_thread.thread_id = ${autoCloseThreadActivity.threadId}
+            )`,
+            lte(
+              autoCloseThreadActivity.lastActivityAt,
+              sql`${asOf}::timestamptz - coalesce(
+                ${guildSettings.autoCloseInactivitySeconds},
+                ${DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS}
+              ) * interval '1 second'`,
+            ),
+            afterCursor,
+          ),
+        )
+        .orderBy(
+          asc(autoCloseThreadActivity.lastActivityAt),
+          asc(autoCloseThreadActivity.guildId),
+          asc(autoCloseThreadActivity.threadId),
+        )
+        .limit(AUTOMATIC_CLOSE_CANDIDATE_PAGE_SIZE);
+    },
     async addParentChannel(guildId, parentChannelId) {
       const inserted = await database
         .insert(autoCloseParentChannels)
