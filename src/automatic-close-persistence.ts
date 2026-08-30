@@ -64,11 +64,30 @@ export const autoCloseThreadActivity = pgTable(
   ],
 );
 
+/**
+ * Latest inactivity episode known to have reached a terminal archived state.
+ *
+ * A retirement suppresses only the activity episode with the same `last_activity_at`. A newer
+ * activity or re-entry baseline therefore starts a distinct episode without deleting this row.
+ */
+export const autoCloseThreadRetirements = pgTable(
+  "auto_close_thread_retirements",
+  {
+    guildId: text("guild_id").notNull(),
+    threadId: text("thread_id").notNull(),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.guildId, table.threadId] })],
+);
+
 const AUTOMATIC_CLOSE_CANDIDATE_PAGE_SIZE = 100;
 
 export type AutoCloseParentChannel = typeof autoCloseParentChannels.$inferSelect;
 export type AutoCloseThreadExclusion = typeof autoCloseThreadExclusions.$inferSelect;
 export type AutoCloseThreadActivity = typeof autoCloseThreadActivity.$inferSelect;
+export type AutoCloseThreadRetirement = typeof autoCloseThreadRetirements.$inferSelect;
 
 export type RecordThreadActivity = {
   guildId: string;
@@ -148,6 +167,24 @@ export type FindInactiveAutomaticCloseCandidatesPage = {
   cursor?: AutomaticCloseCandidateCursor;
 };
 
+export type AutomaticCloseEpisode = {
+  guildId: string;
+  threadId: string;
+  lastActivityAt: Date;
+};
+
+export type RevalidateAutomaticCloseCandidateEpisode = AutomaticCloseEpisode & {
+  parentChannelId: string;
+  revalidatedAt: Date;
+};
+
+export type RecordThreadReentryBaseline = {
+  guildId: string;
+  threadId: string;
+  parentChannelId: string;
+  reopenedAt: Date;
+};
+
 export type AutomaticClosePersistenceStore = {
   /**
    * Returns one provisional, read-only page of policy-eligible inactivity candidates.
@@ -158,6 +195,10 @@ export type AutomaticClosePersistenceStore = {
   findInactiveCandidatesPage: (
     input: FindInactiveAutomaticCloseCandidatesPage,
   ) => Promise<AutomaticCloseCandidate[]>;
+  /** Returns whether the exact candidate episode is still eligible at the caller's timestamp. */
+  isCandidateEpisodeEligible: (input: RevalidateAutomaticCloseCandidateEpisode) => Promise<boolean>;
+  /** Retires an episode without ever replacing a newer retirement with an older one. */
+  retireActivityEpisode: (input: AutomaticCloseEpisode) => Promise<void>;
   /** Returns whether the allowlist changed. Adding an existing pair is a successful no-op. */
   addParentChannel: (guildId: string, parentChannelId: string) => Promise<boolean>;
   /** Returns whether the allowlist changed. Removing an absent pair is a successful no-op. */
@@ -203,6 +244,8 @@ export type AutomaticClosePersistenceStore = {
    * does not. Returns whether the activity row was inserted or advanced.
    */
   recordQualifyingMessageActivity: (input: RecordQualifyingMessageActivity) => Promise<boolean>;
+  /** Applies an eligible archived-to-active re-entry baseline monotonically in one statement. */
+  recordThreadReentryBaseline: (input: RecordThreadReentryBaseline) => Promise<boolean>;
   /**
    * Creates activity rows only for candidates that have none, in one statement.
    *
@@ -263,6 +306,13 @@ export function createAutomaticClosePersistenceStore(
               where excluded_thread.guild_id = ${autoCloseThreadActivity.guildId}
                 and excluded_thread.thread_id = ${autoCloseThreadActivity.threadId}
             )`,
+            sql`not exists (
+              select 1
+              from ${autoCloseThreadRetirements} as retired_episode
+              where retired_episode.guild_id = ${autoCloseThreadActivity.guildId}
+                and retired_episode.thread_id = ${autoCloseThreadActivity.threadId}
+                and retired_episode.last_activity_at = ${autoCloseThreadActivity.lastActivityAt}
+            )`,
             lte(
               autoCloseThreadActivity.lastActivityAt,
               sql`${asOf}::timestamptz - coalesce(
@@ -279,6 +329,66 @@ export function createAutomaticClosePersistenceStore(
           asc(autoCloseThreadActivity.threadId),
         )
         .limit(AUTOMATIC_CLOSE_CANDIDATE_PAGE_SIZE);
+    },
+    async isCandidateEpisodeEligible({
+      guildId,
+      threadId,
+      parentChannelId,
+      lastActivityAt,
+      revalidatedAt,
+    }) {
+      const [result] = await database
+        .select({
+          eligible: sql<boolean>`exists (
+            select 1
+            from ${autoCloseThreadActivity} as activity
+            join ${autoCloseParentChannels} as parent
+              on parent.guild_id = activity.guild_id
+              and parent.parent_channel_id = activity.parent_channel_id
+            left join ${guildSettings} as settings
+              on settings.guild_id = activity.guild_id
+            where activity.guild_id = ${guildId}
+              and activity.thread_id = ${threadId}
+              and activity.parent_channel_id = ${parentChannelId}
+              and activity.last_activity_at = ${lastActivityAt}
+              and activity.last_activity_at <= ${revalidatedAt}::timestamptz - coalesce(
+                settings.auto_close_inactivity_seconds,
+                ${DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS}
+              ) * interval '1 second'
+              and not exists (
+                select 1
+                from ${autoCloseThreadExclusions} as excluded_thread
+                where excluded_thread.guild_id = activity.guild_id
+                  and excluded_thread.thread_id = activity.thread_id
+              )
+              and not exists (
+                select 1
+                from ${autoCloseThreadRetirements} as retired_episode
+                where retired_episode.guild_id = activity.guild_id
+                  and retired_episode.thread_id = activity.thread_id
+                  and retired_episode.last_activity_at = activity.last_activity_at
+              )
+          )`,
+        })
+        .from(sql`(select 1) as eligibility_source`)
+        .limit(1);
+      if (result === undefined) {
+        throw new Error("Automatic close candidate eligibility could not be loaded");
+      }
+      return result.eligible;
+    },
+    async retireActivityEpisode({ guildId, threadId, lastActivityAt }) {
+      await database
+        .insert(autoCloseThreadRetirements)
+        .values({ guildId, threadId, lastActivityAt })
+        .onConflictDoUpdate({
+          target: [autoCloseThreadRetirements.guildId, autoCloseThreadRetirements.threadId],
+          set: {
+            lastActivityAt: sql`excluded.last_activity_at`,
+            updatedAt: new Date(),
+          },
+          setWhere: sql`${autoCloseThreadRetirements.lastActivityAt} < excluded.last_activity_at`,
+        });
     },
     async addParentChannel(guildId, parentChannelId) {
       const inserted = await database
@@ -516,6 +626,31 @@ export function createAutomaticClosePersistenceStore(
             not ${authorIsBot}::boolean
             or coalesce(settings.auto_close_bot_messages_count_as_activity, false)
           )
+          and not exists (
+            select 1
+            from ${autoCloseThreadExclusions} as excluded_thread
+            where excluded_thread.guild_id = ${guildId}
+              and excluded_thread.thread_id = ${threadId}
+          )
+        on conflict (guild_id, thread_id) do update
+        set last_activity_at  = excluded.last_activity_at,
+            parent_channel_id = excluded.parent_channel_id,
+            updated_at        = excluded.updated_at
+        where ${autoCloseThreadActivity}.last_activity_at < excluded.last_activity_at
+        returning thread_id
+      `);
+      return applied.rows.length > 0;
+    },
+    async recordThreadReentryBaseline({ guildId, threadId, parentChannelId, reopenedAt }) {
+      // Re-entry is not message activity. This one statement applies only the current parent and
+      // exclusion policy, then advances the activity episode monotonically.
+      const applied = await database.execute(sql`
+        insert into ${autoCloseThreadActivity}
+          (guild_id, thread_id, parent_channel_id, last_activity_at, updated_at)
+        select ${guildId}, ${threadId}, ${parentChannelId}, ${reopenedAt}, ${new Date()}
+        from ${autoCloseParentChannels} as parent
+        where parent.guild_id = ${guildId}
+          and parent.parent_channel_id = ${parentChannelId}
           and not exists (
             select 1
             from ${autoCloseThreadExclusions} as excluded_thread

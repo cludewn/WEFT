@@ -1,4 +1,4 @@
-import { ChannelType, HTTPError, PermissionFlagsBits, Routes } from "discord.js";
+import { ChannelType, DiscordAPIError, HTTPError, PermissionFlagsBits, Routes } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Client } from "discord.js";
@@ -6,6 +6,7 @@ import type { Client } from "discord.js";
 import {
   classifyThreadDiscordMutationFailure,
   createAutoCloseDiscord,
+  createAutomaticCloseExecutionDiscord,
   createAutomaticCloseThreadMaintenanceDiscord,
   createThreadLifecycleDiscord,
   isSupportedThreadType,
@@ -161,6 +162,74 @@ describe("automatic close thread maintenance inspection", () => {
   });
 });
 
+describe("automatic close execution inspection", () => {
+  it("returns the current parent and archived state from one forced fetch", async () => {
+    const fixture = createMaintenanceClient({ archived: true });
+    const discord = createAutomaticCloseExecutionDiscord(fixture.client);
+
+    await expect(discord.inspectThread("guild-id", "thread-id")).resolves.toEqual({
+      outcome: "AVAILABLE",
+      parentChannelId: "parent-id",
+      archived: true,
+    });
+    expect(fixture.fetchChannel).toHaveBeenCalledExactlyOnceWith("thread-id", { force: true });
+    expect(fixture.fetchMember).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["null", null],
+    ["non-thread", { type: ChannelType.GuildText, isThread: () => false }],
+    ["unsupported thread", { type: ChannelType.GuildText, isThread: () => true }],
+    ["wrong guild", { guildId: "other-guild" }],
+    ["parentless", { parentId: null }],
+  ])("confirms %s as unavailable", async (_label, channelOverride) => {
+    const fixture =
+      channelOverride === null
+        ? createExecutionClientWithResult(null)
+        : createMaintenanceClient(channelOverride);
+    const discord = createAutomaticCloseExecutionDiscord(fixture.client);
+
+    await expect(discord.inspectThread("guild-id", "thread-id")).resolves.toEqual({
+      outcome: "UNAVAILABLE",
+    });
+  });
+
+  it("classifies Discord's public Unknown Channel code as unavailable", async () => {
+    const request = { body: undefined, files: undefined };
+    const unknownChannel = new DiscordAPIError(
+      { message: "Unknown Channel", code: 10_003 },
+      10_003,
+      404,
+      "GET",
+      "https://discord.invalid",
+      request,
+    );
+    const fixture = createExecutionClientWithFailure(unknownChannel);
+    const discord = createAutomaticCloseExecutionDiscord(fixture.client);
+
+    await expect(discord.inspectThread("guild-id", "thread-id")).resolves.toEqual({
+      outcome: "UNAVAILABLE",
+    });
+  });
+
+  it.each([
+    new Error("transport failure"),
+    new HTTPError(503, "Unavailable", "GET", "https://discord.invalid", {
+      body: undefined,
+      files: undefined,
+    }),
+    new HTTPError(403, "Forbidden", "GET", "https://discord.invalid", {
+      body: undefined,
+      files: undefined,
+    }),
+  ])("propagates an unconfirmed inspection failure", async (failure) => {
+    const fixture = createExecutionClientWithFailure(failure);
+    const discord = createAutomaticCloseExecutionDiscord(fixture.client);
+
+    await expect(discord.inspectThread("guild-id", "thread-id")).rejects.toBe(failure);
+  });
+});
+
 function createMaintenanceClient(
   overrides: {
     type?: ChannelType;
@@ -193,4 +262,20 @@ function createMaintenanceClient(
     user: overrides.clientUser ?? null,
   } as unknown as Client;
   return { client, fetchChannel, fetchMember, permissionsFor, permissionHas };
+}
+
+function createExecutionClientWithResult(channel: null) {
+  const fetchChannel = vi.fn(() => Promise.resolve(channel));
+  return {
+    client: { channels: { fetch: fetchChannel } } as unknown as Client,
+    fetchChannel,
+  };
+}
+
+function createExecutionClientWithFailure(failure: Error) {
+  const fetchChannel = vi.fn(() => Promise.reject(failure));
+  return {
+    client: { channels: { fetch: fetchChannel } } as unknown as Client,
+    fetchChannel,
+  };
 }

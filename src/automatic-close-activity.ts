@@ -20,6 +20,14 @@ export type ThreadBaselineEvent = {
   baselineAt: Date;
 };
 
+/** Automatic-close facts from an observed archived-to-active thread transition. */
+export type ThreadReentryEvent = {
+  guildId: string;
+  threadId: string;
+  parentChannelId: string;
+  reopenedAt: Date;
+};
+
 export type AutomaticCloseActivityService = {
   /**
    * Records qualifying message activity.
@@ -34,12 +42,16 @@ export type AutomaticCloseActivityService = {
    * Never rejects. Existing activity rows are left untouched by the persistence operation.
    */
   initializeThreadBaseline: (event: ThreadBaselineEvent) => Promise<void>;
+  /** Applies a new eligible inactivity episode floor after an archived thread becomes active. */
+  recordThreadReentryBaseline: (event: ThreadReentryEvent) => Promise<void>;
 };
 
 type Dependencies = {
   persistence: Pick<
     AutomaticClosePersistenceStore,
-    "recordQualifyingMessageActivity" | "initializeMissingActivityBaselines"
+    | "recordQualifyingMessageActivity"
+    | "initializeMissingActivityBaselines"
+    | "recordThreadReentryBaseline"
   >;
   logger: Pick<Logger, "warn">;
 };
@@ -82,6 +94,22 @@ export function createAutomaticCloseActivityService({
             errorName: getErrorName(error),
           },
           "Automatic close thread baseline could not be initialized",
+        );
+      }
+    },
+    async recordThreadReentryBaseline(event) {
+      try {
+        await persistence.recordThreadReentryBaseline(event);
+      } catch (error) {
+        logger.warn(
+          {
+            event: "automatic_close_thread_reentry_failed",
+            guildId: event.guildId,
+            threadId: event.threadId,
+            parentChannelId: event.parentChannelId,
+            errorName: getErrorName(error),
+          },
+          "Automatic close thread re-entry baseline could not be recorded",
         );
       }
     },

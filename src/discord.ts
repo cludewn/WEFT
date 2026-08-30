@@ -1,4 +1,4 @@
-import { Client, Events, GatewayIntentBits, RESTEvents } from "discord.js";
+import { Client, Events, GatewayDispatchEvents, GatewayIntentBits, RESTEvents } from "discord.js";
 
 import type { Logger } from "pino";
 
@@ -182,12 +182,50 @@ export function registerDiscordCommandHandler(
 export type AutomaticCloseActivityDependencies = {
   activity: AutomaticCloseActivityService;
   logger: Pick<Logger, "debug">;
+  now?: () => Date;
 };
+
+type ActiveRawThreadUpdate = {
+  guildId: string;
+  threadId: string;
+  parentChannelId: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseActiveRawThreadUpdate(packet: unknown): ActiveRawThreadUpdate | undefined {
+  if (!isRecord(packet) || packet.t !== GatewayDispatchEvents.ThreadUpdate || !isRecord(packet.d)) {
+    return undefined;
+  }
+
+  const data = packet.d;
+  if (
+    typeof data.id !== "string" ||
+    typeof data.guild_id !== "string" ||
+    typeof data.parent_id !== "string" ||
+    typeof data.type !== "number" ||
+    !isSupportedThreadType(data.type) ||
+    !isRecord(data.thread_metadata) ||
+    data.thread_metadata.archived !== false
+  ) {
+    return undefined;
+  }
+
+  return {
+    guildId: data.guild_id,
+    threadId: data.id,
+    parentChannelId: data.parent_id,
+  };
+}
 
 export function registerAutomaticCloseActivityHandlers(
   client: Client,
   dependencies: AutomaticCloseActivityDependencies,
 ): void {
+  const now = dependencies.now ?? (() => new Date());
+
   client.on(Events.MessageCreate, (message) => {
     if (!message.inGuild() || message.system) {
       return;
@@ -240,13 +278,44 @@ export function registerAutomaticCloseActivityHandlers(
     // creation time must not become the baseline.
     const createdTimestamp = thread.createdTimestamp;
     const baselineAt =
-      newlyCreated && createdTimestamp !== null ? new Date(createdTimestamp) : new Date();
+      newlyCreated && createdTimestamp !== null ? new Date(createdTimestamp) : now();
 
     void dependencies.activity.initializeThreadBaseline({
       guildId: thread.guildId,
       threadId: thread.id,
       parentChannelId,
       baselineAt,
+    });
+  });
+
+  client.on(Events.Raw, (packet: unknown) => {
+    const update = parseActiveRawThreadUpdate(packet);
+    if (update === undefined) {
+      return;
+    }
+
+    const cachedThread = client.channels.cache.get(update.threadId);
+    if (cachedThread !== undefined) {
+      if (
+        !cachedThread.isThread() ||
+        !isSupportedThreadType(cachedThread.type) ||
+        cachedThread.guildId !== update.guildId ||
+        cachedThread.archived !== true
+      ) {
+        return;
+      }
+    }
+
+    // Discord does not synchronize archived threads up front and may deliver an unarchive update
+    // while the thread is absent from cache. Treat that active cache miss conservatively as a new
+    // inactivity baseline so WEFT cannot close the thread prematurely.
+    const reopenedAt = now();
+
+    // Locked threads still begin a new inactivity episode when Discord makes them active. The
+    // lifecycle path independently decides whether a later close attempt can proceed.
+    void dependencies.activity.recordThreadReentryBaseline({
+      ...update,
+      reopenedAt,
     });
   });
 }

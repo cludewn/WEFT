@@ -129,7 +129,8 @@ type LifecycleDependencies = {
 };
 
 type Actor = { type: "USER"; id: string } | { type: "SYSTEM" };
-type LifecycleOperation = "CLOSE" | "OPEN" | "AUTO_OPEN";
+type CloseOperation = "CLOSE" | "AUTO_CLOSE";
+type LifecycleOperation = CloseOperation | "OPEN" | "AUTO_OPEN";
 type DiscordMutationBoundary = "thread_rename" | "thread_archive";
 type BoundaryName =
   | "thread_fetch"
@@ -166,7 +167,7 @@ type PendingMutation = {
 };
 
 type CloseIntent = {
-  operation: "CLOSE";
+  operation: CloseOperation;
   actor: Actor;
 };
 type CloseMutationIntent = CloseIntent & {
@@ -269,6 +270,11 @@ export type ThreadLifecycleService = {
     threadId: string,
     auditId: string,
   ) => Promise<SystemThreadCloseResult>;
+  autoCloseAsSystem: (
+    guildId: string,
+    threadId: string,
+    auditId: string,
+  ) => Promise<SystemThreadCloseResult>;
   open: (guildId: string, threadId: string, actorId: string) => Promise<ThreadLifecycleResult>;
   autoOpen: (guildId: string, threadId: string) => Promise<ThreadLifecycleResult>;
 };
@@ -308,6 +314,10 @@ export function createThreadLifecycleService(
   const pendingMutations = new PendingDiscordMutationGuard();
   const finalizationJobs = new Map<string, FinalizationJob>();
   const deferredAutoOpen = new Set<string>();
+
+  function isCloseOperation(operation: LifecycleOperation): operation is CloseOperation {
+    return operation === "CLOSE" || operation === "AUTO_CLOSE";
+  }
 
   function createContext(
     guildId: string,
@@ -727,10 +737,9 @@ export function createThreadLifecycleService(
 
   function resolvedFinalizationPlan(intent: DiscordMutationIntent): FinalizationPlan {
     return {
-      managedState:
-        intent.operation === "CLOSE"
-          ? { lifecycleState: "CLOSED", appliedPrefix: intent.appliedPrefix }
-          : { lifecycleState: "OPEN" },
+      managedState: isCloseOperation(intent.operation)
+        ? { lifecycleState: "CLOSED", appliedPrefix: intent.appliedPrefix }
+        : { lifecycleState: "OPEN" },
       auditOutcome: "SUCCESS",
     };
   }
@@ -770,10 +779,9 @@ export function createThreadLifecycleService(
         failureDisposition: "PERMANENT",
       };
     }
-    const intendedStateApplied =
-      intent.operation === "CLOSE"
-        ? thread.archived && !thread.locked && thread.name === intent.intendedName
-        : !thread.archived && thread.name === intent.intendedName;
+    const intendedStateApplied = isCloseOperation(intent.operation)
+      ? thread.archived && !thread.locked && thread.name === intent.intendedName
+      : !thread.archived && thread.name === intent.intendedName;
     const failureCode =
       settlement.boundary === "thread_archive" ? "DISCORD_ARCHIVE_FAILED" : "DISCORD_RENAME_FAILED";
     return {
@@ -1050,11 +1058,12 @@ export function createThreadLifecycleService(
 
   async function close(
     context: OperationContext,
-    actor: Actor,
+    intent: CloseIntent,
     precedingChangedSameTarget: boolean,
     prepareManualClose?: () => Promise<void>,
   ): Promise<ThreadLifecycleResult> {
     const { guildId, threadId } = context;
+    const { operation: action, actor } = intent;
     let fallback: ThreadFailureCode = "DISCORD_FETCH_FAILED";
     try {
       await requireNoPendingMutation(context);
@@ -1064,7 +1073,7 @@ export function createThreadLifecycleService(
       }
       await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
     } catch (error) {
-      return fail(context, "CLOSE", actor, error, fallback);
+      return fail(context, action, actor, error, fallback);
     }
 
     if (prepareManualClose !== undefined) {
@@ -1118,7 +1127,7 @@ export function createThreadLifecycleService(
       const closedName = addClosedPrefix(beforeArchive.name, appliedPrefix);
       if (!beforeArchive.archived || closedName !== beforeArchive.name) {
         const mutationIntent: CloseMutationIntent = {
-          operation: "CLOSE",
+          operation: action,
           actor,
           appliedPrefix,
           intendedName: closedName,
@@ -1145,11 +1154,39 @@ export function createThreadLifecycleService(
       }
 
       fallback = "AUDIT_WRITE_FAILED";
-      await audit(context, "CLOSE", actor, "SUCCESS");
+      await audit(context, action, actor, "SUCCESS");
       return { ok: true, changed };
     } catch (error) {
-      return fail(context, "CLOSE", actor, error, fallback);
+      return fail(context, action, actor, error, fallback);
     }
+  }
+
+  async function closeAsSystemWithOperation(
+    guildId: string,
+    threadId: string,
+    auditId: string,
+    operation: CloseOperation,
+  ): Promise<SystemThreadCloseResult> {
+    const result = await serialize(
+      guildId,
+      threadId,
+      operation,
+      "CLOSED",
+      (context, precedingChangedSameTarget) =>
+        close(context, { operation, actor: { type: "SYSTEM" } }, precedingChangedSameTarget),
+      { auditId, completionMode: "FINAL" },
+    );
+    if (result.ok) {
+      return { outcome: "SUCCESS", changed: result.changed };
+    }
+    if (result.pending === true) {
+      return { outcome: "RETRYABLE_FAILURE", code: "LIFECYCLE_DEADLINE_EXCEEDED" };
+    }
+    const disposition = result.disposition ?? dispositionForFailure(result.code);
+    return {
+      outcome: disposition === "PERMANENT" ? "PERMANENT_FAILURE" : "RETRYABLE_FAILURE",
+      code: result.code,
+    };
   }
 
   async function reconcileOpen(
@@ -1264,34 +1301,16 @@ export function createThreadLifecycleService(
         (context, precedingChangedSameTarget) =>
           close(
             context,
-            { type: "USER", id: actorId },
+            { operation: "CLOSE", actor: { type: "USER", id: actorId } },
             precedingChangedSameTarget,
             prepareManualClose,
           ),
       );
     },
-    closeAsSystem: async (guildId, threadId, auditId) => {
-      const result = await serialize(
-        guildId,
-        threadId,
-        "CLOSE",
-        "CLOSED",
-        (context, precedingChangedSameTarget) =>
-          close(context, { type: "SYSTEM" }, precedingChangedSameTarget),
-        { auditId, completionMode: "FINAL" },
-      );
-      if (result.ok) {
-        return { outcome: "SUCCESS", changed: result.changed };
-      }
-      if (result.pending === true) {
-        return { outcome: "RETRYABLE_FAILURE", code: "LIFECYCLE_DEADLINE_EXCEEDED" };
-      }
-      const disposition = result.disposition ?? dispositionForFailure(result.code);
-      return {
-        outcome: disposition === "PERMANENT" ? "PERMANENT_FAILURE" : "RETRYABLE_FAILURE",
-        code: result.code,
-      };
-    },
+    closeAsSystem: (guildId, threadId, auditId) =>
+      closeAsSystemWithOperation(guildId, threadId, auditId, "CLOSE"),
+    autoCloseAsSystem: (guildId, threadId, auditId) =>
+      closeAsSystemWithOperation(guildId, threadId, auditId, "AUTO_CLOSE"),
     open: (guildId, threadId, actorId) => {
       return serialize(guildId, threadId, "OPEN", "OPEN", (context, precedingChangedSameTarget) =>
         reconcileOpen(
