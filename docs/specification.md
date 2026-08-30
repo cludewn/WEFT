@@ -321,6 +321,13 @@ Automatic closing uses a periodic database-driven sweep rather than replacing a 
 
 The initial sweep interval is five minutes.
 
+The first sweep begins only after the initial five-minute runtime interval. Each later sweep begins
+five minutes after the previous sweep settles, so long-running sweeps do not overlap. The
+inactivity threshold is therefore an eligibility boundary rather than an exact wall-clock close
+deadline: an eligible candidate is closed on a later sweep only after current state and permissions
+are revalidated. Shutdown stops new sweep work and drains work already in progress, so unprocessed
+candidates remain eligible for a later runtime.
+
 Immediately before closing, WEFT must re-fetch the thread and revalidate its current state and permissions.
 
 ### Thread maintenance commands

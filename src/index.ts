@@ -3,8 +3,10 @@ import pino from "pino";
 import { runApplicationStartup } from "./application-startup.js";
 import { createAutomaticCloseActivityService } from "./automatic-close-activity.js";
 import { createAutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
+import { createAutomaticCloseExecutor } from "./automatic-close-execution.js";
 import { createAutomaticClosePersistenceStore } from "./automatic-close-persistence.js";
 import { createAutomaticCloseBaselineReconciler } from "./automatic-close-reconciler.js";
+import { createAutomaticCloseRuntime } from "./automatic-close-runtime.js";
 import { createAutomaticCloseThreadMaintenanceService } from "./automatic-close-thread-maintenance.js";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { createDatabase } from "./database.js";
@@ -28,6 +30,7 @@ import { createScheduledThreadCloseWorkerController } from "./scheduled-thread-c
 import { createShutdown } from "./shutdown.js";
 import {
   createAutoCloseDiscord,
+  createAutomaticCloseExecutionDiscord,
   createAutomaticCloseThreadMaintenanceDiscord,
 } from "./thread-discord.js";
 import { createManagedThreadStore, createThreadAuditStore } from "./thread-persistence.js";
@@ -79,6 +82,17 @@ async function main(): Promise<void> {
     discord: autoCloseDiscord,
     logger,
   });
+  const automaticCloseExecutor = createAutomaticCloseExecutor({
+    discord: createAutomaticCloseExecutionDiscord(discordRuntime.client),
+    persistence: automaticCloses,
+    scheduledActions,
+    threadLifecycle: discordRuntime.threadLifecycle,
+  });
+  const automaticCloseRuntime = createAutomaticCloseRuntime({
+    persistence: automaticCloses,
+    executor: automaticCloseExecutor,
+    logger,
+  });
   registerAutomaticCloseActivityHandlers(discordRuntime.client, {
     activity: automaticCloseActivity,
     logger,
@@ -123,6 +137,7 @@ async function main(): Promise<void> {
   const startupAbortController = new AbortController();
   const shutdown = createShutdown(
     [
+      { name: "automatic-close-runtime", close: () => automaticCloseRuntime.stop() },
       {
         name: "scheduled-thread-close-runtime-reconciler",
         close: () => scheduledThreadCloseRuntimeReconciler.stop(),
@@ -163,6 +178,7 @@ async function main(): Promise<void> {
         scheduledThreadCloseRuntimeReconciler.start(),
       reconcileAutomaticCloseBaselines: () =>
         automaticCloseBaselineReconciler.reconcileMissingBaselines(),
+      startAutomaticCloseRuntime: () => automaticCloseRuntime.start(),
       shutdown,
     },
     logger,

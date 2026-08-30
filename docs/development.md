@@ -883,6 +883,29 @@ sweep, page-iteration runtime, pg-boss queue, or delayed automatic-close job. Ph
 runtime orchestration. The remaining change-after-revalidation PostgreSQL/Discord race is accepted
 and documented rather than hidden behind a database lock held across Discord work.
 
+Phase 6D-3 adds a focused automatic-close runtime controller. It uses a fixed-delay `setTimeout`:
+the first sweep begins five minutes after startup, and each later timer is created only after the
+owner sweep settles. A manual sweep cancels a pending periodic timer and owns the next full delay;
+callers that join an existing sweep share its exact promise and do not acquire timer ownership.
+This process-local single-flight behavior prevents overlap without introducing a PostgreSQL lock,
+claim, lease, or high-availability coordination.
+
+Each sweep captures one `asOf` timestamp and reuses it while reading candidate pages to exhaustion
+with the persistence boundary's existing keyset cursor. Candidates execute sequentially through
+the Phase 6D-2 executor. Bounded executor failures and unexpected executor rejections are counted,
+logged without raw errors, and isolated so later candidates still run. A candidate-page read
+failure ends only the current sweep; the next periodic sweep starts from an empty cursor with a new
+timestamp after the full delay. Aggregate logging reports non-empty sweep statistics without
+emitting per-candidate success or safe-skip logs.
+
+Startup attempts missing-baseline reconciliation after Discord and scheduled-close runtime startup,
+then starts the automatic-close runtime even when that best-effort baseline attempt failed. Runtime
+startup failure remains fatal. Shutdown stops automatic-close scheduling first, clears its pending
+timer, and drains an in-flight page read or candidate execution before scheduled workers, Discord,
+or PostgreSQL are stopped. Stopping checks between page reads and candidates prevent new work after
+shutdown begins. Automatic close remains a database-driven scan and has no pg-boss queue or delayed
+job per thread, message, or candidate.
+
 ### Phase 7: Managed messages
 
 - Implement `/message send`.
