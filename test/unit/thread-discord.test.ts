@@ -1,4 +1,4 @@
-import { ChannelType, HTTPError, Routes } from "discord.js";
+import { ChannelType, HTTPError, PermissionFlagsBits, Routes } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Client } from "discord.js";
@@ -6,6 +6,7 @@ import type { Client } from "discord.js";
 import {
   classifyThreadDiscordMutationFailure,
   createAutoCloseDiscord,
+  createAutomaticCloseThreadMaintenanceDiscord,
   createThreadLifecycleDiscord,
   isSupportedThreadType,
 } from "../../src/thread-discord.js";
@@ -84,3 +85,112 @@ describe("automatic close active thread enumeration", () => {
     expect(fetchActiveThreads).toHaveBeenCalledOnce();
   });
 });
+
+describe("automatic close thread maintenance inspection", () => {
+  it.each([ChannelType.AnnouncementThread, ChannelType.PublicThread, ChannelType.PrivateThread])(
+    "accepts supported thread type %s with one fresh channel fetch",
+    async (type) => {
+      const fixture = createMaintenanceClient({ type });
+      const discord = createAutomaticCloseThreadMaintenanceDiscord(fixture.client);
+
+      await expect(discord.inspectThread("guild-id", "thread-id", "actor-id")).resolves.toEqual({
+        parentChannelId: "parent-id",
+        actorCanManage: true,
+      });
+      expect(fixture.fetchChannel).toHaveBeenCalledExactlyOnceWith("thread-id", { force: true });
+      expect(fixture.fetchMember).toHaveBeenCalledExactlyOnceWith({
+        user: "actor-id",
+        force: true,
+      });
+      expect(fixture.permissionsFor).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["non-thread", { type: ChannelType.GuildText, isThread: () => false }],
+    ["unsupported thread", { type: ChannelType.GuildText, isThread: () => true }],
+    ["guild mismatch", { guildId: "other-guild" }],
+    ["parentless", { parentId: null }],
+  ])("rejects %s resources before fetching the member", async (_label, override) => {
+    const fixture = createMaintenanceClient(override);
+    const discord = createAutomaticCloseThreadMaintenanceDiscord(fixture.client);
+
+    await expect(
+      discord.inspectThread("guild-id", "thread-id", "actor-id"),
+    ).resolves.toBeUndefined();
+    expect(fixture.fetchChannel).toHaveBeenCalledOnce();
+    expect(fixture.fetchMember).not.toHaveBeenCalled();
+  });
+
+  it("returns the actor's actual ManageThreads permission only", async () => {
+    const fixture = createMaintenanceClient({ canManage: false });
+    const discord = createAutomaticCloseThreadMaintenanceDiscord(fixture.client);
+
+    await expect(discord.inspectThread("guild-id", "thread-id", "actor-id")).resolves.toEqual({
+      parentChannelId: "parent-id",
+      actorCanManage: false,
+    });
+    expect(fixture.permissionHas).toHaveBeenCalledExactlyOnceWith(
+      PermissionFlagsBits.ManageThreads,
+    );
+  });
+
+  it.each([
+    [true, false],
+    [false, true],
+    [true, true],
+  ])("accepts archived=%s locked=%s without checking bot permissions", async (archived, locked) => {
+    const fixture = createMaintenanceClient({ archived, locked, clientUser: null });
+    const discord = createAutomaticCloseThreadMaintenanceDiscord(fixture.client);
+
+    await expect(discord.inspectThread("guild-id", "thread-id", "actor-id")).resolves.toMatchObject(
+      { actorCanManage: true },
+    );
+    expect(fixture.fetchChannel).toHaveBeenCalledOnce();
+  });
+
+  it("propagates unexpected Discord failures", async () => {
+    const failure = new Error("opaque Discord failure");
+    const fetchChannel = vi.fn(() => Promise.reject(failure));
+    const discord = createAutomaticCloseThreadMaintenanceDiscord({
+      channels: { fetch: fetchChannel },
+    } as unknown as Client);
+
+    await expect(discord.inspectThread("guild-id", "thread-id", "actor-id")).rejects.toBe(failure);
+    expect(fetchChannel).toHaveBeenCalledExactlyOnceWith("thread-id", { force: true });
+  });
+});
+
+function createMaintenanceClient(
+  overrides: {
+    type?: ChannelType;
+    guildId?: string;
+    parentId?: string | null;
+    isThread?: () => boolean;
+    canManage?: boolean;
+    archived?: boolean;
+    locked?: boolean;
+    clientUser?: { id: string } | null;
+  } = {},
+) {
+  const fetchMember = vi.fn(() => Promise.resolve({ id: "actor-id" }));
+  const permissionHas = vi.fn(() => overrides.canManage ?? true);
+  const permissionsFor = vi.fn(() => ({ has: permissionHas }));
+  const channel = {
+    id: "thread-id",
+    type: overrides.type ?? ChannelType.PublicThread,
+    guildId: overrides.guildId ?? "guild-id",
+    parentId: overrides.parentId === undefined ? "parent-id" : overrides.parentId,
+    archived: overrides.archived ?? false,
+    locked: overrides.locked ?? false,
+    isThread: overrides.isThread ?? (() => true),
+    guild: { members: { fetch: fetchMember } },
+    permissionsFor,
+  };
+  const fetchChannel = vi.fn(() => Promise.resolve(channel));
+  const client = {
+    channels: { fetch: fetchChannel },
+    user: overrides.clientUser ?? null,
+  } as unknown as Client;
+  return { client, fetchChannel, fetchMember, permissionsFor, permissionHas };
+}

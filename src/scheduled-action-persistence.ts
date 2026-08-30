@@ -67,6 +67,11 @@ export type ActiveScheduledThreadCloseCursor = {
   id: string;
 };
 
+export type CurrentScheduledThreadClose = {
+  status: Extract<ScheduledActionStatus, "ACTIVE" | "EXECUTING">;
+  executeAt: Date;
+};
+
 const SCHEDULED_THREAD_CLOSE_RECOVERY_PAGE_SIZE = 100;
 
 export type ScheduledActionStore = {
@@ -76,6 +81,10 @@ export type ScheduledActionStore = {
     cursor?: ActiveScheduledThreadCloseCursor,
   ) => Promise<ScheduledAction[]>;
   findExecutingThreadClosesPage: (afterId?: string) => Promise<ScheduledAction[]>;
+  findCurrentThreadClose: (
+    guildId: string,
+    threadId: string,
+  ) => Promise<CurrentScheduledThreadClose | undefined>;
   cancel: (id: string) => Promise<ScheduledAction | undefined>;
   claimExecution: (id: string) => Promise<ScheduledActionTransitionResult>;
 };
@@ -173,6 +182,28 @@ export function createScheduledActionStore(database: DatabaseClient): ScheduledA
         )
         .orderBy(asc(scheduledActions.id))
         .limit(SCHEDULED_THREAD_CLOSE_RECOVERY_PAGE_SIZE);
+    },
+    async findCurrentThreadClose(guildId, threadId) {
+      const [action] = await database
+        .select({ status: scheduledActions.status, executeAt: scheduledActions.executeAt })
+        .from(scheduledActions)
+        .where(
+          and(
+            eq(scheduledActions.guildId, guildId),
+            eq(scheduledActions.targetId, threadId),
+            eq(scheduledActions.actionType, "CLOSE_THREAD"),
+            or(eq(scheduledActions.status, "ACTIVE"), eq(scheduledActions.status, "EXECUTING")),
+          ),
+        )
+        .limit(1);
+
+      if (action === undefined) {
+        return undefined;
+      }
+      return {
+        status: action.status as CurrentScheduledThreadClose["status"],
+        executeAt: action.executeAt,
+      };
     },
     async cancel(id) {
       const [cancelled] = await database

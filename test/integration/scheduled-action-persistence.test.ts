@@ -13,6 +13,8 @@ import {
 
 const guildId = "710000000000000001";
 const recoveryPaginationGuildId = "710000000000000002";
+const statusGuildIds = ["710000000000000003", "710000000000000004"] as const;
+const statusThreadIds = ["810000000000000011", "810000000000000012"] as const;
 const targetIds = [
   "810000000000000001",
   "810000000000000002",
@@ -352,6 +354,95 @@ describe("scheduled action persistence", () => {
     expect(executingIds).toEqual(executingRows.map((action) => action.id));
   });
 
+  it("finds the current ACTIVE scheduled close for one guild and thread", async () => {
+    const executeAt = new Date("2035-01-02T03:04:05.000Z");
+    await store.create({
+      id: "status-active-close",
+      guildId: statusGuildIds[0],
+      actionType: "CLOSE_THREAD",
+      targetId: statusThreadIds[0],
+      executeAt,
+    });
+
+    await expect(
+      store.findCurrentThreadClose(statusGuildIds[0], statusThreadIds[0]),
+    ).resolves.toEqual({ status: "ACTIVE", executeAt });
+  });
+
+  it("finds EXECUTING scheduled closes", async () => {
+    const executeAt = new Date("2035-02-02T03:04:05.000Z");
+    const action = await store.create({
+      id: "status-executing-close",
+      guildId: statusGuildIds[0],
+      actionType: "CLOSE_THREAD",
+      targetId: statusThreadIds[0],
+      executeAt,
+    });
+    await store.claimExecution(action.id);
+
+    await expect(
+      store.findCurrentThreadClose(statusGuildIds[0], statusThreadIds[0]),
+    ).resolves.toEqual({ status: "EXECUTING", executeAt });
+  });
+
+  it("returns no current close when no action exists", async () => {
+    await expect(
+      store.findCurrentThreadClose(statusGuildIds[0], statusThreadIds[0]),
+    ).resolves.toBeUndefined();
+  });
+
+  it.each(["CANCELLED", "COMPLETED", "FAILED"] as const)(
+    "ignores %s scheduled-close history",
+    async (status) => {
+      await database.client.insert(scheduledActions).values({
+        id: `status-terminal-${status.toLowerCase()}`,
+        guildId: statusGuildIds[0],
+        actionType: "CLOSE_THREAD",
+        targetId: statusThreadIds[0],
+        status,
+        executeAt: new Date("2035-03-02T03:04:05.000Z"),
+      });
+
+      await expect(
+        store.findCurrentThreadClose(statusGuildIds[0], statusThreadIds[0]),
+      ).resolves.toBeUndefined();
+    },
+  );
+
+  it("ignores other guilds, other threads, and SEND_MESSAGE actions", async () => {
+    const executeAt = new Date("2035-04-02T03:04:05.000Z");
+    await database.client.insert(scheduledActions).values([
+      {
+        id: "status-other-guild",
+        guildId: statusGuildIds[1],
+        actionType: "CLOSE_THREAD",
+        targetId: statusThreadIds[0],
+        status: "ACTIVE",
+        executeAt,
+      },
+      {
+        id: "status-other-thread",
+        guildId: statusGuildIds[0],
+        actionType: "CLOSE_THREAD",
+        targetId: statusThreadIds[1],
+        status: "ACTIVE",
+        executeAt,
+      },
+      {
+        id: "status-send-message",
+        guildId: statusGuildIds[0],
+        actionType: "SEND_MESSAGE",
+        targetId: statusThreadIds[0],
+        status: "ACTIVE",
+        executeAt,
+      },
+    ]);
+
+    await expect(
+      store.findCurrentThreadClose(statusGuildIds[0], statusThreadIds[0]),
+    ).resolves.toBeUndefined();
+  });
+
   it("installs timestamptz and the required partial indexes", async () => {
     const column = await database.client.execute<{ dataType: string }>(sql`
       select data_type as "dataType"
@@ -406,6 +497,7 @@ async function cleanup(): Promise<void> {
       or(
         and(eq(scheduledActions.guildId, guildId), inArray(scheduledActions.targetId, targetIds)),
         eq(scheduledActions.guildId, recoveryPaginationGuildId),
+        inArray(scheduledActions.guildId, statusGuildIds),
       ),
     );
 }

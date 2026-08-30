@@ -4,6 +4,7 @@ import type { ChatInputCommandInteraction } from "discord.js";
 import type { Logger } from "pino";
 
 import type { AutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
+import type { AutomaticCloseThreadMaintenanceService } from "./automatic-close-thread-maintenance.js";
 import { configCommandDefinition, handleConfigCommand } from "./config-command.js";
 import type { GuildSettingsStore } from "./guild-settings.js";
 import type { ScheduledThreadCloseCommandService } from "./scheduled-thread-close-command.js";
@@ -18,6 +19,7 @@ export const commandDefinitions = [
 
 export type CommandDependencies = {
   automaticCloseConfiguration: AutomaticCloseConfigurationService;
+  automaticCloseMaintenance: AutomaticCloseThreadMaintenanceService;
   guildSettings: GuildSettingsStore;
   scheduledThreadClose: ScheduledThreadCloseCommandService;
   threadLifecycle: ThreadLifecycleService;
@@ -47,6 +49,7 @@ export async function handleCommand(
       interaction,
       dependencies.threadLifecycle,
       dependencies.scheduledThreadClose,
+      dependencies.automaticCloseMaintenance,
       dependencies.logger,
     );
     return true;

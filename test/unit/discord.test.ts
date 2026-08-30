@@ -478,6 +478,11 @@ function registerTestCommandHandler(
       addParentChannel: vi.fn(),
       removeParentChannel: vi.fn(),
     },
+    automaticCloseMaintenance: {
+      track: vi.fn(),
+      untrack: vi.fn(),
+      status: vi.fn(),
+    },
     guildSettings: discordDependencies.guildSettings,
     scheduledThreadClose: { schedule: vi.fn(), cancel: vi.fn(), closeManually: vi.fn() },
     threadLifecycle: lifecycle,
