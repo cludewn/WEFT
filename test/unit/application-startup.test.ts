@@ -20,6 +20,7 @@ function createDependencies(): ApplicationStartupDependencies {
     startScheduledThreadCloseWorkers: vi.fn(() => Promise.resolve()),
     startScheduledThreadCloseRuntimeReconciliation: vi.fn(() => Promise.resolve()),
     reconcileAutomaticCloseBaselines: vi.fn(() => Promise.resolve()),
+    startAutomaticCloseRuntime: vi.fn(() => Promise.resolve()),
     shutdown: vi.fn(() => Promise.resolve()),
   };
 }
@@ -108,7 +109,7 @@ describe("application startup", () => {
     expect(dependencies.shutdown).not.toHaveBeenCalled();
   });
 
-  it("reconciles automatic close baselines after Discord and scheduled runtime startup", async () => {
+  it("starts the automatic close runtime after baseline reconciliation", async () => {
     const dependencies = createDependencies();
     const logger = createLogger();
     const calls: string[] = [];
@@ -126,6 +127,10 @@ describe("application startup", () => {
       calls.push("automatic-close-baselines");
       return Promise.resolve();
     });
+    vi.mocked(dependencies.startAutomaticCloseRuntime).mockImplementation(() => {
+      calls.push("automatic-close-runtime");
+      return Promise.resolve();
+    });
 
     await runApplicationStartup(dependencies, logger);
 
@@ -133,6 +138,7 @@ describe("application startup", () => {
       "discord",
       "scheduled-runtime-reconciliation",
       "automatic-close-baselines",
+      "automatic-close-runtime",
     ]);
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({ event: "application_ready" }),
@@ -163,6 +169,7 @@ describe("application startup", () => {
       expect.any(String),
     );
     expect(logger.error).not.toHaveBeenCalled();
+    expect(dependencies.startAutomaticCloseRuntime).toHaveBeenCalledOnce();
     expect(dependencies.shutdown).not.toHaveBeenCalled();
     expect(process.exitCode).toBeUndefined();
   });
@@ -181,6 +188,7 @@ describe("application startup", () => {
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
+    expect(dependencies.startAutomaticCloseRuntime).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });
@@ -199,6 +207,7 @@ describe("application startup", () => {
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
+    expect(dependencies.startAutomaticCloseRuntime).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledOnce();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(logger.error).toHaveBeenCalledWith(
@@ -220,6 +229,7 @@ describe("application startup", () => {
     expect(dependencies.recoverScheduledThreadCloseDeliveries).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
+    expect(dependencies.startAutomaticCloseRuntime).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });
@@ -235,6 +245,7 @@ describe("application startup", () => {
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
     expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
+    expect(dependencies.startAutomaticCloseRuntime).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });
@@ -250,6 +261,7 @@ describe("application startup", () => {
     expect(dependencies.startDiscord).toHaveBeenCalledOnce();
     expect(dependencies.startScheduledThreadCloseWorkers).toHaveBeenCalledOnce();
     expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
+    expect(dependencies.startAutomaticCloseRuntime).not.toHaveBeenCalled();
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });
@@ -264,6 +276,30 @@ describe("application startup", () => {
 
     expect(dependencies.startScheduledThreadCloseWorkers).toHaveBeenCalledOnce();
     expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).toHaveBeenCalledOnce();
+    expect(dependencies.startAutomaticCloseRuntime).not.toHaveBeenCalled();
+    expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
+    expect(process.exitCode).toBe(1);
+  });
+
+  it("treats automatic close runtime startup failure as fatal", async () => {
+    const dependencies = createDependencies();
+    const logger = createLogger();
+    vi.mocked(dependencies.startAutomaticCloseRuntime).mockRejectedValue(
+      new Error("automatic close runtime unavailable"),
+    );
+
+    await runApplicationStartup(dependencies, logger);
+
+    expect(dependencies.reconcileAutomaticCloseBaselines).toHaveBeenCalledOnce();
+    expect(dependencies.startAutomaticCloseRuntime).toHaveBeenCalledOnce();
+    expect(logger.info).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: "application_ready" }),
+      expect.any(String),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      { event: "startup_failed", errorName: "Error" },
+      "Application startup failed",
+    );
     expect(dependencies.shutdown).toHaveBeenCalledWith("startup_failure");
     expect(process.exitCode).toBe(1);
   });

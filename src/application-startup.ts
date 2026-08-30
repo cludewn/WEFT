@@ -12,6 +12,7 @@ export type ApplicationStartupDependencies = {
   startScheduledThreadCloseWorkers: () => Promise<void>;
   startScheduledThreadCloseRuntimeReconciliation: () => Promise<void>;
   reconcileAutomaticCloseBaselines: () => Promise<void>;
+  startAutomaticCloseRuntime: () => Promise<void>;
   shutdown: (reason: string) => Promise<void>;
 };
 
@@ -44,6 +45,7 @@ export async function runApplicationStartup(
         "Automatic close baseline reconciliation failed",
       );
     }
+    await dependencies.startAutomaticCloseRuntime();
     logger.info({ event: "application_ready" }, "Application startup completed");
   } catch (error) {
     if (error instanceof DiscordStartupAbortedError) {

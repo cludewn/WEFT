@@ -38,6 +38,12 @@ describe("createShutdown", () => {
     const shutdown = createShutdown(
       [
         {
+          name: "automatic-close-runtime",
+          close: () => {
+            calls.push("automatic-close-runtime");
+          },
+        },
+        {
           name: "scheduled-thread-close-runtime-reconciler",
           close: () => {
             calls.push("scheduled-thread-close-runtime-reconciler");
@@ -74,6 +80,7 @@ describe("createShutdown", () => {
 
     await expect(shutdown("SIGTERM")).rejects.toBeInstanceOf(AggregateError);
     expect(calls).toEqual([
+      "automatic-close-runtime",
       "scheduled-thread-close-runtime-reconciler",
       "scheduled-thread-close-workers",
       "pg-boss",
