@@ -258,6 +258,7 @@ function createFixture({
     findById: vi.fn(() => Promise.resolve(current)),
     findActiveThreadClosesPage: vi.fn(() => Promise.resolve([])),
     findExecutingThreadClosesPage: vi.fn(() => Promise.resolve([])),
+    findCurrentThreadClose: vi.fn(() => Promise.resolve(undefined)),
     cancel: vi.fn(),
     claimExecution: vi.fn(() => transition("ACTIVE", "EXECUTING")),
   };

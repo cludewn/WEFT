@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ChatInputCommandInteraction } from "discord.js";
 
+import type { AutomaticCloseThreadMaintenanceService } from "../../src/automatic-close-thread-maintenance.js";
 import type { GuildSettings, GuildSettingsStore } from "../../src/guild-settings.js";
 import type { ScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
 import { handleThreadCommand } from "../../src/thread-command.js";
@@ -30,6 +31,7 @@ import type {
 const scheduledThreadCloseCommandStub = {
   schedule: vi.fn(),
 } as unknown as ScheduledThreadCloseCommandService;
+const automaticCloseMaintenanceStub = {} as AutomaticCloseThreadMaintenanceService;
 
 describe("thread title rules", () => {
   it("adds one prefix and removes only the saved leading prefix", () => {
@@ -486,6 +488,7 @@ describe("thread lifecycle", () => {
       command.interaction,
       fixture.service,
       scheduledThreadCloseCommandStub,
+      automaticCloseMaintenanceStub,
       fixture.logger,
       250,
     );
@@ -527,6 +530,7 @@ describe("thread lifecycle", () => {
       command.interaction,
       fixture.service,
       scheduledThreadCloseCommandStub,
+      automaticCloseMaintenanceStub,
       fixture.logger,
       250,
     );
@@ -620,6 +624,7 @@ describe("thread lifecycle", () => {
       firstClose.interaction,
       fixture.service,
       scheduledThreadClose,
+      automaticCloseMaintenanceStub,
       fixture.logger,
       50,
     );
@@ -646,6 +651,7 @@ describe("thread lifecycle", () => {
       secondClose.interaction,
       fixture.service,
       scheduledThreadClose,
+      automaticCloseMaintenanceStub,
       fixture.logger,
       50,
     );

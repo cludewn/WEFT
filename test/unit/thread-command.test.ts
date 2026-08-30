@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ChatInputCommandInteraction } from "discord.js";
 
+import type { AutomaticCloseThreadMaintenanceService } from "../../src/automatic-close-thread-maintenance.js";
 import { OperationTimeoutError } from "../../src/operation-timeout.js";
 import type { ScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
 import {
@@ -27,12 +28,20 @@ describe("thread command", () => {
       "open",
       "close-after",
       "cancel-close",
+      "track",
+      "untrack",
+      "status",
     ]);
     expect(definition.options?.at(2)).toMatchObject({
       name: "close-after",
       options: [{ name: "after", required: true }],
     });
     expect(definition.options?.at(3)).toMatchObject({ name: "cancel-close", options: [] });
+    expect(definition.options?.slice(4)).toEqual([
+      expect.objectContaining({ name: "track", options: [] }),
+      expect.objectContaining({ name: "untrack", options: [] }),
+      expect.objectContaining({ name: "status", options: [] }),
+    ]);
     expect(DEFAULT_INTERACTION_IO_TIMEOUT_MS).toBe(2_500);
   });
 
@@ -41,6 +50,14 @@ describe("thread command", () => {
     await handleThreadCommand(interaction, createLifecycle(), logger);
     expect(reply).toHaveBeenCalledWith(
       ephemeral("This command can only be used in a supported active thread."),
+    );
+  });
+
+  it("does not describe maintenance commands as requiring an active thread", async () => {
+    const { interaction, reply } = createInteraction({ inGuild: false, subcommand: "status" });
+    await handleThreadCommand(interaction, createLifecycle(), logger);
+    expect(reply).toHaveBeenCalledWith(
+      ephemeral("This command can only be used in a supported thread."),
     );
   });
 
@@ -448,6 +465,190 @@ describe("thread command", () => {
     completeEdit?.();
     await vi.waitFor(() => expect(fixture.editReply).toHaveBeenCalledOnce());
   });
+
+  it.each([
+    [
+      { ok: true, outcome: "TRACKED", parentEnabled: true } as const,
+      "Thread is now tracked for automatic close.",
+    ],
+    [
+      { ok: true, outcome: "TRACKED", parentEnabled: false } as const,
+      "Thread is tracked, but automatic close is disabled because this parent channel is not configured.",
+    ],
+    [
+      { ok: true, outcome: "ALREADY_TRACKED", parentEnabled: true } as const,
+      "Thread is already tracked for automatic close.",
+    ],
+    [
+      { ok: true, outcome: "ALREADY_TRACKED", parentEnabled: false } as const,
+      "Thread is already individually included, but automatic close is disabled because this parent channel is not configured.",
+    ],
+  ])("routes track result %#", async (result, message) => {
+    const maintenance = createMaintenance({ track: vi.fn(() => Promise.resolve(result)) });
+    const fixture = createInteraction({ subcommand: "track" });
+
+    await handleThreadCommand(
+      fixture.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      undefined,
+      maintenance,
+    );
+
+    expect(maintenance.track).toHaveBeenCalledWith("guild-id", "thread-id", "actor-id");
+    expect(fixture.reply).toHaveBeenCalledWith(ephemeral("Tracking thread…"));
+    expect(fixture.editReply).toHaveBeenCalledWith(edited(message));
+  });
+
+  it.each([
+    [{ ok: true, outcome: "EXCLUDED" } as const, "Thread excluded from automatic close."],
+    [
+      { ok: true, outcome: "ALREADY_EXCLUDED" } as const,
+      "Thread is already excluded from automatic close.",
+    ],
+  ])("routes untrack result %#", async (result, message) => {
+    const maintenance = createMaintenance({ untrack: vi.fn(() => Promise.resolve(result)) });
+    const fixture = createInteraction({ subcommand: "untrack" });
+
+    await handleThreadCommand(
+      fixture.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      undefined,
+      maintenance,
+    );
+
+    expect(maintenance.untrack).toHaveBeenCalledWith("guild-id", "thread-id", "actor-id");
+    expect(fixture.reply).toHaveBeenCalledWith(ephemeral("Excluding thread from automatic close…"));
+    expect(fixture.editReply).toHaveBeenCalledWith(edited(message));
+  });
+
+  it.each([
+    [
+      {
+        parentEnabled: true,
+        excluded: false,
+        effectiveEnabled: true,
+        inactivitySeconds: 604_800,
+        lastActivityAt: new Date("2030-01-02T03:04:00.000Z"),
+        scheduledClose: {
+          status: "ACTIVE" as const,
+          executeAt: new Date("2030-01-03T03:04:00.000Z"),
+        },
+      },
+      "Automatic close: enabled\nParent policy: enabled\nThread exclusion: none\nInactivity: 7d\nLast activity: <t:1893553440:F> (<t:1893553440:R>)\nScheduled close: <t:1893639840:F> (<t:1893639840:R>)",
+    ],
+    [
+      {
+        parentEnabled: false,
+        excluded: false,
+        effectiveEnabled: false,
+        inactivitySeconds: 3_600,
+        lastActivityAt: null,
+        scheduledClose: { status: "EXECUTING" as const, executeAt: new Date(0) },
+      },
+      "Automatic close: disabled\nParent policy: disabled\nThread exclusion: none\nInactivity: 1h\nLast activity: not recorded\nScheduled close: executing",
+    ],
+    [
+      {
+        parentEnabled: true,
+        excluded: true,
+        effectiveEnabled: false,
+        inactivitySeconds: 300,
+        lastActivityAt: null,
+        scheduledClose: undefined,
+      },
+      "Automatic close: disabled\nParent policy: enabled\nThread exclusion: excluded\nInactivity: 5m\nLast activity: not recorded\nScheduled close: none",
+    ],
+  ])("formats status result %# as plain text", async (status, message) => {
+    const maintenance = createMaintenance({
+      status: vi.fn(() => Promise.resolve({ ok: true as const, status })),
+    });
+    const fixture = createInteraction({ subcommand: "status" });
+
+    await handleThreadCommand(
+      fixture.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      undefined,
+      maintenance,
+    );
+
+    expect(fixture.reply).toHaveBeenCalledWith(ephemeral("Loading thread status…"));
+    expect(fixture.editReply).toHaveBeenCalledWith(edited(message));
+  });
+
+  it.each([
+    ["UNSUPPORTED_CONTEXT", "This command can only be used in a supported thread."],
+    ["USER_MISSING_PERMISSION", "You need the Manage Threads permission to use this command."],
+    [
+      "CONTEXT_VALIDATION_FAILURE",
+      "WEFT could not verify the current thread or your permissions. Please try again later.",
+    ],
+    [
+      "PERSISTENCE_FAILURE",
+      "WEFT could not update automatic close tracking. Please try again later.",
+    ],
+  ] as const)("maps maintenance failure %s", async (code, message) => {
+    const maintenance = createMaintenance({
+      track: vi.fn(() => Promise.resolve({ ok: false as const, code })),
+    });
+    const fixture = createInteraction({ subcommand: "track" });
+
+    await handleThreadCommand(
+      fixture.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      undefined,
+      maintenance,
+    );
+
+    expect(fixture.editReply).toHaveBeenCalledWith(edited(message));
+  });
+
+  it("uses a focused retryable status persistence failure", async () => {
+    const maintenance = createMaintenance({
+      status: vi.fn(() => Promise.resolve({ ok: false, code: "PERSISTENCE_FAILURE" } as const)),
+    });
+    const fixture = createInteraction({ subcommand: "status" });
+
+    await handleThreadCommand(
+      fixture.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      undefined,
+      maintenance,
+    );
+
+    expect(fixture.editReply).toHaveBeenCalledWith(
+      edited("WEFT could not load this thread's status. Please try again later."),
+    );
+  });
+
+  it("uses a retryable untrack persistence failure", async () => {
+    const maintenance = createMaintenance({
+      untrack: vi.fn(() => Promise.resolve({ ok: false, code: "PERSISTENCE_FAILURE" } as const)),
+    });
+    const fixture = createInteraction({ subcommand: "untrack" });
+
+    await handleThreadCommand(
+      fixture.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      undefined,
+      maintenance,
+    );
+
+    expect(fixture.editReply).toHaveBeenCalledWith(
+      edited("WEFT could not update automatic close tracking. Please try again later."),
+    );
+  });
 });
 
 function createLifecycle(overrides: Partial<ThreadLifecycleService> = {}): ThreadLifecycleService {
@@ -477,17 +678,44 @@ function createScheduledThreadClose(
   };
 }
 
+function createMaintenance(
+  overrides: Partial<AutomaticCloseThreadMaintenanceService> = {},
+): AutomaticCloseThreadMaintenanceService {
+  return {
+    track: vi.fn(() =>
+      Promise.resolve({ ok: true, outcome: "TRACKED", parentEnabled: true } as const),
+    ),
+    untrack: vi.fn(() => Promise.resolve({ ok: true, outcome: "EXCLUDED" } as const)),
+    status: vi.fn(() =>
+      Promise.resolve({
+        ok: true,
+        status: {
+          parentEnabled: true,
+          excluded: false,
+          effectiveEnabled: true,
+          inactivitySeconds: 604_800,
+          lastActivityAt: null,
+          scheduledClose: undefined,
+        },
+      } as const),
+    ),
+    ...overrides,
+  };
+}
+
 function handleThreadCommand(
   interaction: ChatInputCommandInteraction,
   lifecycle: ThreadLifecycleService,
   commandLogger: typeof logger,
   timeoutMs = DEFAULT_INTERACTION_IO_TIMEOUT_MS,
   scheduledThreadClose?: ScheduledThreadCloseCommandService,
+  automaticCloseMaintenance?: AutomaticCloseThreadMaintenanceService,
 ): Promise<void> {
   return handleThreadCommandWithDependencies(
     interaction,
     lifecycle,
     scheduledThreadClose ?? createScheduledThreadClose({}, lifecycle),
+    automaticCloseMaintenance ?? createMaintenance(),
     commandLogger,
     timeoutMs,
   );

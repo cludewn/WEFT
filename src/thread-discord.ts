@@ -10,6 +10,7 @@ import {
 import type { Client, Guild, ThreadChannel } from "discord.js";
 
 import type { AutoCloseDiscord } from "./automatic-close-configuration.js";
+import type { AutomaticCloseThreadMaintenanceDiscord } from "./automatic-close-thread-maintenance.js";
 import type {
   SupportedThreadType,
   ThreadFailureDisposition,
@@ -64,6 +65,32 @@ export function createAutoCloseDiscord(client: Client): AutoCloseDiscord {
         parentId: thread.parentId,
         type: thread.type,
       }));
+    },
+  };
+}
+
+/** Inspects one current thread and the invoking member for automatic-close maintenance. */
+export function createAutomaticCloseThreadMaintenanceDiscord(
+  client: Client,
+): AutomaticCloseThreadMaintenanceDiscord {
+  return {
+    async inspectThread(guildId, threadId, actorId) {
+      const channel = await client.channels.fetch(threadId, { force: true });
+      if (
+        channel === null ||
+        !channel.isThread() ||
+        !isSupportedThreadType(channel.type) ||
+        channel.guildId !== guildId ||
+        channel.parentId === null
+      ) {
+        return undefined;
+      }
+
+      const member = await channel.guild.members.fetch({ user: actorId, force: true });
+      return {
+        parentChannelId: channel.parentId,
+        actorCanManage: channel.permissionsFor(member).has(PermissionFlagsBits.ManageThreads),
+      };
     },
   };
 }

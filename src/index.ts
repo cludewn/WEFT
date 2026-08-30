@@ -5,6 +5,7 @@ import { createAutomaticCloseActivityService } from "./automatic-close-activity.
 import { createAutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
 import { createAutomaticClosePersistenceStore } from "./automatic-close-persistence.js";
 import { createAutomaticCloseBaselineReconciler } from "./automatic-close-reconciler.js";
+import { createAutomaticCloseThreadMaintenanceService } from "./automatic-close-thread-maintenance.js";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { createDatabase } from "./database.js";
 import {
@@ -25,7 +26,10 @@ import {
 } from "./scheduled-thread-close-reconciler.js";
 import { createScheduledThreadCloseWorkerController } from "./scheduled-thread-close-worker.js";
 import { createShutdown } from "./shutdown.js";
-import { createAutoCloseDiscord } from "./thread-discord.js";
+import {
+  createAutoCloseDiscord,
+  createAutomaticCloseThreadMaintenanceDiscord,
+} from "./thread-discord.js";
 import { createManagedThreadStore, createThreadAuditStore } from "./thread-persistence.js";
 
 async function main(): Promise<void> {
@@ -51,6 +55,9 @@ async function main(): Promise<void> {
   const automaticCloses = createAutomaticClosePersistenceStore(database.client);
   const discordRuntime = createDiscordRuntime(logger, { guildSettings, managedThreads, audits });
   const autoCloseDiscord = createAutoCloseDiscord(discordRuntime.client);
+  const automaticCloseMaintenanceDiscord = createAutomaticCloseThreadMaintenanceDiscord(
+    discordRuntime.client,
+  );
   const automaticCloseConfiguration = createAutomaticCloseConfigurationService({
     guildSettings,
     schedules: automaticCloses,
@@ -59,6 +66,12 @@ async function main(): Promise<void> {
   });
   const automaticCloseActivity = createAutomaticCloseActivityService({
     persistence: automaticCloses,
+    logger,
+  });
+  const automaticCloseMaintenance = createAutomaticCloseThreadMaintenanceService({
+    discord: automaticCloseMaintenanceDiscord,
+    persistence: automaticCloses,
+    scheduledActions,
     logger,
   });
   const automaticCloseBaselineReconciler = createAutomaticCloseBaselineReconciler({
@@ -90,6 +103,7 @@ async function main(): Promise<void> {
   });
   registerDiscordCommandHandler(discordRuntime.client, {
     automaticCloseConfiguration,
+    automaticCloseMaintenance,
     guildSettings,
     scheduledThreadClose: scheduledThreadCloseCommand,
     threadLifecycle: discordRuntime.threadLifecycle,

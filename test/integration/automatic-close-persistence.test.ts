@@ -1016,6 +1016,330 @@ describe("automatic close parent discovery persistence", () => {
   });
 });
 
+describe("automatic close thread track persistence", () => {
+  const trackedAt = new Date("2032-06-01T00:00:00.000Z");
+  const older = new Date("2032-05-01T00:00:00.000Z");
+  const newer = new Date("2032-07-01T00:00:00.000Z");
+  const preservedUpdatedAt = new Date("2031-01-01T00:00:00.000Z");
+
+  it("removes an exclusion and inserts a baseline under an allowlisted parent", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addThreadExclusion(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.trackThread({
+        guildId: guildIds[0],
+        threadId: threadIds[0],
+        parentChannelId: parentChannelIds[0],
+        trackedAt,
+      }),
+    ).resolves.toEqual({ exclusionRemoved: true, parentEnabled: true });
+
+    await expect(hasExclusion(guildIds[0], threadIds[0])).resolves.toBe(false);
+    await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      parentChannelId: parentChannelIds[0],
+      lastActivityAt: trackedAt,
+    });
+  });
+
+  it("advances older retained activity to the re-entry floor with write-time updated_at", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[1],
+      occurredAt: older,
+    });
+    await setActivityUpdatedAt(guildIds[0], threadIds[0], preservedUpdatedAt);
+    await store.addThreadExclusion(guildIds[0], threadIds[0]);
+
+    await store.trackThread({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[0],
+      trackedAt,
+    });
+
+    const activity = await findAutoCloseActivity(guildIds[0], threadIds[0]);
+    expect(activity).toMatchObject({
+      lastActivityAt: trackedAt,
+      parentChannelId: parentChannelIds[0],
+    });
+    expect(activity?.updatedAt).not.toEqual(preservedUpdatedAt);
+    expect(activity?.updatedAt).not.toEqual(trackedAt);
+  });
+
+  it.each([
+    ["equal", trackedAt],
+    ["newer", newer],
+  ])(
+    "preserves the complete activity row when existing activity is %s",
+    async (_label, existingAt) => {
+      await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+      await store.recordActivity({
+        guildId: guildIds[0],
+        threadId: threadIds[0],
+        parentChannelId: parentChannelIds[1],
+        occurredAt: existingAt,
+      });
+      await setActivityUpdatedAt(guildIds[0], threadIds[0], preservedUpdatedAt);
+      await store.addThreadExclusion(guildIds[0], threadIds[0]);
+      const before = await findAutoCloseActivity(guildIds[0], threadIds[0]);
+
+      await expect(
+        store.trackThread({
+          guildId: guildIds[0],
+          threadId: threadIds[0],
+          parentChannelId: parentChannelIds[0],
+          trackedAt,
+        }),
+      ).resolves.toEqual({ exclusionRemoved: true, parentEnabled: true });
+
+      await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+    },
+  );
+
+  it("removes the exclusion without writing activity when the parent is disabled", async () => {
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[1],
+      occurredAt: older,
+    });
+    await setActivityUpdatedAt(guildIds[0], threadIds[0], preservedUpdatedAt);
+    await store.addThreadExclusion(guildIds[0], threadIds[0]);
+    const before = await findAutoCloseActivity(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.trackThread({
+        guildId: guildIds[0],
+        threadId: threadIds[0],
+        parentChannelId: parentChannelIds[0],
+        trackedAt,
+      }),
+    ).resolves.toEqual({ exclusionRemoved: true, parentEnabled: false });
+    await expect(hasExclusion(guildIds[0], threadIds[0])).resolves.toBe(false);
+    await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+  });
+
+  it("does not advance existing activity on repeated track", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[1],
+      occurredAt: older,
+    });
+    await setActivityUpdatedAt(guildIds[0], threadIds[0], preservedUpdatedAt);
+    const before = await findAutoCloseActivity(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.trackThread({
+        guildId: guildIds[0],
+        threadId: threadIds[0],
+        parentChannelId: parentChannelIds[0],
+        trackedAt,
+      }),
+    ).resolves.toEqual({ exclusionRemoved: false, parentEnabled: true });
+
+    await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+  });
+
+  it("repairs only a missing baseline on repeated track under an enabled parent", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+
+    await expect(
+      store.trackThread({
+        guildId: guildIds[0],
+        threadId: threadIds[0],
+        parentChannelId: parentChannelIds[0],
+        trackedAt,
+      }),
+    ).resolves.toEqual({ exclusionRemoved: false, parentEnabled: true });
+    await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      parentChannelId: parentChannelIds[0],
+      lastActivityAt: trackedAt,
+    });
+
+    const before = await findAutoCloseActivity(guildIds[0], threadIds[0]);
+    await store.trackThread({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[0],
+      trackedAt: newer,
+    });
+    await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+  });
+
+  it("does nothing when already included under a disabled parent", async () => {
+    await expect(
+      store.trackThread({
+        guildId: guildIds[0],
+        threadId: threadIds[0],
+        parentChannelId: parentChannelIds[0],
+        trackedAt,
+      }),
+    ).resolves.toEqual({ exclusionRemoved: false, parentEnabled: false });
+    await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toBeUndefined();
+  });
+
+  it("applies the re-entry floor to activity retained while excluded", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[0],
+      occurredAt: older,
+    });
+    await store.addThreadExclusion(guildIds[0], threadIds[0]);
+
+    await store.trackThread({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[0],
+      trackedAt,
+    });
+
+    await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toMatchObject({
+      lastActivityAt: trackedAt,
+    });
+  });
+
+  it("isolates track state by guild and thread", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addThreadExclusion(guildIds[0], threadIds[0]);
+    await store.addThreadExclusion(guildIds[0], threadIds[1]);
+    await store.addThreadExclusion(guildIds[1], threadIds[0]);
+
+    await store.trackThread({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[0],
+      trackedAt,
+    });
+
+    await expect(hasExclusion(guildIds[0], threadIds[0])).resolves.toBe(false);
+    await expect(hasExclusion(guildIds[0], threadIds[1])).resolves.toBe(true);
+    await expect(hasExclusion(guildIds[1], threadIds[0])).resolves.toBe(true);
+    await expect(findAutoCloseActivity(guildIds[1], threadIds[0])).resolves.toBeUndefined();
+  });
+
+  it("rolls back exclusion removal and the activity write when baseline persistence fails", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[1],
+      occurredAt: older,
+    });
+    await setActivityUpdatedAt(guildIds[0], threadIds[0], preservedUpdatedAt);
+    await store.addThreadExclusion(guildIds[0], threadIds[0]);
+    const activityBefore = await findAutoCloseActivity(guildIds[0], threadIds[0]);
+
+    // trackThread executes DELETE ... RETURNING before reaching the baseline statement. The
+    // invalid timestamp fails while binding that later statement, after the DELETE has run inside
+    // the transaction, so the final assertions prove the transaction rollback rather than a
+    // pre-transaction validation failure.
+    await expect(
+      store.trackThread({
+        guildId: guildIds[0],
+        threadId: threadIds[0],
+        parentChannelId: parentChannelIds[0],
+        trackedAt: new Date(Number.NaN),
+      }),
+    ).rejects.toThrow();
+
+    await expect(hasExclusion(guildIds[0], threadIds[0])).resolves.toBe(true);
+    await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toEqual(activityBefore);
+  });
+});
+
+describe("automatic close thread untrack persistence", () => {
+  it("requires no parent allowlist and preserves activity exactly", async () => {
+    const occurredAt = new Date("2033-01-01T00:00:00.000Z");
+    const updatedAt = new Date("2033-01-02T00:00:00.000Z");
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[0],
+      occurredAt,
+    });
+    await setActivityUpdatedAt(guildIds[0], threadIds[0], updatedAt);
+    const before = await findAutoCloseActivity(guildIds[0], threadIds[0]);
+
+    await expect(store.addThreadExclusion(guildIds[0], threadIds[0])).resolves.toBe(true);
+    await expect(store.addThreadExclusion(guildIds[0], threadIds[0])).resolves.toBe(false);
+
+    await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toEqual(before);
+    await expect(store.listParentChannels(guildIds[0])).resolves.toEqual([]);
+  });
+});
+
+describe("automatic close thread status persistence", () => {
+  it.each([
+    [true, false],
+    [false, false],
+    [true, true],
+    [false, true],
+  ])("reads parent=%s and excluded=%s", async (parentEnabled, excluded) => {
+    if (parentEnabled) await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    if (excluded) await store.addThreadExclusion(guildIds[0], threadIds[0]);
+
+    await expect(
+      store.findThreadStatus(guildIds[0], threadIds[0], parentChannelIds[0]),
+    ).resolves.toMatchObject({
+      parentEnabled,
+      excluded,
+      inactivitySeconds: DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS,
+      lastActivityAt: null,
+    });
+  });
+
+  it("returns configured inactivity and recorded activity", async () => {
+    const occurredAt = new Date("2034-01-02T03:04:05.000Z");
+    await settingsStore.setAutoCloseInactivitySeconds(guildIds[0], 7_200);
+    await store.recordActivity({
+      guildId: guildIds[0],
+      threadId: threadIds[0],
+      parentChannelId: parentChannelIds[0],
+      occurredAt,
+    });
+
+    await expect(
+      store.findThreadStatus(guildIds[0], threadIds[0], parentChannelIds[0]),
+    ).resolves.toMatchObject({ inactivitySeconds: 7_200, lastActivityAt: occurredAt });
+  });
+
+  it("uses the seven-day default without creating missing guild settings", async () => {
+    const settingsBefore = await database.client
+      .select()
+      .from(guildSettings)
+      .where(eq(guildSettings.guildId, guildIds[0]));
+    expect(settingsBefore).toEqual([]);
+
+    await expect(
+      store.findThreadStatus(guildIds[0], threadIds[0], parentChannelIds[0]),
+    ).resolves.toMatchObject({ inactivitySeconds: 604_800 });
+
+    const settingsAfter = await database.client
+      .select()
+      .from(guildSettings)
+      .where(eq(guildSettings.guildId, guildIds[0]));
+    expect(settingsAfter).toEqual([]);
+  });
+
+  it("is fully read-only and does not repair missing activity", async () => {
+    await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await store.addThreadExclusion(guildIds[0], threadIds[0]);
+    const before = await automaticCloseRows(guildIds[0]);
+
+    await store.findThreadStatus(guildIds[0], threadIds[0], parentChannelIds[0]);
+
+    await expect(automaticCloseRows(guildIds[0])).resolves.toEqual(before);
+    await expect(findAutoCloseActivity(guildIds[0], threadIds[0])).resolves.toBeUndefined();
+  });
+});
+
 async function cleanup(): Promise<void> {
   await database.client
     .delete(autoCloseParentChannels)
@@ -1027,6 +1351,67 @@ async function cleanup(): Promise<void> {
     .delete(autoCloseThreadActivity)
     .where(inArray(autoCloseThreadActivity.guildId, guildIds));
   await database.client.delete(guildSettings).where(inArray(guildSettings.guildId, guildIds));
+}
+
+async function findAutoCloseActivity(guildId: string, threadId: string) {
+  const [activity] = await database.client
+    .select()
+    .from(autoCloseThreadActivity)
+    .where(
+      and(
+        eq(autoCloseThreadActivity.guildId, guildId),
+        eq(autoCloseThreadActivity.threadId, threadId),
+      ),
+    )
+    .limit(1);
+  return activity;
+}
+
+async function hasExclusion(guildId: string, threadId: string): Promise<boolean> {
+  const rows = await database.client
+    .select()
+    .from(autoCloseThreadExclusions)
+    .where(
+      and(
+        eq(autoCloseThreadExclusions.guildId, guildId),
+        eq(autoCloseThreadExclusions.threadId, threadId),
+      ),
+    );
+  return rows.length > 0;
+}
+
+async function setActivityUpdatedAt(
+  guildId: string,
+  threadId: string,
+  updatedAt: Date,
+): Promise<void> {
+  await database.client
+    .update(autoCloseThreadActivity)
+    .set({ updatedAt })
+    .where(
+      and(
+        eq(autoCloseThreadActivity.guildId, guildId),
+        eq(autoCloseThreadActivity.threadId, threadId),
+      ),
+    );
+}
+
+async function automaticCloseRows(guildId: string) {
+  return Promise.all([
+    database.client
+      .select()
+      .from(autoCloseParentChannels)
+      .where(eq(autoCloseParentChannels.guildId, guildId)),
+    database.client
+      .select()
+      .from(autoCloseThreadExclusions)
+      .where(eq(autoCloseThreadExclusions.guildId, guildId)),
+    database.client
+      .select()
+      .from(autoCloseThreadActivity)
+      .where(eq(autoCloseThreadActivity.guildId, guildId)),
+    database.client.select().from(guildSettings).where(eq(guildSettings.guildId, guildId)),
+  ]);
 }
 
 function deferred<T>(): {

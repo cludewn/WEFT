@@ -12,6 +12,13 @@ import type {
 } from "discord.js";
 import type { Logger } from "pino";
 
+import type {
+  AutomaticCloseThreadMaintenanceFailureCode,
+  AutomaticCloseThreadMaintenanceService,
+  AutomaticCloseThreadStatusView,
+  TrackAutomaticCloseThreadCommandResult,
+} from "./automatic-close-thread-maintenance.js";
+import { formatAutoCloseInactivitySeconds } from "./guild-settings.js";
 import { OperationTimeoutError, withTimeout } from "./operation-timeout.js";
 import type {
   ScheduledThreadCloseCommandResult,
@@ -43,6 +50,15 @@ export const threadCommandDefinition = new SlashCommandBuilder()
   )
   .addSubcommand((subcommand) =>
     subcommand.setName("cancel-close").setDescription("Cancel the scheduled thread close"),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName("track").setDescription("Include this thread in automatic close"),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName("untrack").setDescription("Exclude this thread from automatic close"),
+  )
+  .addSubcommand((subcommand) =>
+    subcommand.setName("status").setDescription("Show this thread's automatic close status"),
   );
 
 export const DEFAULT_INTERACTION_IO_TIMEOUT_MS = 2_500;
@@ -80,7 +96,8 @@ function failureMessage(code: ThreadFailureCode): string {
   return "WEFT could not update this thread. Please try again.";
 }
 
-type ThreadCommandOperation = "CLOSE" | "OPEN" | "CLOSE_AFTER" | "CANCEL_CLOSE";
+type ThreadCommandOperation =
+  "CLOSE" | "OPEN" | "CLOSE_AFTER" | "CANCEL_CLOSE" | "TRACK" | "UNTRACK" | "STATUS";
 type InteractionBoundary = "initial_response" | "final_response";
 
 async function runInteractionBoundary<T>(
@@ -146,11 +163,16 @@ export async function handleThreadCommand(
   interaction: ChatInputCommandInteraction,
   lifecycle: ThreadLifecycleService,
   scheduledThreadClose: ScheduledThreadCloseCommandService,
+  automaticCloseMaintenance: AutomaticCloseThreadMaintenanceService,
   logger: Pick<Logger, "debug" | "warn">,
   timeoutMs = DEFAULT_INTERACTION_IO_TIMEOUT_MS,
 ): Promise<void> {
   if (!interaction.inGuild() || interaction.channelId === null) {
-    const response = "This command can only be used in a supported active thread.";
+    const subcommand = interaction.options.getSubcommand();
+    const response =
+      subcommand === "track" || subcommand === "untrack" || subcommand === "status"
+        ? "This command can only be used in a supported thread."
+        : "This command can only be used in a supported active thread.";
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(editReply(response));
     } else {
@@ -164,7 +186,10 @@ export async function handleThreadCommand(
     subcommand !== "close" &&
     subcommand !== "open" &&
     subcommand !== "close-after" &&
-    subcommand !== "cancel-close"
+    subcommand !== "cancel-close" &&
+    subcommand !== "track" &&
+    subcommand !== "untrack" &&
+    subcommand !== "status"
   ) {
     throw new Error(`Unsupported thread subcommand: ${subcommand}`);
   }
@@ -175,7 +200,13 @@ export async function handleThreadCommand(
         ? "OPEN"
         : subcommand === "close-after"
           ? "CLOSE_AFTER"
-          : "CANCEL_CLOSE";
+          : subcommand === "cancel-close"
+            ? "CANCEL_CLOSE"
+            : subcommand === "track"
+              ? "TRACK"
+              : subcommand === "untrack"
+                ? "UNTRACK"
+                : "STATUS";
   const initialContent =
     operation === "CLOSE"
       ? "Closing thread…"
@@ -183,7 +214,13 @@ export async function handleThreadCommand(
         ? "Opening thread…"
         : operation === "CLOSE_AFTER"
           ? "Scheduling thread close…"
-          : "Cancelling scheduled thread close…";
+          : operation === "CANCEL_CLOSE"
+            ? "Cancelling scheduled thread close…"
+            : operation === "TRACK"
+              ? "Tracking thread…"
+              : operation === "UNTRACK"
+                ? "Excluding thread from automatic close…"
+                : "Loading thread status…";
   await runInteractionBoundary(
     interaction,
     logger,
@@ -243,18 +280,97 @@ export async function handleThreadCommand(
       interaction.options.getString("after", true),
     );
     finalContent = scheduledThreadCloseMessage(scheduleResult);
-  } else {
+  } else if (subcommand === "cancel-close") {
     const cancellationResult = await scheduledThreadClose.cancel(
       interaction.guildId,
       interaction.channelId,
       interaction.user.id,
     );
     finalContent = scheduledThreadCloseCancellationMessage(cancellationResult);
+  } else if (subcommand === "track") {
+    const result = await automaticCloseMaintenance.track(
+      interaction.guildId,
+      interaction.channelId,
+      interaction.user.id,
+    );
+    finalContent = trackAutomaticCloseMessage(result);
+  } else if (subcommand === "untrack") {
+    const result = await automaticCloseMaintenance.untrack(
+      interaction.guildId,
+      interaction.channelId,
+      interaction.user.id,
+    );
+    finalContent = result.ok
+      ? result.outcome === "EXCLUDED"
+        ? "Thread excluded from automatic close."
+        : "Thread is already excluded from automatic close."
+      : automaticCloseMaintenanceFailureMessage(result.code, "UNTRACK");
+  } else {
+    const result = await automaticCloseMaintenance.status(
+      interaction.guildId,
+      interaction.channelId,
+      interaction.user.id,
+    );
+    finalContent = result.ok
+      ? formatAutomaticCloseThreadStatus(result.status)
+      : automaticCloseMaintenanceFailureMessage(result.code, "STATUS");
   }
 
   await runInteractionBoundary(interaction, logger, operation, "final_response", timeoutMs, () =>
     interaction.editReply(editReply(finalContent)),
   );
+}
+
+function trackAutomaticCloseMessage(result: TrackAutomaticCloseThreadCommandResult): string {
+  if (!result.ok) {
+    return automaticCloseMaintenanceFailureMessage(result.code, "TRACK");
+  }
+  if (result.outcome === "TRACKED") {
+    return result.parentEnabled
+      ? "Thread is now tracked for automatic close."
+      : "Thread is tracked, but automatic close is disabled because this parent channel is not configured.";
+  }
+  return result.parentEnabled
+    ? "Thread is already tracked for automatic close."
+    : "Thread is already individually included, but automatic close is disabled because this parent channel is not configured.";
+}
+
+function automaticCloseMaintenanceFailureMessage(
+  code: AutomaticCloseThreadMaintenanceFailureCode,
+  operation: Extract<ThreadCommandOperation, "TRACK" | "UNTRACK" | "STATUS">,
+): string {
+  switch (code) {
+    case "UNSUPPORTED_CONTEXT":
+      return "This command can only be used in a supported thread.";
+    case "USER_MISSING_PERMISSION":
+      return "You need the Manage Threads permission to use this command.";
+    case "CONTEXT_VALIDATION_FAILURE":
+      return "WEFT could not verify the current thread or your permissions. Please try again later.";
+    case "PERSISTENCE_FAILURE":
+      return operation === "STATUS"
+        ? "WEFT could not load this thread's status. Please try again later."
+        : "WEFT could not update automatic close tracking. Please try again later.";
+  }
+}
+
+export function formatAutomaticCloseThreadStatus(status: AutomaticCloseThreadStatusView): string {
+  const lastActivity =
+    status.lastActivityAt === null ? "not recorded" : discordTimestamp(status.lastActivityAt);
+  const scheduledClose =
+    status.scheduledClose === undefined
+      ? "none"
+      : status.scheduledClose.status === "EXECUTING"
+        ? "executing"
+        : discordTimestamp(status.scheduledClose.executeAt);
+
+  return [
+    `Automatic close: ${status.effectiveEnabled ? "enabled" : "disabled"}`,
+    `Parent policy: ${status.parentEnabled ? "enabled" : "disabled"}`,
+    `Thread exclusion: ${status.excluded ? "excluded" : "none"}`,
+    `Inactivity: ${formatAutoCloseInactivitySeconds(status.inactivitySeconds)}`,
+    `Last activity: ${lastActivity}`,
+    `Scheduled close: ${scheduledClose}`,
+  ].join("\n");
 }
 
 function scheduledThreadCloseCancellationMessage(

@@ -289,15 +289,45 @@ Immediately before closing, WEFT must re-fetch the thread and revalidate its cur
 
 ### Thread maintenance commands
 
-The thread maintenance commands manage automatic-close participation.
+The thread maintenance commands manage and inspect automatic-close participation for the current
+supported thread. `/thread track`, `/thread untrack`, and `/thread status` take no options and
+require the invoking user's current Discord `ManageThreads` permission. They do not require
+`Administrator`, the bot's thread-management permission, or an active or unlocked thread. A
+supported archived or locked thread remains a valid maintenance target when it has a parent
+channel.
 
-Their intended responsibilities are:
+Effective automatic-close participation is enabled only when the current parent is allowlisted and
+the thread has no individual exclusion. `/thread track` removes only the individual exclusion; it
+never adds or overrides the parent allowlist. When track removes an exclusion under a currently
+allowlisted parent, the track time is applied as a monotonic activity floor:
 
-- `/thread track`: include the current thread in WEFT management where applicable,
-- `/thread untrack`: exclude the current thread from automatic management,
-- `/thread status`: show the current WEFT management and scheduled-close state.
+```text
+last_activity_at = max(existing last_activity_at, tracked_at)
+```
 
-The exact command options and response presentation will be decided during implementation.
+A missing row is inserted, an older row is advanced with the current parent, and an equal or newer
+row is left completely unchanged, including its parent and update timestamp. Exclusion removal and
+this required re-entry baseline operation commit in one PostgreSQL transaction. The track time is
+captured only after current Discord context and user permission validation, and no database
+transaction is held during that Discord work.
+
+Repeated track does not reset or advance an existing inactivity timer. If the thread is already
+individually included under an allowlisted parent but its activity row is missing, track repairs the
+missing baseline with an insert-if-absent operation only. If the parent is not allowlisted, track
+may remove the exclusion but does not create, reset, or advance activity; effective automatic close
+remains disabled.
+
+`/thread untrack` idempotently adds the individual exclusion without requiring an allowlisted
+parent. It preserves the activity row exactly. Track and untrack do not create, replace, cancel, or
+otherwise change an explicit scheduled close.
+
+`/thread status` is read-only. It reports the effective automatic-close state, current parent
+policy, individual exclusion, configured inactivity duration, last recorded qualifying activity
+when present, and the current explicit scheduled close. Activity comes only from PostgreSQL, not
+Discord history. A missing guild-settings row uses the approved seven-day inactivity default
+without creating settings or repairing any other state. The scheduled-close field shows the
+execution timestamp for an `ACTIVE` close, `executing` for an `EXECUTING` close, and `none` when no
+current close exists; terminal history and non-close actions are ignored.
 
 ### Managed message command structure
 

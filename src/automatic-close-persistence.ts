@@ -2,7 +2,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
-import { guildSettings } from "./guild-settings.js";
+import { DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS, guildSettings } from "./guild-settings.js";
 
 /**
  * Parent channels whose threads may participate in automatic inactivity closing.
@@ -102,6 +102,25 @@ export type AutoCloseParentChannelRef = {
   parentChannelId: string;
 };
 
+export type TrackAutomaticCloseThread = {
+  guildId: string;
+  threadId: string;
+  parentChannelId: string;
+  trackedAt: Date;
+};
+
+export type TrackAutomaticCloseThreadResult = {
+  exclusionRemoved: boolean;
+  parentEnabled: boolean;
+};
+
+export type AutomaticCloseThreadStatus = {
+  parentEnabled: boolean;
+  excluded: boolean;
+  inactivitySeconds: number;
+  lastActivityAt: Date | null;
+};
+
 export type AutomaticClosePersistenceStore = {
   /** Returns whether the allowlist changed. Adding an existing pair is a successful no-op. */
   addParentChannel: (guildId: string, parentChannelId: string) => Promise<boolean>;
@@ -112,10 +131,18 @@ export type AutomaticClosePersistenceStore = {
   /**
    * Removes an individual exclusion and returns whether the exclusion state changed.
    *
-   * This operates on persistence state only. It is not the complete future `/thread track`
-   * behavior, which must also reset the activity baseline.
+   * This is a low-level persistence operation. `trackThread` is the complete command operation
+   * because it also applies the required activity baseline semantics in the same transaction.
    */
   removeThreadExclusion: (guildId: string, threadId: string) => Promise<boolean>;
+  /** Removes an exclusion and applies the approved re-entry baseline semantics atomically. */
+  trackThread: (input: TrackAutomaticCloseThread) => Promise<TrackAutomaticCloseThreadResult>;
+  /** Reads the current automatic-close status without repairing or creating persisted state. */
+  findThreadStatus: (
+    guildId: string,
+    threadId: string,
+    parentChannelId: string,
+  ) => Promise<AutomaticCloseThreadStatus>;
   /** Applies `last_activity_at = max(existing, incoming)` atomically in PostgreSQL. */
   recordActivity: (input: RecordThreadActivity) => Promise<void>;
   /** Configured automatic-close parent channels for one guild, ordered by parent channel ID. */
@@ -201,6 +228,102 @@ export function createAutomaticClosePersistenceStore(
         )
         .returning({ guildId: autoCloseThreadExclusions.guildId });
       return removed.length > 0;
+    },
+    async trackThread({ guildId, threadId, parentChannelId, trackedAt }) {
+      return database.transaction(
+        async (dbTransaction): Promise<TrackAutomaticCloseThreadResult> => {
+          const removed = await dbTransaction
+            .delete(autoCloseThreadExclusions)
+            .where(
+              and(
+                eq(autoCloseThreadExclusions.guildId, guildId),
+                eq(autoCloseThreadExclusions.threadId, threadId),
+              ),
+            )
+            .returning({ guildId: autoCloseThreadExclusions.guildId });
+
+          const [parent] = await dbTransaction
+            .select({ parentChannelId: autoCloseParentChannels.parentChannelId })
+            .from(autoCloseParentChannels)
+            .where(
+              and(
+                eq(autoCloseParentChannels.guildId, guildId),
+                eq(autoCloseParentChannels.parentChannelId, parentChannelId),
+              ),
+            )
+            .limit(1);
+
+          const exclusionRemoved = removed.length > 0;
+          const parentEnabled = parent !== undefined;
+          if (!parentEnabled) {
+            return { exclusionRemoved, parentEnabled };
+          }
+
+          if (exclusionRemoved) {
+            const writtenAt = new Date();
+            await dbTransaction.execute(sql`
+            insert into ${autoCloseThreadActivity}
+              (guild_id, thread_id, parent_channel_id, last_activity_at, updated_at)
+            values (${guildId}, ${threadId}, ${parentChannelId}, ${trackedAt}, ${writtenAt})
+            on conflict (guild_id, thread_id) do update
+            set last_activity_at  = excluded.last_activity_at,
+                parent_channel_id = excluded.parent_channel_id,
+                updated_at        = excluded.updated_at
+            where ${autoCloseThreadActivity}.last_activity_at < excluded.last_activity_at
+          `);
+          } else {
+            await dbTransaction
+              .insert(autoCloseThreadActivity)
+              .values({ guildId, threadId, parentChannelId, lastActivityAt: trackedAt })
+              .onConflictDoNothing({
+                target: [autoCloseThreadActivity.guildId, autoCloseThreadActivity.threadId],
+              });
+          }
+
+          return { exclusionRemoved, parentEnabled };
+        },
+      );
+    },
+    async findThreadStatus(guildId, threadId, parentChannelId) {
+      const [status] = await database
+        .select({
+          parentEnabled: sql<boolean>`exists (
+            select 1
+            from ${autoCloseParentChannels} as parent
+            where parent.guild_id = ${guildId}
+              and parent.parent_channel_id = ${parentChannelId}
+          )`,
+          excluded: sql<boolean>`exists (
+            select 1
+            from ${autoCloseThreadExclusions} as excluded_thread
+            where excluded_thread.guild_id = ${guildId}
+              and excluded_thread.thread_id = ${threadId}
+          )`,
+          inactivitySeconds: sql<number>`coalesce(
+            (
+              select settings.auto_close_inactivity_seconds
+              from ${guildSettings} as settings
+              where settings.guild_id = ${guildId}
+            ),
+            ${DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS}
+          )`,
+          lastActivityAt: sql<Date | null>`(
+            select activity.last_activity_at
+            from ${autoCloseThreadActivity} as activity
+            where activity.guild_id = ${guildId}
+              and activity.thread_id = ${threadId}
+          )`.mapWith(autoCloseThreadActivity.lastActivityAt),
+        })
+        .from(sql`(select 1) as status_source`)
+        .limit(1);
+
+      if (status === undefined) {
+        throw new Error("Automatic close thread status could not be loaded");
+      }
+      return {
+        ...status,
+        lastActivityAt: status.lastActivityAt ?? null,
+      };
     },
     async listParentChannels(guildId) {
       const rows = await database

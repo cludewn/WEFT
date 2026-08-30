@@ -770,6 +770,41 @@ non-fatal: application startup continues and the missing baselines are recovered
 restart, `ThreadCreate`, or `MessageCreate`. No per-message job, timer, or periodic inactivity
 sweep exists yet.
 
+Automatic-close thread maintenance uses a focused application service for `/thread track`,
+`/thread untrack`, and `/thread status`. The Discord command handler retains interaction routing,
+the bounded initial/final response behavior, and plain-text response formatting. The service
+coordinates supported-context validation, current actor authorization, automatic-close
+persistence, and the two focused status reads without accepting discord.js interaction objects.
+
+The maintenance Discord boundary fetches the requested channel once with a forced current-channel
+read, verifies guild ownership, supported thread type, and a non-null parent, then reuses that
+thread for the invoking member's current `ManageThreads` permission calculation. It requires no
+bot permission and does not reject archived or locked supported threads. Discord validation
+finishes before the track timestamp is captured and before any PostgreSQL transaction begins.
+
+The track persistence operation removes the individual exclusion, reads current parent allowlist
+membership, and performs any required baseline write in one transaction. When an exclusion was
+removed under an enabled parent, the activity write applies the track time as a monotonic floor.
+An advanced row stores the track time in `last_activity_at` and the persistence write time in
+`updated_at`; an equal or newer row is a complete no-op. When no exclusion existed, the operation
+may insert a missing baseline under an enabled parent but never updates an existing row. This
+missing-only repair prevents repeated track commands from extending inactivity deadlines. A
+disabled parent permits exclusion removal but causes no activity write.
+
+Untrack reuses the existing idempotent exclusion insert and never deletes or updates activity. It
+does not require parent allowlist membership. Track and untrack are independent of explicit
+scheduled closes and never call scheduled-action mutation or delivery boundaries.
+
+Status uses one read-only automatic-close query for parent membership, exclusion state, inactivity
+duration, and stored activity. A missing guild-settings row is represented by the approved default
+without being created. A separate focused read on the scheduled-action envelope returns only the
+current `ACTIVE` or `EXECUTING` `CLOSE_THREAD`; `scheduled_actions` owns that current-state
+envelope, so the scheduled-close mutation/audit store is unchanged. The independent reads may run
+concurrently and neither repairs state.
+
+Phase 6C uses the existing schema and adds no migration, table, column, constraint, or index. It
+does not implement the Phase 6D inactivity sweep or automatic-close execution path.
+
 ### Phase 7: Managed messages
 
 - Implement `/message send`.
