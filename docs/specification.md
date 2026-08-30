@@ -278,6 +278,18 @@ A thread may participate in automatic-close management only when:
 2. its parent channel is in the guild's automatic-close allowlist,
 3. it has no individual automatic-close exclusion.
 
+A policy-level automatic-close candidate is a thread with recorded qualifying activity whose
+stored parent is currently allowlisted, whose thread is not currently excluded, and whose guild
+inactivity duration has elapsed at the sweep timestamp. Candidate eligibility is inclusive:
+
+```text
+last_activity_at + inactivity_duration <= as_of
+```
+
+Each sweep uses one caller-captured `as_of` value for every database page. A guild without a
+settings row uses the seven-day default without creating a settings row. Candidate discovery is
+provisional: current Discord state and permissions are revalidated separately before any close.
+
 The parent-channel allowlist is the higher-level policy. `/thread track` removes an individual
 exclusion. It does not override a parent channel that is outside the allowlist.
 

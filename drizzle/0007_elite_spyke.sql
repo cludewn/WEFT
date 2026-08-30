@@ -1,0 +1,1 @@
+CREATE INDEX "auto_close_thread_activity_last_activity_guild_thread_idx" ON "auto_close_thread_activity" USING btree ("last_activity_at","guild_id","thread_id");
