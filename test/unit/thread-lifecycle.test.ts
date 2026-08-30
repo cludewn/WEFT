@@ -1706,6 +1706,124 @@ describe("thread lifecycle", () => {
     ]);
   });
 
+  it("uses AUTO_CLOSE and SYSTEM semantics while reusing normal closed-state persistence", async () => {
+    const fixture = createFixture();
+
+    await expect(
+      fixture.service.autoCloseAsSystem(GUILD_ID, THREAD_ID, "automatic-close-attempt"),
+    ).resolves.toEqual({ outcome: "SUCCESS", changed: true });
+
+    expect(fixture.thread.archived).toBe(true);
+    expect(fixture.thread.locked).toBe(false);
+    expect(fixture.state).toMatchObject({
+      lifecycleState: "CLOSED",
+      appliedPrefix: "[CLOSED]",
+    });
+    expect(fixture.discord.actorCanManage).not.toHaveBeenCalled();
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        id: "automatic-close-attempt",
+        action: "AUTO_CLOSE",
+        actorType: "SYSTEM",
+        outcome: "SUCCESS",
+      }),
+    ]);
+    expect(fixture.audits[0]).not.toHaveProperty("actorId");
+  });
+
+  it("records an AUTO_CLOSE failure without changing scheduled system-close semantics", async () => {
+    const automaticFixture = createFixture({ botCanManage: false });
+
+    await expect(
+      automaticFixture.service.autoCloseAsSystem(GUILD_ID, THREAD_ID, "automatic-close-failure"),
+    ).resolves.toEqual({ outcome: "PERMANENT_FAILURE", code: "BOT_PERMISSION_MISSING" });
+    expect(automaticFixture.audits).toEqual([
+      expect.objectContaining({
+        id: "automatic-close-failure",
+        action: "AUTO_CLOSE",
+        actorType: "SYSTEM",
+        outcome: "FAILURE",
+        failureCode: "BOT_PERMISSION_MISSING",
+      }),
+    ]);
+
+    const scheduledFixture = createFixture();
+    await scheduledFixture.service.closeAsSystem(GUILD_ID, THREAD_ID, "scheduled-close-success");
+    expect(scheduledFixture.audits).toEqual([
+      expect.objectContaining({ id: "scheduled-close-success", action: "CLOSE" }),
+    ]);
+  });
+
+  it("keeps rejected AUTO_CLOSE mutation finalization on the CLOSED branch", async () => {
+    const fixture = createFixture();
+    fixture.discord.classifyMutationFailure = vi.fn(() => "PERMANENT" as const);
+    fixture.discord.archiveThread = vi.fn<ThreadLifecycleDiscord["archiveThread"]>(() =>
+      Promise.reject(new Error("definitive rejection")),
+    );
+
+    await expect(
+      fixture.service.autoCloseAsSystem(GUILD_ID, THREAD_ID, "automatic-close-rejection"),
+    ).resolves.toEqual({ outcome: "PERMANENT_FAILURE", code: "DISCORD_ARCHIVE_FAILED" });
+
+    expect(fixture.state?.lifecycleState).toBe("OPEN");
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        id: "automatic-close-rejection",
+        action: "AUTO_CLOSE",
+        outcome: "FAILURE",
+      }),
+    ]);
+  });
+
+  it("treats an already soft-closed automatic close as idempotent without mutation", async () => {
+    const fixture = createFixture({
+      threadName: "[CLOSED] Topic",
+      archived: true,
+      state: createManagedState("CLOSED", "[CLOSED]"),
+    });
+
+    await expect(
+      fixture.service.autoCloseAsSystem(GUILD_ID, THREAD_ID, "automatic-close-idempotent"),
+    ).resolves.toEqual({ outcome: "SUCCESS", changed: false });
+    expect(fixture.discord.archiveThread).not.toHaveBeenCalled();
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({ action: "AUTO_CLOSE", outcome: "SUCCESS" }),
+    ]);
+  });
+
+  it("serializes automatic and scheduled closes on the same thread lifecycle queue", async () => {
+    const fixture = createFixture();
+    const archive = deferred<void>();
+    fixture.discord.archiveThread = vi.fn<ThreadLifecycleDiscord["archiveThread"]>(
+      (_guildId, _threadId, name) =>
+        archive.promise.then(() => {
+          fixture.thread.name = name;
+          fixture.thread.archived = true;
+        }),
+    );
+
+    const automatic = fixture.service.autoCloseAsSystem(
+      GUILD_ID,
+      THREAD_ID,
+      "queued-automatic-close",
+    );
+    await vi.waitFor(() => expect(fixture.discord.archiveThread).toHaveBeenCalledOnce());
+    const scheduled = fixture.service.closeAsSystem(GUILD_ID, THREAD_ID, "queued-scheduled-close");
+    await Promise.resolve();
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+
+    archive.resolve();
+    await expect(automatic).resolves.toEqual({ outcome: "SUCCESS", changed: true });
+    await expect(scheduled).resolves.toEqual({ outcome: "SUCCESS", changed: true });
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    expect(fixture.audits).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "queued-automatic-close", action: "AUTO_CLOSE" }),
+        expect.objectContaining({ id: "queued-scheduled-close", action: "CLOSE" }),
+      ]),
+    );
+  });
+
   it("requires bot permission for a SYSTEM close", async () => {
     const fixture = createFixture({ botCanManage: false });
 

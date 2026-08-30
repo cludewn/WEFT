@@ -23,6 +23,14 @@ const supportedTypes = new Set<ChannelType>([
   ChannelType.PublicThread,
   ChannelType.PrivateThread,
 ]);
+const UNKNOWN_CHANNEL_ERROR_CODE = 10_003;
+
+export type AutomaticCloseExecutionInspection =
+  { outcome: "AVAILABLE"; parentChannelId: string; archived: boolean } | { outcome: "UNAVAILABLE" };
+
+export type AutomaticCloseExecutionDiscord = {
+  inspectThread: (guildId: string, threadId: string) => Promise<AutomaticCloseExecutionInspection>;
+};
 
 export function classifyThreadDiscordMutationFailure(error: unknown): ThreadFailureDisposition {
   if (error instanceof RateLimitError) {
@@ -91,6 +99,39 @@ export function createAutomaticCloseThreadMaintenanceDiscord(
         parentChannelId: channel.parentId,
         actorCanManage: channel.permissionsFor(member).has(PermissionFlagsBits.ManageThreads),
       };
+    },
+  };
+}
+
+/** Performs the fresh/current Discord inspection required before automatic-close execution. */
+export function createAutomaticCloseExecutionDiscord(
+  client: Client,
+): AutomaticCloseExecutionDiscord {
+  return {
+    async inspectThread(guildId, threadId) {
+      try {
+        const channel = await client.channels.fetch(threadId, { force: true });
+        if (
+          channel === null ||
+          !channel.isThread() ||
+          !isSupportedThreadType(channel.type) ||
+          channel.guildId !== guildId ||
+          channel.parentId === null
+        ) {
+          return { outcome: "UNAVAILABLE" };
+        }
+        return {
+          outcome: "AVAILABLE",
+          parentChannelId: channel.parentId,
+          archived: channel.archived ?? false,
+        };
+      } catch (error) {
+        // discord.js 14.27.0 exposes Discord's public JSON code on DiscordAPIError#code.
+        if (error instanceof DiscordAPIError && error.code === UNKNOWN_CHANNEL_ERROR_CODE) {
+          return { outcome: "UNAVAILABLE" };
+        }
+        throw error;
+      }
     },
   };
 }

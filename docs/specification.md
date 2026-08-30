@@ -290,6 +290,30 @@ Each sweep uses one caller-captured `as_of` value for every database page. A gui
 settings row uses the seven-day default without creating a settings row. Candidate discovery is
 provisional: current Discord state and permissions are revalidated separately before any close.
 
+An automatic-close candidate identifies one recorded inactivity episode. Immediately before an
+execution attempt, WEFT uses a newly captured timestamp to revalidate that the exact recorded
+activity still exists, the current Discord parent still matches it, the current parent and thread
+policy still permits automatic close, the current inactivity duration has elapsed, and that
+episode has not already completed. A current explicit scheduled close in `ACTIVE` or `EXECUTING`
+state takes precedence and causes automatic close to skip without changing that schedule.
+
+Automatic inactivity closing uses the existing soft-close lifecycle behavior and records the
+distinct `AUTO_CLOSE` action with a system actor. Manual and explicitly scheduled closes continue
+to record `CLOSE`. A completed or already archived inactivity episode is retired so it is not
+processed repeatedly. Retirement applies only to the matching recorded activity timestamp; newer
+qualifying activity starts a new episode naturally.
+
+When WEFT observes a supported archived thread become active, it establishes the observation time
+as a monotonic re-entry inactivity baseline if the current parent is allowlisted and the thread is
+not individually excluded. Reopening is not qualifying message activity and does not override
+parent or exclusion policy. A reopened eligible thread may therefore become inactive and eligible
+again after the configured duration even when no later message is posted.
+
+PostgreSQL policy revalidation and Discord lifecycle work cannot form one atomic transaction.
+Activity or policy committed before final revalidation prevents execution, while a change committed
+after that read may race with the close. The lifecycle serialization and idempotent close behavior
+keep concurrent close attempts safe without claiming cross-system atomicity.
+
 The parent-channel allowlist is the higher-level policy. `/thread track` removes an individual
 exclusion. It does not override a parent channel that is outside the allowlist.
 

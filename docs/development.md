@@ -826,6 +826,63 @@ mutation, writes no audit, and starts no runtime sweep or timer. The activity ta
 candidate-pagination index on `last_activity_at`, `guild_id`, and `thread_id`; no other index or
 runtime dependency is added by this slice.
 
+Phase 6D-2 adds a focused executor for one provisional candidate without adding the periodic sweep.
+It first performs one forced current Discord channel fetch through an execution-specific boundary.
+A supported thread yields only its current parent and archived state. A null, confirmed Discord
+Unknown Channel response, unsupported resource, guild mismatch, or parentless resource is confirmed
+unavailable; transport, rate-limit, server, permission, and opaque failures remain retryable. An
+already archived, confirmed unavailable, or parent-mismatched episode skips lifecycle execution and
+is retired. Parent mismatch never rewrites activity merely to make the old candidate executable.
+
+After Discord inspection, the executor captures a new revalidation timestamp and performs one
+read-only PostgreSQL eligibility query. The query requires the exact guild, thread,
+`last_activity_at`, and fresh parent; current parent allowlist membership; no current exclusion;
+the inclusive current inactivity threshold; and no retirement matching the current episode. It
+uses the seven-day missing-settings default without inserting settings and never uses PostgreSQL
+`now()` as the execution timestamp. False eligibility is a safe skip without retirement.
+
+Immediately after successful candidate revalidation, the executor reads the current explicit
+scheduled close. An `ACTIVE` or `EXECUTING` close takes precedence, causing a safe skip without
+claiming, cancelling, transitioning, or auditing the scheduled action. Terminal history is absent
+from this focused current-state read and does not block automatic close. No scheduled-action lock is
+held across Discord work; a schedule created after this read may race with lifecycle execution.
+
+Automatic close enters the existing lifecycle queue through a distinct system entry point. The
+shared close implementation still owns fresh supported-thread reads, locked-state and bot
+permission checks, guild prefix selection, managed CLOSED persistence, Discord mutation
+classification and reconciliation, and final lifecycle audit. Close finalization uses an explicit
+`CLOSE`/`AUTO_CLOSE` type guard so both operations remain on the CLOSED branch. Manual close remains
+`CLOSE` with a user actor, scheduled system close remains `CLOSE` with a system actor, and automatic
+close records `AUTO_CLOSE` with a system actor.
+
+An automatic-close retirement stores the latest retired `last_activity_at` for one guild/thread.
+Its conflict write advances only to a newer timestamp; equal and stale writes are complete no-ops
+without `updated_at` churn. Candidate discovery and final revalidation reject a retirement only
+when it exactly matches the current activity timestamp, so a newer qualifying activity episode is
+eligible naturally. A successful lifecycle close is retired afterward. Retirement failure does not
+undo the close and is retryable; the next attempt observes the archived thread and retries only the
+retirement path. Lifecycle attempt failure never retires the episode because its condition may
+change before a later sweep.
+
+The automatic-close activity handler independently observes raw gateway `THREAD_UPDATE` dispatches
+before discord.js mutates its channel cache. A cached archived-to-active transition, including a
+locked thread, establishes a re-entry baseline. An active supported thread missing from cache does
+the same because Discord may deliver an unarchive without that archived thread already in memory;
+a cached active-to-active metadata update does not reset inactivity. The handler records the
+observation time only when the current parent remains allowlisted and the thread is not excluded.
+Policy evaluation and `last_activity_at = max(existing, reopened_at)` occur in one PostgreSQL
+statement; an equal or stale observation changes neither parent nor timestamps. This path does not
+consult the bot-message policy, perform a REST fallback, remove exclusions, enable parents, or
+delete retirement. Re-entry and nearby message writes may arrive in either order because both
+persistence operations are monotonic. Lifecycle auto-open remains a separate high-level
+`ThreadUpdate` listener with independent bounded failure handling.
+
+Migration 0008 adds only the automatic-close retirement table and permits `AUTO_CLOSE` in the
+thread lifecycle audit action constraint. Phase 6D-2 adds no five-minute loop, startup execution
+sweep, page-iteration runtime, pg-boss queue, or delayed automatic-close job. Phase 6D-3 owns that
+runtime orchestration. The remaining change-after-revalidation PostgreSQL/Discord race is accepted
+and documented rather than hidden behind a database lock held across Discord work.
+
 ### Phase 7: Managed messages
 
 - Implement `/message send`.

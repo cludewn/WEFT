@@ -7,7 +7,7 @@ import type { DatabaseClient } from "./database.js";
 export const MANAGED_THREAD_STATES = ["OPEN", "CLOSED"] as const;
 export type ManagedThreadLifecycleState = (typeof MANAGED_THREAD_STATES)[number];
 
-export const THREAD_AUDIT_ACTIONS = ["CLOSE", "OPEN", "AUTO_OPEN"] as const;
+export const THREAD_AUDIT_ACTIONS = ["CLOSE", "OPEN", "AUTO_OPEN", "AUTO_CLOSE"] as const;
 export type ThreadAuditAction = (typeof THREAD_AUDIT_ACTIONS)[number];
 
 export const THREAD_AUDIT_OUTCOMES = ["SUCCESS", "FAILURE"] as const;
@@ -50,7 +50,10 @@ export const threadAudits = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    check("thread_audits_action_check", sql`${table.action} in ('CLOSE', 'OPEN', 'AUTO_OPEN')`),
+    check(
+      "thread_audits_action_check",
+      sql`${table.action} in ('CLOSE', 'OPEN', 'AUTO_OPEN', 'AUTO_CLOSE')`,
+    ),
     check("thread_audits_actor_type_check", sql`${table.actorType} in ('USER', 'SYSTEM')`),
     check("thread_audits_outcome_check", sql`${table.outcome} in ('SUCCESS', 'FAILURE')`),
     check(

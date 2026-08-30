@@ -1,4 +1,10 @@
-import { ChannelType, Events, GatewayIntentBits, RESTEvents } from "discord.js";
+import {
+  ChannelType,
+  Events,
+  GatewayDispatchEvents,
+  GatewayIntentBits,
+  RESTEvents,
+} from "discord.js";
 import type { AnyThreadChannel, ChatInputCommandInteraction, RateLimitData } from "discord.js";
 import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
@@ -459,6 +465,117 @@ describe("automatic close activity gateway handlers", () => {
     expect(fixture.activity.initializeThreadBaseline).not.toHaveBeenCalled();
     await fixture.client.destroy();
   });
+
+  it("records one raw archived-to-active re-entry with exact current facts", async () => {
+    const observedAt = new Date("2030-04-04T00:00:00.000Z");
+    const fixture = await createActivityFixture(() => observedAt);
+    cacheThread(fixture.client, { archived: true });
+
+    fixture.client.emit(Events.Raw, createRawThreadUpdate({ archived: false }));
+
+    expect(fixture.activity.recordThreadReentryBaseline).toHaveBeenCalledExactlyOnceWith({
+      guildId: "guild-id",
+      threadId: "thread-id",
+      parentChannelId: "parent-id",
+      reopenedAt: observedAt,
+    });
+
+    // The lifecycle listener remains high-level, but automatic-close re-entry has no second
+    // ThreadUpdate listener that can record the same gateway observation again.
+    fixture.client.emit(
+      Events.ThreadUpdate,
+      createThread({ archived: true }) as never,
+      createThread({ archived: false, locked: true }) as never,
+    );
+    expect(fixture.activity.recordThreadReentryBaseline).toHaveBeenCalledOnce();
+    await fixture.client.destroy();
+  });
+
+  it("records a raw active thread cache miss without requiring high-level ThreadUpdate", async () => {
+    const observedAt = new Date("2030-05-05T00:00:00.000Z");
+    const fixture = await createActivityFixture(() => observedAt);
+    const fetchChannel = vi.spyOn(fixture.client.channels, "fetch");
+    expect(fixture.client.channels.cache.has("thread-id")).toBe(false);
+
+    fixture.client.emit(Events.Raw, createRawThreadUpdate({ archived: false }));
+
+    expect(fixture.activity.recordThreadReentryBaseline).toHaveBeenCalledExactlyOnceWith({
+      guildId: "guild-id",
+      threadId: "thread-id",
+      parentChannelId: "parent-id",
+      reopenedAt: observedAt,
+    });
+    expect(fetchChannel).not.toHaveBeenCalled();
+    await fixture.client.destroy();
+  });
+
+  it("does not reset inactivity for a cached active-to-active raw update", async () => {
+    const fixture = await createActivityFixture();
+    cacheThread(fixture.client, { archived: false });
+
+    fixture.client.emit(Events.Raw, createRawThreadUpdate({ archived: false }));
+
+    expect(fixture.activity.recordThreadReentryBaseline).not.toHaveBeenCalled();
+    await fixture.client.destroy();
+  });
+
+  it("ignores an incoming archived raw thread update", async () => {
+    const fixture = await createActivityFixture();
+    cacheThread(fixture.client, { archived: false });
+
+    fixture.client.emit(Events.Raw, createRawThreadUpdate({ archived: true }));
+
+    expect(fixture.activity.recordThreadReentryBaseline).not.toHaveBeenCalled();
+    await fixture.client.destroy();
+  });
+
+  it.each([
+    ["unsupported type", createRawThreadUpdate({ type: ChannelType.GuildText })],
+    ["null parent", createRawThreadUpdate({ parentId: null })],
+    ["missing parent", createRawThreadUpdate({ omitParentId: true })],
+  ])("ignores a raw thread update with %s", async (_label, packet) => {
+    const fixture = await createActivityFixture();
+
+    fixture.client.emit(Events.Raw, packet);
+
+    expect(fixture.activity.recordThreadReentryBaseline).not.toHaveBeenCalled();
+    await fixture.client.destroy();
+  });
+
+  it.each([
+    ["undefined packet", undefined],
+    ["non-thread dispatch", { t: GatewayDispatchEvents.MessageCreate, d: {} }],
+    ["missing dispatch data", { t: GatewayDispatchEvents.ThreadUpdate }],
+    [
+      "missing metadata",
+      {
+        t: GatewayDispatchEvents.ThreadUpdate,
+        d: {
+          id: "thread-id",
+          guild_id: "guild-id",
+          parent_id: "parent-id",
+          type: ChannelType.PublicThread,
+        },
+      },
+    ],
+  ])("ignores a malformed %s without throwing", async (_label, packet) => {
+    const fixture = await createActivityFixture();
+
+    expect(() => fixture.client.emit(Events.Raw, packet)).not.toThrow();
+
+    expect(fixture.activity.recordThreadReentryBaseline).not.toHaveBeenCalled();
+    await fixture.client.destroy();
+  });
+
+  it("records a qualifying locked raw thread re-entry", async () => {
+    const fixture = await createActivityFixture();
+    cacheThread(fixture.client, { archived: true });
+
+    fixture.client.emit(Events.Raw, createRawThreadUpdate({ archived: false, locked: true }));
+
+    expect(fixture.activity.recordThreadReentryBaseline).toHaveBeenCalledOnce();
+    await fixture.client.destroy();
+  });
 });
 
 function registerTestCommandHandler(
@@ -519,7 +636,7 @@ function createStartupClient(loginImplementation: () => Promise<string>): {
   };
 }
 
-async function createActivityFixture(): Promise<{
+async function createActivityFixture(now?: () => Date): Promise<{
   client: ReturnType<typeof createDiscordClient>;
   activity: AutomaticCloseActivityService;
   logger: Logger;
@@ -534,8 +651,9 @@ async function createActivityFixture(): Promise<{
   const activity: AutomaticCloseActivityService = {
     recordMessageActivity: vi.fn(() => Promise.resolve()),
     initializeThreadBaseline: vi.fn(() => Promise.resolve()),
+    recordThreadReentryBaseline: vi.fn(() => Promise.resolve()),
   };
-  registerAutomaticCloseActivityHandlers(client, { activity, logger });
+  registerAutomaticCloseActivityHandlers(client, { activity, logger, ...(now ? { now } : {}) });
   return await Promise.resolve({ client, activity, logger });
 }
 
@@ -574,10 +692,67 @@ function createThread({
   type = ChannelType.PublicThread,
   parentId = "parent-id",
   createdTimestamp = Date.parse("2020-01-01T00:00:00.000Z"),
+  archived = false,
+  locked = false,
 }: {
   type?: ChannelType;
   parentId?: string | null;
   createdTimestamp?: number | null;
+  archived?: boolean;
+  locked?: boolean;
 } = {}) {
-  return { id: "thread-id", guildId: "guild-id", type, parentId, createdTimestamp };
+  return {
+    id: "thread-id",
+    guildId: "guild-id",
+    type,
+    parentId,
+    createdTimestamp,
+    archived,
+    locked,
+  };
+}
+
+function cacheThread(
+  client: ReturnType<typeof createDiscordClient>,
+  { archived }: { archived: boolean },
+): void {
+  client.channels.cache.set("thread-id", {
+    id: "thread-id",
+    guildId: "guild-id",
+    type: ChannelType.PublicThread,
+    archived,
+    isThread: () => true,
+  } as never);
+}
+
+function createRawThreadUpdate({
+  type = ChannelType.PublicThread,
+  parentId = "parent-id",
+  archived = false,
+  locked = false,
+  omitParentId = false,
+}: {
+  type?: ChannelType;
+  parentId?: string | null;
+  archived?: boolean;
+  locked?: boolean;
+  omitParentId?: boolean;
+} = {}) {
+  return {
+    op: 0,
+    s: 1,
+    t: GatewayDispatchEvents.ThreadUpdate,
+    d: {
+      id: "thread-id",
+      guild_id: "guild-id",
+      ...(!omitParentId ? { parent_id: parentId } : {}),
+      type,
+      thread_metadata: {
+        archived,
+        auto_archive_duration: 1_440,
+        archive_timestamp: "2030-01-01T00:00:00.000Z",
+        locked,
+      },
+    },
+  };
 }

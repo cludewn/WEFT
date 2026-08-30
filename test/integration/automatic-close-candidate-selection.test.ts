@@ -6,6 +6,7 @@ import {
   autoCloseParentChannels,
   autoCloseThreadActivity,
   autoCloseThreadExclusions,
+  autoCloseThreadRetirements,
   createAutomaticClosePersistenceStore,
   type AutomaticCloseCandidate,
 } from "../../src/automatic-close-persistence.js";
@@ -229,6 +230,31 @@ describe("automatic close candidate selection persistence", () => {
 
     await expect(allRows()).resolves.toEqual(before);
   });
+
+  it("excludes only a retirement matching the current activity episode", async () => {
+    await settingsStore.setAutoCloseInactivitySeconds(guildIds[0], 300);
+    await store.addParentChannel(guildIds[0], parentIds[0]);
+    const retiredAt = secondsBeforeAsOf(900);
+    const currentAt = secondsBeforeAsOf(600);
+    await insertActivities([
+      activity("exact-retirement", parentIds[0], retiredAt),
+      activity("older-retirement", parentIds[0], currentAt),
+    ]);
+    await store.retireActivityEpisode({
+      guildId: guildIds[0],
+      threadId: "exact-retirement",
+      lastActivityAt: retiredAt,
+    });
+    await store.retireActivityEpisode({
+      guildId: guildIds[0],
+      threadId: "older-retirement",
+      lastActivityAt: retiredAt,
+    });
+
+    await expect(store.findInactiveCandidatesPage({ asOf })).resolves.toEqual([
+      candidate("older-retirement", parentIds[0], currentAt),
+    ]);
+  });
 });
 
 function activity(
@@ -282,11 +308,18 @@ function allRows() {
       .select()
       .from(autoCloseThreadActivity)
       .where(inArray(autoCloseThreadActivity.guildId, guildIds)),
+    database.client
+      .select()
+      .from(autoCloseThreadRetirements)
+      .where(inArray(autoCloseThreadRetirements.guildId, guildIds)),
     settingsRows(),
   ]);
 }
 
 async function cleanup(): Promise<void> {
+  await database.client
+    .delete(autoCloseThreadRetirements)
+    .where(inArray(autoCloseThreadRetirements.guildId, guildIds));
   await database.client
     .delete(autoCloseParentChannels)
     .where(inArray(autoCloseParentChannels.guildId, guildIds));

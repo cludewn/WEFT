@@ -87,6 +87,22 @@ describe("thread lifecycle persistence", () => {
     );
   });
 
+  it.each(["CLOSE", "OPEN", "AUTO_OPEN", "AUTO_CLOSE"] as const)(
+    "accepts the %s lifecycle audit action",
+    async (action) => {
+      await expect(
+        auditStore.record({
+          id: `accepted-${action.toLowerCase()}`,
+          guildId,
+          threadId: threadIds[0],
+          action,
+          actorType: "SYSTEM",
+          outcome: "SUCCESS",
+        }),
+      ).resolves.toBeUndefined();
+    },
+  );
+
   it("rejects a conflicting payload for an existing audit ID", async () => {
     const id = "conflicting-reconciliation-audit";
     await auditStore.record({
@@ -119,6 +135,17 @@ describe("thread lifecycle persistence", () => {
         insert into managed_threads
           (guild_id, thread_id, applied_prefix, lifecycle_state)
         values (${guildId}, ${threadIds[1]}, ${"[CLOSED]"}, ${"INVALID"})
+      `),
+    ).rejects.toThrow();
+
+    await expect(
+      database.client.execute(sql`
+        insert into thread_audits
+          (id, guild_id, thread_id, action, actor_type, outcome)
+        values (
+          ${"invalid-action-audit"}, ${guildId}, ${threadIds[1]}, ${"INVALID"}, ${"SYSTEM"},
+          ${"SUCCESS"}
+        )
       `),
     ).rejects.toThrow();
 
