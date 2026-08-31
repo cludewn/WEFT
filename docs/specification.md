@@ -408,8 +408,9 @@ A successful operation must record:
 - lifecycle status.
 
 The initial send implementation persists this managed-message metadata only after Discord confirms
-the send. Managed-message edit history and the complete managed-message audit requirement remain
-unimplemented.
+the send. New managed-message creation commits the managed row and its `CREATED` audit atomically.
+Rows created before creation-audit support remain valid managed messages without fabricated
+historical audit records.
 
 User-provided content must not generate mentions by default.
 
@@ -417,7 +418,20 @@ Long-form content should be entered through a Discord modal rather than being fo
 
 ### Managed message edit
 
-An authorized administrator may edit a managed message through WEFT even when that administrator did not create the original message.
+`/message edit message:<id-or-link>` accepts either a Discord message ID or a canonical
+`discord.com` message link. The target must belong to the current guild and current channel. WEFT
+loads the current persisted content into a modal and binds the modal to that managed message's
+revision. A stale modal is rejected as a conflict rather than overwriting a later edit.
+
+An authorized administrator may edit a managed message through WEFT even when that administrator
+did not create the original message. The administrator's current `ManageMessages` permission and
+the bot's current access and editability are revalidated when the modal is submitted. Editing
+preserves the submitted content exactly and suppresses automatic mention parsing.
+
+Before either a no-op or an actual edit, WEFT freshly inspects the Discord message and requires its
+current content to equal the persisted managed content. A mismatch is reported for administrator
+inspection and neither side is silently repaired. A no-op therefore still requires current
+authorization, Discord existence, WEFT authorship, editability, and content coherence.
 
 A successful edit must record:
 
@@ -430,7 +444,16 @@ A successful edit must record:
 
 Concurrent edits must not silently overwrite each other.
 
-If the Discord message no longer exists, WEFT must detect that condition, update the stored management state, and return a clear error.
+If Discord confirms that the message no longer exists, WEFT atomically changes the managed
+lifecycle state from `ACTIVE` to `DELETED` and records a `DELETION_DETECTED` system audit without
+changing content or revision. No proactive message-deletion listener or periodic reconciliation is
+required for this edit-time detection.
+
+Successful managed-message creation, edit, and deletion detection commit dedicated audit records.
+Discord and PostgreSQL cannot form one transaction, so bounded partial failures remain possible.
+When an edit reaches Discord but managed-state finalization cannot be confirmed, WEFT may restore
+the prior Discord content once only after fresh PostgreSQL and Discord reads prove that restoration
+is safe.
 
 ### Managed message authorization
 
@@ -445,6 +468,9 @@ The MVP supports:
 - plain text,
 - normal URLs,
 - Discord embeds.
+
+Plain-text managed-message send and edit are implemented before embed authoring. The final embed
+creation and editing interface remains unresolved MVP work.
 
 The MVP does not include persistent attachment storage.
 

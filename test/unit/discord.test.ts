@@ -358,22 +358,34 @@ describe("Discord client", () => {
 });
 
 describe("managed message modal routing", () => {
-  it("processes only the managed-message send modal", async () => {
+  it("processes only owned managed-message send and edit modals", async () => {
     const logger = createLogger();
     const service = {
       send: vi.fn(() => Promise.resolve({ outcome: "SUCCESS", messageId: "message-id" } as const)),
+      findForEdit: vi.fn(),
+      edit: vi.fn(() =>
+        Promise.resolve({
+          outcome: "SUCCESS",
+          messageId: "900000000000000001",
+          revision: 2,
+        } as const),
+      ),
     } satisfies ManagedMessageService;
     const client = createDiscordClient(logger, discordDependencies);
     registerManagedMessageModalHandler(client, service, logger);
     const unrelated = createModal("other:modal");
     const managed = createModal("managed-message:send");
+    const edit = createModal("managed-message:edit:900000000000000001:1");
 
     client.emit(Events.InteractionCreate, unrelated.interaction);
     client.emit(Events.InteractionCreate, managed.interaction);
+    client.emit(Events.InteractionCreate, edit.interaction);
 
     await vi.waitFor(() => expect(service.send).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(service.edit).toHaveBeenCalledOnce());
     expect(unrelated.deferReply).not.toHaveBeenCalled();
     expect(managed.deferReply).toHaveBeenCalledOnce();
+    expect(edit.deferReply).toHaveBeenCalledOnce();
     expect(logger.error).not.toHaveBeenCalled();
     await client.destroy();
   });
@@ -382,6 +394,8 @@ describe("managed message modal routing", () => {
     const logger = createLogger();
     const service = {
       send: vi.fn(() => Promise.reject(new Error("sensitive raw detail"))),
+      findForEdit: vi.fn(),
+      edit: vi.fn(),
     } satisfies ManagedMessageService;
     const client = createDiscordClient(logger, discordDependencies);
     registerManagedMessageModalHandler(client, service, logger);
@@ -648,6 +662,11 @@ function registerTestCommandHandler(
       status: vi.fn(),
     },
     guildSettings: discordDependencies.guildSettings,
+    managedMessages: {
+      send: vi.fn(),
+      findForEdit: vi.fn(),
+      edit: vi.fn(),
+    },
     scheduledThreadClose: { schedule: vi.fn(), cancel: vi.fn(), closeManually: vi.fn() },
     threadLifecycle: lifecycle,
     logger,

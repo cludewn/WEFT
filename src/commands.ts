@@ -8,6 +8,7 @@ import type { AutomaticCloseThreadMaintenanceService } from "./automatic-close-t
 import { configCommandDefinition, handleConfigCommand } from "./config-command.js";
 import type { GuildSettingsStore } from "./guild-settings.js";
 import { handleMessageCommand, messageCommandDefinition } from "./message-command.js";
+import type { ManagedMessageService } from "./managed-message.js";
 import type { ScheduledThreadCloseCommandService } from "./scheduled-thread-close-command.js";
 import { handleThreadCommand, threadCommandDefinition } from "./thread-command.js";
 import type { ThreadLifecycleService } from "./thread-lifecycle.js";
@@ -23,6 +24,7 @@ export type CommandDependencies = {
   automaticCloseConfiguration: AutomaticCloseConfigurationService;
   automaticCloseMaintenance: AutomaticCloseThreadMaintenanceService;
   guildSettings: GuildSettingsStore;
+  managedMessages: ManagedMessageService;
   scheduledThreadClose: ScheduledThreadCloseCommandService;
   threadLifecycle: ThreadLifecycleService;
   logger: Logger;
@@ -58,7 +60,7 @@ export async function handleCommand(
   }
 
   if (interaction.commandName === "message") {
-    await handleMessageCommand(interaction);
+    await handleMessageCommand(interaction, dependencies.managedMessages);
     return true;
   }
 

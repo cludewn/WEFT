@@ -6,6 +6,7 @@ import type { AutomaticCloseActivityService } from "./automatic-close-activity.j
 import { handleCommand, type CommandDependencies } from "./commands.js";
 import {
   handleManagedMessageModalSubmit,
+  MANAGED_MESSAGE_EDIT_MODAL_PREFIX,
   MANAGED_MESSAGE_SEND_MODAL_ID,
 } from "./message-command.js";
 import type { ManagedMessageService } from "./managed-message.js";
@@ -190,7 +191,11 @@ export function registerManagedMessageModalHandler(
   logger: Pick<Logger, "error">,
 ): void {
   client.on(Events.InteractionCreate, (interaction) => {
-    if (!interaction.isModalSubmit() || interaction.customId !== MANAGED_MESSAGE_SEND_MODAL_ID) {
+    if (
+      !interaction.isModalSubmit() ||
+      (interaction.customId !== MANAGED_MESSAGE_SEND_MODAL_ID &&
+        !interaction.customId.startsWith(MANAGED_MESSAGE_EDIT_MODAL_PREFIX))
+    ) {
       return;
     }
 
