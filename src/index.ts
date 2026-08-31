@@ -130,6 +130,7 @@ async function main(): Promise<void> {
     automaticCloseConfiguration,
     automaticCloseMaintenance,
     guildSettings,
+    managedMessages,
     scheduledThreadClose: scheduledThreadCloseCommand,
     threadLifecycle: discordRuntime.threadLifecycle,
     logger,

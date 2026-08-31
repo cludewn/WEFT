@@ -935,6 +935,54 @@ Phase 7A needs neither `MessageContent` nor `GuildMembers` gateway intent. Messa
 revision mutation and conflict handling, managed-message creation/edit audit completion, and
 manual Discord deletion detection remain deferred to later Phase 7 work.
 
+Phase 7B implements `/message edit` without adding a gateway intent or event listener. The command
+accepts a strict decimal Discord message ID or an exact canonical `discord.com` message link and
+restricts either form to the current guild and channel. Modal opening performs the cheap current
+interaction checks and one focused managed-message read, then prefills persisted content in a modal
+whose custom ID contains only the message ID and expected revision.
+
+Edit submission validates the owned custom ID and content before acknowledging ephemerally. Slow
+work begins only after acknowledgement. A process-local per-message FIFO serializes the complete
+pipeline for the same message while allowing different message IDs to proceed independently. The
+FIFO is not a distributed lock; the conditional PostgreSQL revision transition remains the
+authoritative concurrency boundary.
+
+Inside the FIFO, the service freshly reads managed state and rejects a missing, deleted, mismatched,
+or stale-revision target before Discord work. The Discord boundary then force-fetches the current
+channel, refreshes the actor and bot members, revalidates `ManageMessages` and bot access, and
+force-fetches the exact message without using a cached message. It requires the message to be
+WEFT-authored and currently editable. An archived thread is rejected, and locked-thread behavior
+uses discord.js editability semantics. Editing an existing bot-authored message does not require
+send permissions.
+
+Discord content must equal persisted managed content before either no-op detection or mutation.
+Consequently, submitted content equal to persisted content does not bypass current permission,
+existence, authorship, editability, or coherence checks. A mismatch returns a bounded failure and
+does not repair Discord or PostgreSQL. An actual edit uses `allowedMentions: { parse: [] }` and no
+application retry. An ambiguous PATCH receives at most one fresh fetch: exact new content with an
+advanced edit timestamp confirms application, exact old content with the unchanged timestamp
+confirms non-application, and every other result remains unconfirmed.
+
+Migration 0010 expands managed-message status to exactly `ACTIVE` and `DELETED` and adds the
+dedicated relational `managed_message_audits` table for `CREATED`, `EDITED`, and
+`DELETION_DETECTED`. New sends now persist the managed row and `CREATED` audit in one transaction;
+the migration does not fabricate creation audits for Phase 7A rows. A confirmed edit conditionally
+updates `ACTIVE` state at the expected revision and old content and inserts its `EDITED` audit in
+the same transaction. Confirmed Discord Unknown Message changes `ACTIVE` to `DELETED` and inserts a
+system deletion-detection audit atomically while preserving content and revision.
+
+Every state-changing persistence attempt uses one stable audit ID. A rejected or ambiguous create,
+edit, or deletion transaction is confirmed read-only only when both the exact intended row state
+and exact audit are present. After a confirmed Discord edit whose database finalization cannot be
+confirmed, compensation is attempted only when a fresh database read still shows the exact old
+active revision and content with no intended audit. A second fresh Discord read must still show the
+exact new content and confirmed edit timestamp before one restore PATCH, also with mention
+suppression. Newer, changed, deleted, unavailable, or otherwise ambiguous state is never restored
+and returns a bounded partial failure.
+
+Phase 7B adds no `MessageDelete` listener, `MessageContent` intent, scheduled-message worker,
+distributed lock, embed authoring, or generic audit/modal framework.
+
 - Implement `/message send`.
 - Persist managed-message metadata.
 - Suppress mentions by default.

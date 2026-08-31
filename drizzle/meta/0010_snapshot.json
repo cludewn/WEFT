@@ -1,0 +1,970 @@
+{
+  "id": "fdb4cb0a-f545-471b-8977-b71ed9014534",
+  "prevId": "708f2cf5-8c70-4919-a142-2a1a7c52e2e9",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.auto_close_parent_channels": {
+      "name": "auto_close_parent_channels",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "parent_channel_id": {
+          "name": "parent_channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "auto_close_parent_channels_guild_id_parent_channel_id_pk": {
+          "name": "auto_close_parent_channels_guild_id_parent_channel_id_pk",
+          "columns": [
+            "guild_id",
+            "parent_channel_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.auto_close_thread_activity": {
+      "name": "auto_close_thread_activity",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "parent_channel_id": {
+          "name": "parent_channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_activity_at": {
+          "name": "last_activity_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "auto_close_thread_activity_last_activity_guild_thread_idx": {
+          "name": "auto_close_thread_activity_last_activity_guild_thread_idx",
+          "columns": [
+            {
+              "expression": "last_activity_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "guild_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "auto_close_thread_activity_guild_id_thread_id_pk": {
+          "name": "auto_close_thread_activity_guild_id_thread_id_pk",
+          "columns": [
+            "guild_id",
+            "thread_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.auto_close_thread_exclusions": {
+      "name": "auto_close_thread_exclusions",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "auto_close_thread_exclusions_guild_id_thread_id_pk": {
+          "name": "auto_close_thread_exclusions_guild_id_thread_id_pk",
+          "columns": [
+            "guild_id",
+            "thread_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.auto_close_thread_retirements": {
+      "name": "auto_close_thread_retirements",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_activity_at": {
+          "name": "last_activity_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "auto_close_thread_retirements_guild_id_thread_id_pk": {
+          "name": "auto_close_thread_retirements_guild_id_thread_id_pk",
+          "columns": [
+            "guild_id",
+            "thread_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.guild_settings": {
+      "name": "guild_settings",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'UTC'"
+        },
+        "closed_prefix": {
+          "name": "closed_prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[CLOSED]'"
+        },
+        "auto_close_inactivity_seconds": {
+          "name": "auto_close_inactivity_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 604800
+        },
+        "auto_close_bot_messages_count_as_activity": {
+          "name": "auto_close_bot_messages_count_as_activity",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "guild_settings_auto_close_inactivity_seconds_check": {
+          "name": "guild_settings_auto_close_inactivity_seconds_check",
+          "value": "\"guild_settings\".\"auto_close_inactivity_seconds\" between 300 and 31536000"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.managed_message_audits": {
+      "name": "managed_message_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel_id": {
+          "name": "channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event": {
+          "name": "event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_content": {
+          "name": "before_content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_content": {
+          "name": "after_content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "before_revision": {
+          "name": "before_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_revision": {
+          "name": "after_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "before_status": {
+          "name": "before_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_status": {
+          "name": "after_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "managed_message_audits_event_check": {
+          "name": "managed_message_audits_event_check",
+          "value": "\"managed_message_audits\".\"event\" in ('CREATED', 'EDITED', 'DELETION_DETECTED')"
+        },
+        "managed_message_audits_actor_type_check": {
+          "name": "managed_message_audits_actor_type_check",
+          "value": "\"managed_message_audits\".\"actor_type\" in ('USER', 'SYSTEM')"
+        },
+        "managed_message_audits_outcome_check": {
+          "name": "managed_message_audits_outcome_check",
+          "value": "\"managed_message_audits\".\"outcome\" = 'SUCCESS'"
+        },
+        "managed_message_audits_revision_check": {
+          "name": "managed_message_audits_revision_check",
+          "value": "\"managed_message_audits\".\"after_revision\" >= 1 and (\"managed_message_audits\".\"before_revision\" is null or \"managed_message_audits\".\"before_revision\" >= 1)"
+        },
+        "managed_message_audits_status_check": {
+          "name": "managed_message_audits_status_check",
+          "value": "\"managed_message_audits\".\"after_status\" in ('ACTIVE', 'DELETED') and (\"managed_message_audits\".\"before_status\" is null or \"managed_message_audits\".\"before_status\" in ('ACTIVE', 'DELETED'))"
+        },
+        "managed_message_audits_content_length_check": {
+          "name": "managed_message_audits_content_length_check",
+          "value": "char_length(\"managed_message_audits\".\"after_content\") between 1 and 2000 and (\"managed_message_audits\".\"before_content\" is null or char_length(\"managed_message_audits\".\"before_content\") between 1 and 2000)"
+        },
+        "managed_message_audits_event_shape_check": {
+          "name": "managed_message_audits_event_shape_check",
+          "value": "(\n        \"managed_message_audits\".\"event\" = 'CREATED'\n        and \"managed_message_audits\".\"actor_type\" = 'USER' and \"managed_message_audits\".\"actor_id\" is not null\n        and \"managed_message_audits\".\"before_content\" is null and \"managed_message_audits\".\"before_revision\" is null and \"managed_message_audits\".\"before_status\" is null\n        and \"managed_message_audits\".\"after_revision\" = 1 and \"managed_message_audits\".\"after_status\" = 'ACTIVE'\n      ) or (\n        \"managed_message_audits\".\"event\" = 'EDITED'\n        and \"managed_message_audits\".\"actor_type\" = 'USER' and \"managed_message_audits\".\"actor_id\" is not null\n        and \"managed_message_audits\".\"before_content\" is not null and \"managed_message_audits\".\"before_revision\" is not null\n        and \"managed_message_audits\".\"before_status\" = 'ACTIVE' and \"managed_message_audits\".\"after_status\" = 'ACTIVE'\n        and \"managed_message_audits\".\"after_revision\" = \"managed_message_audits\".\"before_revision\" + 1\n        and \"managed_message_audits\".\"after_content\" <> \"managed_message_audits\".\"before_content\"\n      ) or (\n        \"managed_message_audits\".\"event\" = 'DELETION_DETECTED'\n        and \"managed_message_audits\".\"actor_type\" = 'SYSTEM' and \"managed_message_audits\".\"actor_id\" is null\n        and \"managed_message_audits\".\"before_content\" is not null and \"managed_message_audits\".\"before_revision\" is not null\n        and \"managed_message_audits\".\"before_status\" = 'ACTIVE' and \"managed_message_audits\".\"after_status\" = 'DELETED'\n        and \"managed_message_audits\".\"after_revision\" = \"managed_message_audits\".\"before_revision\"\n        and \"managed_message_audits\".\"after_content\" = \"managed_message_audits\".\"before_content\"\n      )"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.managed_messages": {
+      "name": "managed_messages",
+      "schema": "",
+      "columns": {
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel_id": {
+          "name": "channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "creator_user_id": {
+          "name": "creator_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ACTIVE'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "managed_messages_revision_check": {
+          "name": "managed_messages_revision_check",
+          "value": "\"managed_messages\".\"revision\" >= 1"
+        },
+        "managed_messages_status_check": {
+          "name": "managed_messages_status_check",
+          "value": "\"managed_messages\".\"status\" in ('ACTIVE', 'DELETED')"
+        },
+        "managed_messages_content_length_check": {
+          "name": "managed_messages_content_length_check",
+          "value": "char_length(\"managed_messages\".\"content\") between 1 and 2000"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.scheduled_actions": {
+      "name": "scheduled_actions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action_type": {
+          "name": "action_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target_id": {
+          "name": "target_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "execute_at": {
+          "name": "execute_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "scheduled_actions_active_close_unique": {
+          "name": "scheduled_actions_active_close_unique",
+          "columns": [
+            {
+              "expression": "guild_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "target_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"scheduled_actions\".\"action_type\" = 'CLOSE_THREAD' and \"scheduled_actions\".\"status\" in ('ACTIVE', 'EXECUTING')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "scheduled_actions_active_execute_at_idx": {
+          "name": "scheduled_actions_active_execute_at_idx",
+          "columns": [
+            {
+              "expression": "execute_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"scheduled_actions\".\"status\" = 'ACTIVE'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "scheduled_actions_active_close_execute_at_id_idx": {
+          "name": "scheduled_actions_active_close_execute_at_id_idx",
+          "columns": [
+            {
+              "expression": "execute_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"scheduled_actions\".\"action_type\" = 'CLOSE_THREAD' and \"scheduled_actions\".\"status\" = 'ACTIVE'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "scheduled_actions_action_type_check": {
+          "name": "scheduled_actions_action_type_check",
+          "value": "\"scheduled_actions\".\"action_type\" in ('CLOSE_THREAD', 'SEND_MESSAGE')"
+        },
+        "scheduled_actions_status_check": {
+          "name": "scheduled_actions_status_check",
+          "value": "\"scheduled_actions\".\"status\" in ('ACTIVE', 'EXECUTING', 'CANCELLED', 'COMPLETED', 'FAILED')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.scheduled_thread_close_audits": {
+      "name": "scheduled_thread_close_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "scheduled_action_id": {
+          "name": "scheduled_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event": {
+          "name": "event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "previous_scheduled_action_id": {
+          "name": "previous_scheduled_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "previous_execute_at": {
+          "name": "previous_execute_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execute_at": {
+          "name": "execute_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "scheduled_thread_close_audits_action_id_idx": {
+          "name": "scheduled_thread_close_audits_action_id_idx",
+          "columns": [
+            {
+              "expression": "scheduled_action_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "scheduled_thread_close_audits_guild_thread_created_at_idx": {
+          "name": "scheduled_thread_close_audits_guild_thread_created_at_idx",
+          "columns": [
+            {
+              "expression": "guild_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "scheduled_thread_close_audits_event_check": {
+          "name": "scheduled_thread_close_audits_event_check",
+          "value": "\"scheduled_thread_close_audits\".\"event\" in ('CREATED', 'REPLACED', 'CANCELLED', 'EXECUTION_COMPLETED', 'EXECUTION_RETRY', 'EXECUTION_FAILED')"
+        },
+        "scheduled_thread_close_audits_actor_type_check": {
+          "name": "scheduled_thread_close_audits_actor_type_check",
+          "value": "\"scheduled_thread_close_audits\".\"actor_type\" in ('USER', 'SYSTEM')"
+        },
+        "scheduled_thread_close_audits_outcome_check": {
+          "name": "scheduled_thread_close_audits_outcome_check",
+          "value": "\"scheduled_thread_close_audits\".\"outcome\" in ('SUCCESS', 'FAILURE')"
+        },
+        "scheduled_thread_close_audits_actor_check": {
+          "name": "scheduled_thread_close_audits_actor_check",
+          "value": "(\"scheduled_thread_close_audits\".\"actor_type\" = 'USER' and \"scheduled_thread_close_audits\".\"actor_id\" is not null) or (\"scheduled_thread_close_audits\".\"actor_type\" = 'SYSTEM' and \"scheduled_thread_close_audits\".\"actor_id\" is null)"
+        },
+        "scheduled_thread_close_audits_failure_check": {
+          "name": "scheduled_thread_close_audits_failure_check",
+          "value": "(\"scheduled_thread_close_audits\".\"outcome\" = 'SUCCESS' and \"scheduled_thread_close_audits\".\"failure_code\" is null) or (\"scheduled_thread_close_audits\".\"outcome\" = 'FAILURE' and \"scheduled_thread_close_audits\".\"failure_code\" is not null)"
+        },
+        "scheduled_thread_close_audits_replacement_check": {
+          "name": "scheduled_thread_close_audits_replacement_check",
+          "value": "(\"scheduled_thread_close_audits\".\"event\" = 'REPLACED' and \"scheduled_thread_close_audits\".\"previous_scheduled_action_id\" is not null and \"scheduled_thread_close_audits\".\"previous_execute_at\" is not null) or (\"scheduled_thread_close_audits\".\"event\" <> 'REPLACED' and \"scheduled_thread_close_audits\".\"previous_scheduled_action_id\" is null and \"scheduled_thread_close_audits\".\"previous_execute_at\" is null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.managed_threads": {
+      "name": "managed_threads",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "applied_prefix": {
+          "name": "applied_prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lifecycle_state": {
+          "name": "lifecycle_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "managed_threads_guild_id_thread_id_pk": {
+          "name": "managed_threads_guild_id_thread_id_pk",
+          "columns": [
+            "guild_id",
+            "thread_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "managed_threads_lifecycle_state_check": {
+          "name": "managed_threads_lifecycle_state_check",
+          "value": "\"managed_threads\".\"lifecycle_state\" in ('OPEN', 'CLOSED')"
+        },
+        "managed_threads_applied_prefix_check": {
+          "name": "managed_threads_applied_prefix_check",
+          "value": "length(\"managed_threads\".\"applied_prefix\") > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.thread_audits": {
+      "name": "thread_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "thread_audits_action_check": {
+          "name": "thread_audits_action_check",
+          "value": "\"thread_audits\".\"action\" in ('CLOSE', 'OPEN', 'AUTO_OPEN', 'AUTO_CLOSE')"
+        },
+        "thread_audits_actor_type_check": {
+          "name": "thread_audits_actor_type_check",
+          "value": "\"thread_audits\".\"actor_type\" in ('USER', 'SYSTEM')"
+        },
+        "thread_audits_outcome_check": {
+          "name": "thread_audits_outcome_check",
+          "value": "\"thread_audits\".\"outcome\" in ('SUCCESS', 'FAILURE')"
+        },
+        "thread_audits_actor_check": {
+          "name": "thread_audits_actor_check",
+          "value": "(\"thread_audits\".\"actor_type\" = 'USER' and \"thread_audits\".\"actor_id\" is not null) or (\"thread_audits\".\"actor_type\" = 'SYSTEM' and \"thread_audits\".\"actor_id\" is null)"
+        },
+        "thread_audits_failure_check": {
+          "name": "thread_audits_failure_check",
+          "value": "(\"thread_audits\".\"outcome\" = 'SUCCESS' and \"thread_audits\".\"failure_code\" is null) or (\"thread_audits\".\"outcome\" = 'FAILURE' and \"thread_audits\".\"failure_code\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

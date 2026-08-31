@@ -71,6 +71,13 @@
       "when": 1788137181993,
       "tag": "0009_shocking_johnny_blaze",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788146583667,
+      "tag": "0010_volatile_mole_man",
+      "breakpoints": true
     }
   ]
 }

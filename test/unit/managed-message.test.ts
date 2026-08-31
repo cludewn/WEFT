@@ -46,6 +46,7 @@ describe("managed message send service", () => {
       nonce: "stable-nonce",
     });
     expect(fixture.store.create).toHaveBeenCalledExactlyOnceWith({
+      auditId: "stable-audit-id",
       messageId: "message-id",
       guildId: input.guildId,
       channelId: input.channelId,
@@ -62,6 +63,7 @@ describe("managed message send service", () => {
     const secondNonce = "BBBBBBBBBBBBBBBBBBBBBB";
     const fixture = createFixture();
     fixture.generateNonce.mockReturnValueOnce(firstNonce).mockReturnValueOnce(secondNonce);
+    fixture.generateAuditId.mockReturnValueOnce("audit-a").mockReturnValueOnce("audit-b");
 
     await expect(fixture.service.send(input)).resolves.toMatchObject({ outcome: "SUCCESS" });
     await expect(fixture.service.send(input)).resolves.toMatchObject({ outcome: "SUCCESS" });
@@ -77,6 +79,14 @@ describe("managed message send service", () => {
       ...input,
       nonce: secondNonce,
     });
+    expect(fixture.store.create).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ auditId: "audit-a" }),
+    );
+    expect(fixture.store.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ auditId: "audit-b" }),
+    );
   });
 
   it.each(["SEND_REJECTED", "SEND_UNCONFIRMED"] as const)(
@@ -188,6 +198,8 @@ function createFixture(
   const deleteManagedMessage = vi.fn(() =>
     Promise.resolve(overrides.deleteResult ?? ({ outcome: "DELETED" } as const)),
   );
+  const editManagedMessage = vi.fn(() => Promise.resolve({ outcome: "UNCHANGED" } as const));
+  const restoreManagedMessage = vi.fn(() => Promise.resolve({ outcome: "RESTORED" } as const));
   const create = vi.fn(() =>
     overrides.createFailure === undefined
       ? Promise.resolve({} as never)
@@ -198,10 +210,37 @@ function createFixture(
       ? Promise.resolve(overrides.confirmation ?? "MATCH")
       : Promise.reject(overrides.confirmationFailure),
   );
-  const discord = { sendManagedMessage, deleteManagedMessage } satisfies ManagedMessageDiscord;
-  const store = { create, confirmCreation } satisfies ManagedMessageStore;
+  const find = vi.fn(() => Promise.resolve(undefined));
+  const edit = vi.fn(() => Promise.resolve("NOT_TRANSITIONED" as const));
+  const confirmEdit = vi.fn(() => Promise.resolve("MISSING" as const));
+  const markDeleted = vi.fn(() => Promise.resolve("NOT_TRANSITIONED" as const));
+  const confirmDeletion = vi.fn(() => Promise.resolve("MISSING" as const));
+  const readCompensationSafety = vi.fn(() => Promise.resolve("UNSAFE" as const));
+  const discord = {
+    sendManagedMessage,
+    deleteManagedMessage,
+    editManagedMessage,
+    restoreManagedMessage,
+  } satisfies ManagedMessageDiscord;
+  const store = {
+    find,
+    create,
+    confirmCreation,
+    edit,
+    confirmEdit,
+    markDeleted,
+    confirmDeletion,
+    readCompensationSafety,
+  } satisfies ManagedMessageStore;
   const logger = { warn: vi.fn() };
   const generateNonce = vi.fn(() => "stable-nonce");
-  const service = createManagedMessageService({ discord, store, logger, generateNonce });
-  return { service, discord, store, logger, generateNonce };
+  const generateAuditId = vi.fn(() => "stable-audit-id");
+  const service = createManagedMessageService({
+    discord,
+    store,
+    logger,
+    generateNonce,
+    generateAuditId,
+  });
+  return { service, discord, store, logger, generateNonce, generateAuditId };
 }
