@@ -14,9 +14,13 @@ import {
   createDiscordRuntime,
   registerAutomaticCloseActivityHandlers,
   registerDiscordCommandHandler,
+  registerManagedMessageModalHandler,
   startDiscordClient,
 } from "./discord.js";
 import { createGuildSettingsStore } from "./guild-settings.js";
+import { createManagedMessageDiscord } from "./managed-message-discord.js";
+import { createManagedMessageStore } from "./managed-message-persistence.js";
+import { createManagedMessageService } from "./managed-message.js";
 import { createPgBossRuntime } from "./pg-boss.js";
 import { createScheduledActionStore } from "./scheduled-action-persistence.js";
 import { createScheduledThreadCloseCommandService } from "./scheduled-thread-close-command.js";
@@ -56,7 +60,13 @@ async function main(): Promise<void> {
   const scheduledActions = createScheduledActionStore(database.client);
   const scheduledThreadCloses = createScheduledThreadCloseStore(database.client);
   const automaticCloses = createAutomaticClosePersistenceStore(database.client);
+  const managedMessageStore = createManagedMessageStore(database.client);
   const discordRuntime = createDiscordRuntime(logger, { guildSettings, managedThreads, audits });
+  const managedMessages = createManagedMessageService({
+    discord: createManagedMessageDiscord(discordRuntime.client),
+    store: managedMessageStore,
+    logger,
+  });
   const autoCloseDiscord = createAutoCloseDiscord(discordRuntime.client);
   const automaticCloseMaintenanceDiscord = createAutomaticCloseThreadMaintenanceDiscord(
     discordRuntime.client,
@@ -67,6 +77,7 @@ async function main(): Promise<void> {
     discord: autoCloseDiscord,
     logger,
   });
+  registerManagedMessageModalHandler(discordRuntime.client, managedMessages, logger);
   const automaticCloseActivity = createAutomaticCloseActivityService({
     persistence: automaticCloses,
     logger,

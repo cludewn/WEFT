@@ -7,6 +7,7 @@ import type { AutomaticCloseConfigurationService } from "./automatic-close-confi
 import type { AutomaticCloseThreadMaintenanceService } from "./automatic-close-thread-maintenance.js";
 import { configCommandDefinition, handleConfigCommand } from "./config-command.js";
 import type { GuildSettingsStore } from "./guild-settings.js";
+import { handleMessageCommand, messageCommandDefinition } from "./message-command.js";
 import type { ScheduledThreadCloseCommandService } from "./scheduled-thread-close-command.js";
 import { handleThreadCommand, threadCommandDefinition } from "./thread-command.js";
 import type { ThreadLifecycleService } from "./thread-lifecycle.js";
@@ -15,6 +16,7 @@ export const commandDefinitions = [
   new SlashCommandBuilder().setName("ping").setDescription("Check whether WEFT is responding"),
   configCommandDefinition,
   threadCommandDefinition,
+  messageCommandDefinition,
 ].map((command) => command.toJSON());
 
 export type CommandDependencies = {
@@ -52,6 +54,11 @@ export async function handleCommand(
       dependencies.automaticCloseMaintenance,
       dependencies.logger,
     );
+    return true;
+  }
+
+  if (interaction.commandName === "message") {
+    await handleMessageCommand(interaction);
     return true;
   }
 

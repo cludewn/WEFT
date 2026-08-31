@@ -6,6 +6,7 @@ export const baseDrizzleConfig = {
   schema: [
     "./src/automatic-close-persistence.ts",
     "./src/guild-settings.ts",
+    "./src/managed-message-persistence.ts",
     "./src/scheduled-action-persistence.ts",
     "./src/scheduled-thread-close-persistence.ts",
     "./src/thread-persistence.ts",

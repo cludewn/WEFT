@@ -4,6 +4,11 @@ import type { Logger } from "pino";
 
 import type { AutomaticCloseActivityService } from "./automatic-close-activity.js";
 import { handleCommand, type CommandDependencies } from "./commands.js";
+import {
+  handleManagedMessageModalSubmit,
+  MANAGED_MESSAGE_SEND_MODAL_ID,
+} from "./message-command.js";
+import type { ManagedMessageService } from "./managed-message.js";
 import { createThreadLifecycleDiscord, isSupportedThreadType } from "./thread-discord.js";
 import { createThreadLifecycleService, type ThreadLifecycleDiscord } from "./thread-lifecycle.js";
 import type { GuildSettingsStore } from "./guild-settings.js";
@@ -176,6 +181,30 @@ export function registerDiscordCommandHandler(
           "Discord command failed",
         );
       });
+  });
+}
+
+export function registerManagedMessageModalHandler(
+  client: Client,
+  service: ManagedMessageService,
+  logger: Pick<Logger, "error">,
+): void {
+  client.on(Events.InteractionCreate, (interaction) => {
+    if (!interaction.isModalSubmit() || interaction.customId !== MANAGED_MESSAGE_SEND_MODAL_ID) {
+      return;
+    }
+
+    void handleManagedMessageModalSubmit(interaction, service).catch((error: unknown) => {
+      logger.error(
+        {
+          event: "managed_message_modal_failed",
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+        },
+        "Managed message modal handling failed",
+      );
+    });
   });
 }
 
