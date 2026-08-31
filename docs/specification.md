@@ -387,6 +387,16 @@ The MVP includes:
 
 WEFT sends the message as the WEFT bot.
 
+The initial `/message send` implementation targets the current supported guild text,
+announcement, or active thread channel. Content is entered through a Discord modal. It supports
+plain text and normal URLs, and it suppresses user-provided mentions so they do not notify users or
+roles by default. Embed authoring remains part of the overall MVP but is not implemented in this
+initial slice.
+
+The invoking user must have the current `ManageMessages` permission. Immediately before sending,
+WEFT must inspect the current Discord target and verify its own effective permission and
+sendability. It must not unarchive a thread or join a private thread to make the target sendable.
+
 A successful operation must record:
 
 - guild ID,
@@ -396,6 +406,10 @@ A successful operation must record:
 - current revision,
 - creation timestamp,
 - lifecycle status.
+
+The initial send implementation persists this managed-message metadata only after Discord confirms
+the send. Managed-message edit history and the complete managed-message audit requirement remain
+unimplemented.
 
 User-provided content must not generate mentions by default.
 

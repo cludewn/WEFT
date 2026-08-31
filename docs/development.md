@@ -908,6 +908,33 @@ job per thread, message, or candidate.
 
 ### Phase 7: Managed messages
 
+Phase 7A implements `/message send` as one focused vertical slice. The chat-input handler performs
+only cheap guild, current-target, active-thread, and interaction permission checks before opening a
+static modal. A focused modal-submit route handles only `managed-message:send`, validates the
+plain-text content, acknowledges ephemerally, and invokes the managed-message application service.
+Unrelated modal IDs remain available to other handlers.
+
+The application service generates one 16-byte base64url nonce for the send and coordinates a
+focused Discord boundary with the managed-message persistence store. The Discord boundary
+force-fetches the current channel, refreshes the actor and bot members, revalidates
+`ManageMessages`, checks the bot's effective send permissions, and also requires a current thread
+to be active and `sendable`. It never joins or unarchives a thread. The actual send payload includes
+`allowedMentions: { parse: [] }`, the stable nonce, and `enforceNonce: true`. No application resend
+loop is used.
+
+Discord send must precede PostgreSQL persistence because the resulting Discord message ID and
+creation timestamp are required managed state. Migration 0009 adds `managed_messages`, keyed by
+the Discord message ID, with creator, exact content, revision 1, `ACTIVE` status, the Discord
+creation timestamp, and a database-owned update timestamp. If the insert rejects, the store does
+not retry the write: it reads by message ID and confirms the exact expected state. A missing,
+conflicting, or unreadable confirmation causes one compensation delete of only the confirmed sent
+message. An unconfirmed compensation is reported as a partial failure with the known message ID.
+Discord and PostgreSQL remain non-atomic.
+
+Phase 7A needs neither `MessageContent` nor `GuildMembers` gateway intent. Message editing,
+revision mutation and conflict handling, managed-message creation/edit audit completion, and
+manual Discord deletion detection remain deferred to later Phase 7 work.
+
 - Implement `/message send`.
 - Persist managed-message metadata.
 - Suppress mentions by default.

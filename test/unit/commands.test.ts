@@ -25,9 +25,24 @@ const dependencies = {
 
 describe("Discord commands", () => {
   it("shares the ping command definition", () => {
-    expect(commandDefinitions).toHaveLength(3);
+    expect(commandDefinitions).toHaveLength(4);
     expect(commandDefinitions[0]?.name).toBe("ping");
     expect(commandDefinitions[0]?.description).toBe("Check whether WEFT is responding");
+  });
+
+  it("routes /message without changing existing command behavior", async () => {
+    const showModal = vi.fn(() => Promise.resolve());
+    const interaction = {
+      commandName: "message",
+      options: { getSubcommand: () => "send" },
+      inGuild: () => true,
+      channel: { type: 0, isThread: () => false },
+      memberPermissions: { has: () => true },
+      showModal,
+    } as unknown as ChatInputCommandInteraction;
+
+    await expect(handleCommand(interaction, dependencies)).resolves.toBe(true);
+    expect(showModal).toHaveBeenCalledOnce();
   });
 
   it("replies to ping ephemerally", async () => {

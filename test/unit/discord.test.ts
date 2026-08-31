@@ -5,7 +5,12 @@ import {
   GatewayIntentBits,
   RESTEvents,
 } from "discord.js";
-import type { AnyThreadChannel, ChatInputCommandInteraction, RateLimitData } from "discord.js";
+import type {
+  AnyThreadChannel,
+  ChatInputCommandInteraction,
+  ModalSubmitInteraction,
+  RateLimitData,
+} from "discord.js";
 import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
@@ -17,10 +22,12 @@ import {
   type DiscordStartupClient,
   registerAutomaticCloseActivityHandlers,
   registerDiscordCommandHandler,
+  registerManagedMessageModalHandler,
   startDiscordClient,
 } from "../../src/discord.js";
 import type { AutomaticCloseActivityService } from "../../src/automatic-close-activity.js";
 import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
+import type { ManagedMessageService } from "../../src/managed-message.js";
 
 const discordDependencies = {
   guildSettings: {
@@ -350,6 +357,46 @@ describe("Discord client", () => {
   });
 });
 
+describe("managed message modal routing", () => {
+  it("processes only the managed-message send modal", async () => {
+    const logger = createLogger();
+    const service = {
+      send: vi.fn(() => Promise.resolve({ outcome: "SUCCESS", messageId: "message-id" } as const)),
+    } satisfies ManagedMessageService;
+    const client = createDiscordClient(logger, discordDependencies);
+    registerManagedMessageModalHandler(client, service, logger);
+    const unrelated = createModal("other:modal");
+    const managed = createModal("managed-message:send");
+
+    client.emit(Events.InteractionCreate, unrelated.interaction);
+    client.emit(Events.InteractionCreate, managed.interaction);
+
+    await vi.waitFor(() => expect(service.send).toHaveBeenCalledOnce());
+    expect(unrelated.deferReply).not.toHaveBeenCalled();
+    expect(managed.deferReply).toHaveBeenCalledOnce();
+    expect(logger.error).not.toHaveBeenCalled();
+    await client.destroy();
+  });
+
+  it("logs a bounded handler failure without modal content", async () => {
+    const logger = createLogger();
+    const service = {
+      send: vi.fn(() => Promise.reject(new Error("sensitive raw detail"))),
+    } satisfies ManagedMessageService;
+    const client = createDiscordClient(logger, discordDependencies);
+    registerManagedMessageModalHandler(client, service, logger);
+
+    client.emit(
+      Events.InteractionCreate,
+      createModal("managed-message:send", "sensitive modal content").interaction,
+    );
+
+    await vi.waitFor(() => expect(logger.error).toHaveBeenCalledOnce());
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("sensitive");
+    await client.destroy();
+  });
+});
+
 describe("automatic close activity gateway handlers", () => {
   it("forwards a qualifying human message with Discord metadata only", async () => {
     const fixture = await createActivityFixture();
@@ -605,6 +652,24 @@ function registerTestCommandHandler(
     threadLifecycle: lifecycle,
     logger,
   });
+}
+
+function createModal(customId: string, content = "managed content") {
+  const deferReply = vi.fn(() => Promise.resolve());
+  const editReply = vi.fn(() => Promise.resolve());
+  const interaction = {
+    customId,
+    isChatInputCommand: () => false,
+    isModalSubmit: () => true,
+    fields: { getTextInputValue: () => content },
+    inGuild: () => true,
+    guildId: "guild-id",
+    channelId: "channel-id",
+    user: { id: "actor-id" },
+    deferReply,
+    editReply,
+  } as unknown as ModalSubmitInteraction;
+  return { interaction, deferReply, editReply };
 }
 
 function createStartupClient(loginImplementation: () => Promise<string>): {
