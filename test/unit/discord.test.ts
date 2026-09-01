@@ -680,7 +680,10 @@ function createModal(customId: string, content = "managed content") {
     customId,
     isChatInputCommand: () => false,
     isModalSubmit: () => true,
-    fields: { getTextInputValue: () => content },
+    fields: {
+      getTextInputValue: (customId: string) =>
+        customId === "managed-message:content" ? content : "",
+    },
     inGuild: () => true,
     guildId: "guild-id",
     channelId: "channel-id",

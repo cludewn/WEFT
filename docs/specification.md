@@ -387,11 +387,12 @@ The MVP includes:
 
 WEFT sends the message as the WEFT bot.
 
-The initial `/message send` implementation targets the current supported guild text,
-announcement, or active thread channel. Content is entered through a Discord modal. It supports
-plain text and normal URLs, and it suppresses user-provided mentions so they do not notify users or
-roles by default. Embed authoring remains part of the overall MVP but is not implemented in this
-initial slice.
+`/message send` targets the current supported guild text, announcement, or active thread channel.
+The modal contains optional fields for plain content, one embed title, one embed description, one
+embed color, and one embed image URL. A valid message may be text-only, embed-only, or combined,
+but it must contain plain content or a visible embed title, description, or image. An embed color
+alone is not visible content. Plain content supports normal URLs, and user-provided mentions are
+suppressed so they do not notify users or roles by default.
 
 The invoking user must have the current `ManageMessages` permission. Immediately before sending,
 WEFT must inspect the current Discord target and verify its own effective permission and
@@ -420,18 +421,23 @@ Long-form content should be entered through a Discord modal rather than being fo
 
 `/message edit message:<id-or-link>` accepts either a Discord message ID or a canonical
 `discord.com` message link. The target must belong to the current guild and current channel. WEFT
-loads the current persisted content into a modal and binds the modal to that managed message's
-revision. A stale modal is rejected as a conflict rather than overwriting a later edit.
+loads the current persisted plain content and managed embed into the five-field modal and binds the
+modal to that managed message's revision. A stale modal is rejected as a conflict rather than
+overwriting a later edit.
 
 An authorized administrator may edit a managed message through WEFT even when that administrator
 did not create the original message. The administrator's current `ManageMessages` permission and
 the bot's current access and editability are revalidated when the modal is submitted. Editing
-preserves the submitted content exactly and suppresses automatic mention parsing.
+preserves accepted non-empty plain content exactly and suppresses automatic mention parsing. It may
+add, change, or remove the managed embed and may clear plain content when a visible managed embed
+remains.
 
 Before either a no-op or an actual edit, WEFT freshly inspects the Discord message and requires its
-current content to equal the persisted managed content. A mismatch is reported for administrator
-inspection and neither side is silently repaired. A no-op therefore still requires current
-authorization, Discord existence, WEFT authorship, editability, and content coherence.
+current plain content and projected managed rich embed to equal the complete persisted managed
+payload. A mismatch is reported for administrator inspection and neither side is silently
+repaired. A no-op therefore still requires current authorization, Discord existence, WEFT
+authorship, editability, and complete payload coherence. Any plain-content or managed-embed change
+increments the single managed-message revision once and records one complete before/after audit.
 
 A successful edit must record:
 
@@ -452,8 +458,9 @@ required for this edit-time detection.
 Successful managed-message creation, edit, and deletion detection commit dedicated audit records.
 Discord and PostgreSQL cannot form one transaction, so bounded partial failures remain possible.
 When an edit reaches Discord but managed-state finalization cannot be confirmed, WEFT may restore
-the prior Discord content once only after fresh PostgreSQL and Discord reads prove that restoration
-is safe.
+the complete prior Discord payload once only after fresh PostgreSQL and Discord reads prove that
+restoration is safe. Exact confirmation and compensation safety include every supported embed
+property.
 
 ### Managed message authorization
 
@@ -467,12 +474,29 @@ The MVP supports:
 
 - plain text,
 - normal URLs,
-- Discord embeds.
+- one explicitly authored Discord rich embed per managed message.
 
-Plain-text managed-message send and edit are implemented before embed authoring. The final embed
-creation and editing interface remains unresolved MVP work.
+The managed rich embed supports only a title, description, color, and image URL. Embed fields,
+footer, author, thumbnail, title URL, timestamp, raw embed JSON, and multiple managed embeds are not
+supported. The modal maximums are 2000 Unicode code points for plain content, 256 UTF-16 code units
+for the title, 4000 UTF-16 code units for the description, and 2048 code units for the image URL.
 
-The MVP does not include persistent attachment storage.
+Embed title and description are outer-trimmed while internal whitespace is preserved. Blank embed
+fields are absent. Color accepts exactly `RRGGBB` or `#RRGGBB`, is normalized to an integer, and is
+prefilled for editing as uppercase `#RRGGBB`. Image URLs are outer-trimmed, must be absolute HTTP or
+HTTPS URLs, and use WHATWG URL serialization. WEFT performs no network request, DNS lookup, MIME
+inspection, download, proxying, or logging of the image URL or managed payload.
+
+Discord may create non-rich preview or media embeds from ordinary URLs in plain content. Documented
+non-rich preview/media embed types are ignored when comparing managed state. A missing or invalid
+embed type, unknown type, multiple rich candidates, or unsupported rich state is treated
+conservatively as a state mismatch. Embed `type` is a Discord rendering classification, not a
+guaranteed provenance marker.
+
+Attachments and persistent attachment storage are not supported.
+
+Successful creation, edit, and deletion-detection audits contain the complete managed payload.
+Failed-operation audit completion remains deferred.
 
 WEFT must not imitate individual users through webhook names or avatars.
 
@@ -612,5 +636,4 @@ The following decisions must be made before their corresponding implementation w
 - the exact overdue grace period for one-time scheduled messages,
 - retry count and backoff parameters for scheduled messages,
 - the command input format for recurring schedules,
-- the final embed creation and editing interface,
 - whether audit retention will be configurable per guild.

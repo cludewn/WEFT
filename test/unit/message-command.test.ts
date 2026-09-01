@@ -16,6 +16,10 @@ import {
   handleManagedMessageModalSubmit,
   handleMessageCommand,
   MANAGED_MESSAGE_CONTENT_INPUT_ID,
+  MANAGED_MESSAGE_EMBED_COLOR_INPUT_ID,
+  MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID,
+  MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID,
+  MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID,
   MANAGED_MESSAGE_EDIT_MODAL_PREFIX,
   MANAGED_MESSAGE_SEND_MODAL_ID,
   messageCommandDefinition,
@@ -40,13 +44,13 @@ describe("message command", () => {
     });
   });
 
-  it("creates the exact required paragraph modal", () => {
+  it("creates the exact five optional fields for the send modal", () => {
     const modal = createManagedMessageSendModal().toJSON();
     expect(modal).toMatchObject({
       custom_id: MANAGED_MESSAGE_SEND_MODAL_ID,
       title: "Send managed message",
     });
-    expect(modal.components).toHaveLength(1);
+    expect(modal.components).toHaveLength(5);
     expect(modal.components[0]).toMatchObject({
       type: ComponentType.Label,
       label: "Message content",
@@ -54,24 +58,67 @@ describe("message command", () => {
         type: ComponentType.TextInput,
         custom_id: MANAGED_MESSAGE_CONTENT_INPUT_ID,
         style: TextInputStyle.Paragraph,
-        required: true,
-        min_length: 1,
+        required: false,
         max_length: 2_000,
       },
     });
+    const components = modal.components.map((component) =>
+      "component" in component ? component.component : undefined,
+    );
+    expect(components).toMatchObject([
+      {
+        custom_id: MANAGED_MESSAGE_CONTENT_INPUT_ID,
+        style: TextInputStyle.Paragraph,
+        max_length: 2_000,
+      },
+      {
+        custom_id: MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID,
+        style: TextInputStyle.Short,
+        max_length: 256,
+      },
+      {
+        custom_id: MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID,
+        style: TextInputStyle.Paragraph,
+        max_length: 4_000,
+      },
+      {
+        custom_id: MANAGED_MESSAGE_EMBED_COLOR_INPUT_ID,
+        style: TextInputStyle.Short,
+        max_length: 7,
+      },
+      {
+        custom_id: MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID,
+        style: TextInputStyle.Short,
+        max_length: 2_048,
+      },
+    ]);
+    expect(JSON.stringify(modal.components)).not.toContain("min_length");
+    expect(JSON.stringify(modal.components)).not.toContain("value");
   });
 
   it("creates an exact prefilled edit modal with only message ID and revision in its custom ID", () => {
-    const modal = createManagedMessageEditModal(
-      "900000000000000001",
-      4,
-      "  exact <@123> content  ",
-    ).toJSON();
+    const modal = createManagedMessageEditModal("900000000000000001", 4, {
+      content: "  exact <@123> content  ",
+      embed: {
+        title: "Title",
+        description: "Description",
+        color: 0x00ff7f,
+        imageUrl: "https://example.invalid/image.png",
+      },
+    }).toJSON();
     expect(modal.custom_id).toBe(`${MANAGED_MESSAGE_EDIT_MODAL_PREFIX}900000000000000001:4`);
     expect(JSON.stringify(modal.custom_id)).not.toContain("exact");
-    expect(modal.components[0]).toMatchObject({
-      component: { value: "  exact <@123> content  " },
-    });
+    expect(
+      modal.components.map((component) =>
+        "component" in component ? component.component : undefined,
+      ),
+    ).toMatchObject([
+      { value: "  exact <@123> content  " },
+      { value: "Title" },
+      { value: "Description" },
+      { value: "#00FF7F" },
+      { value: "https://example.invalid/image.png" },
+    ]);
   });
 
   it.each([
@@ -125,7 +172,10 @@ describe("message command", () => {
       outcome: "FOUND",
       messageId: "900000000000000001",
       revision: 7,
-      content: "persisted exact content",
+      payload: {
+        content: "persisted exact content",
+        embed: { title: "persisted title", color: 0 },
+      },
     });
 
     await handleMessageCommand(fixture.interaction, fixture.service);
@@ -139,7 +189,13 @@ describe("message command", () => {
     const shownModal = fixture.showModal.mock.calls[0]?.[0];
     expect(shownModal?.toJSON()).toMatchObject({
       custom_id: "managed-message:edit:900000000000000001:7",
-      components: [{ component: { value: "persisted exact content" } }],
+      components: [
+        { component: { value: "persisted exact content" } },
+        { component: { value: "persisted title" } },
+        {},
+        { component: { value: "#000000" } },
+        {},
+      ],
     });
   });
 
@@ -288,11 +344,38 @@ describe("managed message modal submit", () => {
       guildId: "guild-id",
       channelId: "channel-id",
       actorUserId: "actor-id",
-      content: "<@123> exact",
+      payload: { content: "<@123> exact", embed: null },
     });
     expect(fixture.editReply).toHaveBeenCalledWith({
       content: "Managed message sent.",
       allowedMentions: { parse: [] },
+    });
+  });
+
+  it("normalizes one embed-only modal payload before service work", async () => {
+    const fixture = createModalInteraction({
+      content: "",
+      embedTitle: "  Title  ",
+      embedDescription: " Description ",
+      embedColor: "#00ff7f",
+      embedImageUrl: " HTTPS://EXAMPLE.INVALID/a/../image.png ",
+    });
+    await expect(
+      handleManagedMessageModalSubmit(fixture.interaction, fixture.service),
+    ).resolves.toBe(true);
+    expect(fixture.service.send).toHaveBeenCalledExactlyOnceWith({
+      guildId: "guild-id",
+      channelId: "channel-id",
+      actorUserId: "actor-id",
+      payload: {
+        content: "",
+        embed: {
+          title: "Title",
+          description: "Description",
+          color: 0x00ff7f,
+          imageUrl: "https://example.invalid/image.png",
+        },
+      },
     });
   });
 
@@ -348,7 +431,7 @@ describe("managed message modal submit", () => {
       messageId: "900000000000000001",
       actorUserId: "actor-id",
       expectedRevision: 3,
-      content: "edited exact content",
+      payload: { content: "edited exact content", embed: null },
     });
   });
 });
@@ -404,6 +487,10 @@ function createModalInteraction(
   overrides: {
     customId?: string;
     content?: string;
+    embedTitle?: string;
+    embedDescription?: string;
+    embedColor?: string;
+    embedImageUrl?: string;
     inGuild?: boolean;
     deferImplementation?: () => Promise<void>;
     sendImplementation?: ManagedMessageService["send"];
@@ -425,7 +512,24 @@ function createModalInteraction(
   } satisfies ManagedMessageService;
   const interaction = {
     customId: overrides.customId ?? MANAGED_MESSAGE_SEND_MODAL_ID,
-    fields: { getTextInputValue: () => overrides.content ?? "content" },
+    fields: {
+      getTextInputValue: (customId: string) => {
+        switch (customId) {
+          case MANAGED_MESSAGE_CONTENT_INPUT_ID:
+            return overrides.content ?? "content";
+          case MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID:
+            return overrides.embedTitle ?? "";
+          case MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID:
+            return overrides.embedDescription ?? "";
+          case MANAGED_MESSAGE_EMBED_COLOR_INPUT_ID:
+            return overrides.embedColor ?? "";
+          case MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID:
+            return overrides.embedImageUrl ?? "";
+          default:
+            throw new Error(`Unexpected field ${customId}`);
+        }
+      },
+    },
     inGuild: () => overrides.inGuild ?? true,
     guildId: "guild-id",
     channelId: "channel-id",

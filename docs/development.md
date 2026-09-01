@@ -983,6 +983,31 @@ and returns a bounded partial failure.
 Phase 7B adds no `MessageDelete` listener, `MessageContent` intent, scheduled-message worker,
 distributed lock, embed authoring, or generic audit/modal framework.
 
+Phase 7C adds one canonical `ManagedMessagePayload` representation in
+`managed-message-payload.ts`: exact plain content plus either one normalized supported embed or no
+embed. The shared send/edit validator preserves accepted plain content, counts it by Unicode code
+point, outer-trims embed text, applies builder-compatible UTF-16 limits, normalizes exact six-digit
+hex colors, and performs syntax-only WHATWG normalization of absolute HTTP/HTTPS image URLs. Empty
+payloads, whitespace-only non-empty content, and color-only embeds are rejected.
+
+Both send and edit use one five-field modal for content, embed title, description, color, and image
+URL. The Discord boundary builds at most one explicit rich embed with only those supported
+properties. It projects freshly fetched Discord messages back to the canonical payload, ignores
+documented non-rich URL preview/media embeds, ignores response-only image proxy metadata, and
+rejects missing or invalid types, multiple rich candidates, and unsupported rich state
+conservatively. Embed `type` is treated only as Discord's rendering taxonomy, not as a guaranteed
+provenance marker. Operations that actually send an explicit managed embed revalidate
+`EmbedLinks`; text-only operations do not require it merely because their content contains a URL.
+
+Create confirmation, edit coherence and no-op detection, ambiguous edit reconciliation, deletion
+detection, persistence confirmation, compensation safety, and one-shot restore all compare the
+complete canonical payload. Every actual edit explicitly replaces both content and embed portions;
+add, remove, or embed-only changes increment the single revision once. Migration 0011 adds the four
+nullable embed columns to managed messages and complete before/after embed columns to the existing
+audit table, while preserving pre-0011 rows and audits with null embed state. No creation-audit
+backfill is fabricated. Phase 7C adds neither `MessageContent` nor another gateway intent, event
+listener, attachment support, scheduled-message worker, or failed-operation audit completion.
+
 - Implement `/message send`.
 - Persist managed-message metadata.
 - Suppress mentions by default.
