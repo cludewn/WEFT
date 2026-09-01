@@ -5,27 +5,9 @@ import type { ManagedMessageStore } from "../../src/managed-message-persistence.
 import {
   createManagedMessageService,
   generateManagedMessageNonce,
-  validateManagedMessageContent,
 } from "../../src/managed-message.js";
 
-describe("managed message content", () => {
-  it("preserves valid content exactly, including ordinary URLs and surrounding whitespace", () => {
-    const content = "  See https://example.invalid/path  ";
-    expect(validateManagedMessageContent(content)).toEqual({ ok: true, content });
-  });
-
-  it.each([undefined, 123, "", " \n\t "])("rejects empty input %j", (content) => {
-    expect(validateManagedMessageContent(content)).toEqual({ ok: false, code: "EMPTY_CONTENT" });
-  });
-
-  it("counts Unicode code points consistently at the 2000-character boundary", () => {
-    expect(validateManagedMessageContent("😀".repeat(2_000))).toMatchObject({ ok: true });
-    expect(validateManagedMessageContent("😀".repeat(2_001))).toEqual({
-      ok: false,
-      code: "CONTENT_TOO_LONG",
-    });
-  });
-
+describe("managed message operation identifiers", () => {
   it("generates a 22-character base64url nonce", () => {
     expect(generateManagedMessageNonce()).toMatch(/^[A-Za-z0-9_-]{22}$/);
   });
@@ -42,7 +24,10 @@ describe("managed message send service", () => {
 
     expect(fixture.generateNonce).toHaveBeenCalledOnce();
     expect(fixture.discord.sendManagedMessage).toHaveBeenCalledExactlyOnceWith({
-      ...input,
+      guildId: input.guildId,
+      channelId: input.channelId,
+      actorUserId: input.actorUserId,
+      payload: canonicalPayload,
       nonce: "stable-nonce",
     });
     expect(fixture.store.create).toHaveBeenCalledExactlyOnceWith({
@@ -51,7 +36,7 @@ describe("managed message send service", () => {
       guildId: input.guildId,
       channelId: input.channelId,
       creatorUserId: input.actorUserId,
-      content: input.content,
+      payload: canonicalPayload,
       createdAt,
     });
     expect(fixture.store.confirmCreation).not.toHaveBeenCalled();
@@ -72,11 +57,17 @@ describe("managed message send service", () => {
     expect(fixture.generateNonce).toHaveBeenCalledTimes(2);
     expect(fixture.discord.sendManagedMessage).toHaveBeenCalledTimes(2);
     expect(fixture.discord.sendManagedMessage).toHaveBeenNthCalledWith(1, {
-      ...input,
+      guildId: input.guildId,
+      channelId: input.channelId,
+      actorUserId: input.actorUserId,
+      payload: canonicalPayload,
       nonce: firstNonce,
     });
     expect(fixture.discord.sendManagedMessage).toHaveBeenNthCalledWith(2, {
-      ...input,
+      guildId: input.guildId,
+      channelId: input.channelId,
+      actorUserId: input.actorUserId,
+      payload: canonicalPayload,
       nonce: secondNonce,
     });
     expect(fixture.store.create).toHaveBeenNthCalledWith(
@@ -120,7 +111,10 @@ describe("managed message send service", () => {
     expect(JSON.stringify(fixture.logger.warn.mock.calls)).not.toContain(
       "sensitive database detail",
     );
-    expect(JSON.stringify(fixture.logger.warn.mock.calls)).not.toContain(input.content);
+    const logs = JSON.stringify(fixture.logger.warn.mock.calls);
+    expect(logs).not.toContain(input.payload.content);
+    expect(logs).not.toContain("canonical title");
+    expect(logs).not.toContain("https://example.invalid/image.png");
   });
 
   it.each(["MISSING", "CONFLICT"] as const)(
@@ -167,6 +161,28 @@ describe("managed message send service", () => {
     });
     expect(fixture.discord.deleteManagedMessage).toHaveBeenCalledOnce();
   });
+
+  it("compensates a returned full-payload mismatch before persistence without resending", async () => {
+    const fixture = createFixture({
+      sendResult: {
+        outcome: "SENT",
+        message: {
+          messageId: "message-id",
+          guildId: input.guildId,
+          channelId: input.channelId,
+          createdAt,
+          payload: { content: input.payload.content, embed: { title: "unexpected" } },
+        },
+      },
+    });
+    await expect(fixture.service.send(input)).resolves.toEqual({
+      outcome: "FAILURE",
+      code: "PERSISTENCE_UNCONFIRMED_COMPENSATED",
+    });
+    expect(fixture.store.create).not.toHaveBeenCalled();
+    expect(fixture.discord.deleteManagedMessage).toHaveBeenCalledOnce();
+    expect(fixture.discord.sendManagedMessage).toHaveBeenCalledOnce();
+  });
 });
 
 const createdAt = new Date("2026-08-31T01:02:03.456Z");
@@ -174,7 +190,22 @@ const input = {
   guildId: "guild-id",
   channelId: "channel-id",
   actorUserId: "actor-id",
-  content: "exact <@123> content",
+  payload: {
+    content: "exact <@123> content",
+    embed: {
+      title: "  canonical title  ",
+      color: "#00ff00",
+      imageUrl: "https://example.invalid/image.png",
+    },
+  },
+};
+const canonicalPayload = {
+  content: input.payload.content,
+  embed: {
+    title: "canonical title",
+    color: 0x00ff00,
+    imageUrl: "https://example.invalid/image.png",
+  },
 };
 
 function createFixture(
@@ -191,6 +222,7 @@ function createFixture(
     guildId: input.guildId,
     channelId: input.channelId,
     createdAt,
+    payload: canonicalPayload,
   };
   const sendManagedMessage = vi.fn(() =>
     Promise.resolve(overrides.sendResult ?? ({ outcome: "SENT", message: sentMessage } as const)),

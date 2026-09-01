@@ -23,12 +23,20 @@ import {
   type ManagedMessageEditResult,
   type ManagedMessageSendResult,
   type ManagedMessageService,
-  validateManagedMessageContent,
 } from "./managed-message.js";
+import {
+  formatManagedMessageEmbedColor,
+  validateManagedMessagePayload,
+  type ManagedMessagePayload,
+} from "./managed-message-payload.js";
 
 export const MANAGED_MESSAGE_SEND_MODAL_ID = "managed-message:send";
 export const MANAGED_MESSAGE_EDIT_MODAL_PREFIX = "managed-message:edit:";
 export const MANAGED_MESSAGE_CONTENT_INPUT_ID = "managed-message:content";
+export const MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID = "managed-message:embed-title";
+export const MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID = "managed-message:embed-description";
+export const MANAGED_MESSAGE_EMBED_COLOR_INPUT_ID = "managed-message:embed-color";
+export const MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID = "managed-message:embed-image-url";
 
 const SNOWFLAKE_PATTERN = "[1-9][0-9]{16,19}";
 const snowflakeRegex = new RegExp(`^${SNOWFLAKE_PATTERN}$`);
@@ -108,40 +116,97 @@ export const messageCommandDefinition = new SlashCommandBuilder()
       ),
   );
 
-function createContentInput(content?: string): TextInputBuilder {
+function createInput(
+  customId: string,
+  style: TextInputStyle,
+  maxLength: number,
+  value?: string,
+): TextInputBuilder {
   const input = new TextInputBuilder()
-    .setCustomId(MANAGED_MESSAGE_CONTENT_INPUT_ID)
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true)
-    .setMinLength(1)
-    .setMaxLength(2_000);
-  return content === undefined ? input : input.setValue(content);
+    .setCustomId(customId)
+    .setStyle(style)
+    .setRequired(false)
+    .setMaxLength(maxLength);
+  return value === undefined || value === "" ? input : input.setValue(value);
 }
 
-function createContentModal(customId: string, title: string, content?: string): ModalBuilder {
+function createPayloadModal(
+  customId: string,
+  title: string,
+  payload?: ManagedMessagePayload,
+): ModalBuilder {
   return new ModalBuilder()
     .setCustomId(customId)
     .setTitle(title)
     .addLabelComponents(
       new LabelBuilder()
         .setLabel("Message content")
-        .setTextInputComponent(createContentInput(content)),
+        .setTextInputComponent(
+          createInput(
+            MANAGED_MESSAGE_CONTENT_INPUT_ID,
+            TextInputStyle.Paragraph,
+            2_000,
+            payload?.content,
+          ),
+        ),
+      new LabelBuilder()
+        .setLabel("Embed title")
+        .setTextInputComponent(
+          createInput(
+            MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID,
+            TextInputStyle.Short,
+            256,
+            payload?.embed?.title,
+          ),
+        ),
+      new LabelBuilder()
+        .setLabel("Embed description")
+        .setTextInputComponent(
+          createInput(
+            MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID,
+            TextInputStyle.Paragraph,
+            4_000,
+            payload?.embed?.description,
+          ),
+        ),
+      new LabelBuilder()
+        .setLabel("Embed color")
+        .setTextInputComponent(
+          createInput(
+            MANAGED_MESSAGE_EMBED_COLOR_INPUT_ID,
+            TextInputStyle.Short,
+            7,
+            payload?.embed?.color === undefined
+              ? undefined
+              : formatManagedMessageEmbedColor(payload.embed.color),
+          ),
+        ),
+      new LabelBuilder()
+        .setLabel("Embed image URL")
+        .setTextInputComponent(
+          createInput(
+            MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID,
+            TextInputStyle.Short,
+            2_048,
+            payload?.embed?.imageUrl,
+          ),
+        ),
     );
 }
 
 export function createManagedMessageSendModal(): ModalBuilder {
-  return createContentModal(MANAGED_MESSAGE_SEND_MODAL_ID, "Send managed message");
+  return createPayloadModal(MANAGED_MESSAGE_SEND_MODAL_ID, "Send managed message");
 }
 
 export function createManagedMessageEditModal(
   messageId: string,
   revision: number,
-  content: string,
+  payload: ManagedMessagePayload,
 ): ModalBuilder {
-  return createContentModal(
+  return createPayloadModal(
     `${MANAGED_MESSAGE_EDIT_MODAL_PREFIX}${messageId}:${revision}`,
     "Edit managed message",
-    content,
+    payload,
   );
 }
 
@@ -224,7 +289,7 @@ export async function handleMessageCommand(
     return;
   }
   await interaction.showModal(
-    createManagedMessageEditModal(target.messageId, target.revision, target.content),
+    createManagedMessageEditModal(target.messageId, target.revision, target.payload),
   );
 }
 
@@ -235,9 +300,21 @@ function sendResultMessage(result: ManagedMessageSendResult): string {
   }
   switch (result.code) {
     case "EMPTY_CONTENT":
-      return "Message content must contain at least one non-whitespace character.";
+      return "Enter message content or a visible embed; non-empty content cannot be whitespace-only.";
     case "CONTENT_TOO_LONG":
       return "Message content must be 2000 characters or fewer.";
+    case "EMBED_TITLE_TOO_LONG":
+      return "The embed title must be 256 characters or fewer.";
+    case "EMBED_DESCRIPTION_TOO_LONG":
+      return "The embed description must be 4000 characters or fewer.";
+    case "EMBED_COLOR_INVALID":
+      return "Enter the embed color as RRGGBB or #RRGGBB.";
+    case "EMBED_COLOR_ONLY":
+      return "An embed color requires a title, description, or image URL.";
+    case "EMBED_IMAGE_URL_TOO_LONG":
+      return "The embed image URL must be 2048 characters or fewer.";
+    case "EMBED_IMAGE_URL_INVALID":
+      return "Enter an absolute HTTP or HTTPS embed image URL.";
     case "UNSUPPORTED_TARGET":
       return "Managed messages are only supported in a guild text or active thread channel.";
     case "ARCHIVED_THREAD":
@@ -269,9 +346,21 @@ function editResultMessage(result: ManagedMessageEditResult): string {
   }
   switch (result.code) {
     case "EMPTY_CONTENT":
-      return "Message content must contain at least one non-whitespace character.";
+      return "Enter message content or a visible embed; non-empty content cannot be whitespace-only.";
     case "CONTENT_TOO_LONG":
       return "Message content must be 2000 characters or fewer.";
+    case "EMBED_TITLE_TOO_LONG":
+      return "The embed title must be 256 characters or fewer.";
+    case "EMBED_DESCRIPTION_TOO_LONG":
+      return "The embed description must be 4000 characters or fewer.";
+    case "EMBED_COLOR_INVALID":
+      return "Enter the embed color as RRGGBB or #RRGGBB.";
+    case "EMBED_COLOR_ONLY":
+      return "An embed color requires a title, description, or image URL.";
+    case "EMBED_IMAGE_URL_TOO_LONG":
+      return "The embed image URL must be 2048 characters or fewer.";
+    case "EMBED_IMAGE_URL_INVALID":
+      return "Enter an absolute HTTP or HTTPS embed image URL.";
     case "TARGET_NOT_FOUND":
       return "No active managed message was found in this channel for that target.";
     case "CONFLICT":
@@ -317,8 +406,15 @@ export async function handleManagedMessageModalSubmit(
     );
     return true;
   }
-  const content = interaction.fields.getTextInputValue(MANAGED_MESSAGE_CONTENT_INPUT_ID);
-  const validation = validateManagedMessageContent(content);
+  const validation = validateManagedMessagePayload({
+    content: interaction.fields.getTextInputValue(MANAGED_MESSAGE_CONTENT_INPUT_ID),
+    embed: {
+      title: interaction.fields.getTextInputValue(MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID),
+      description: interaction.fields.getTextInputValue(MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID),
+      color: interaction.fields.getTextInputValue(MANAGED_MESSAGE_EMBED_COLOR_INPUT_ID),
+      imageUrl: interaction.fields.getTextInputValue(MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID),
+    },
+  });
   if (!validation.ok) {
     const result = { outcome: "FAILURE", code: validation.code } as const;
     await interaction.reply(
@@ -341,7 +437,7 @@ export async function handleManagedMessageModalSubmit(
       guildId: interaction.guildId,
       channelId: interaction.channelId,
       actorUserId: interaction.user.id,
-      content: validation.content,
+      payload: validation.payload,
     });
     await interaction.editReply(editReply(sendResultMessage(result)));
   } else {
@@ -352,7 +448,7 @@ export async function handleManagedMessageModalSubmit(
       messageId: editTarget.messageId,
       actorUserId: interaction.user.id,
       expectedRevision: editTarget.expectedRevision,
-      content: validation.content,
+      payload: validation.payload,
     });
     await interaction.editReply(editReply(editResultMessage(result)));
   }

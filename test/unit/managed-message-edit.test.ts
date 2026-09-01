@@ -11,8 +11,9 @@ const baseInput = {
   messageId: "900000000000000001",
   actorUserId: "600000000000000001",
   expectedRevision: 1,
-  content: "new content",
+  payload: { content: "new content", embed: { title: "new embed", color: 0 } },
 };
+const oldPayload = { content: "old content", embed: { title: "old embed" } } as const;
 
 describe("managed message edit service", () => {
   it("rejects a stale revision before any Discord inspection", async () => {
@@ -28,7 +29,7 @@ describe("managed message edit service", () => {
   it("inspects Discord before returning UNCHANGED and performs no persistence write", async () => {
     const fixture = createFixture({ editResult: { outcome: "UNCHANGED" } });
 
-    await expect(fixture.service.edit({ ...baseInput, content: "old content" })).resolves.toEqual({
+    await expect(fixture.service.edit({ ...baseInput, payload: oldPayload })).resolves.toEqual({
       outcome: "UNCHANGED",
     });
     expect(fixture.discord.editManagedMessage).toHaveBeenCalledExactlyOnceWith({
@@ -36,8 +37,8 @@ describe("managed message edit service", () => {
       channelId: baseInput.channelId,
       messageId: baseInput.messageId,
       actorUserId: baseInput.actorUserId,
-      content: "old content",
-      previousContent: "old content",
+      payload: oldPayload,
+      previousPayload: oldPayload,
     });
     expect(fixture.store.edit).not.toHaveBeenCalled();
     expect(fixture.store.markDeleted).not.toHaveBeenCalled();
@@ -71,8 +72,8 @@ describe("managed message edit service", () => {
       channelId: baseInput.channelId,
       actorUserId: baseInput.actorUserId,
       expectedRevision: 1,
-      previousContent: "old content",
-      content: baseInput.content,
+      previousPayload: oldPayload,
+      payload: baseInput.payload,
       occurredAt: editedAt,
     });
     expect(fixture.store.confirmEdit).not.toHaveBeenCalled();
@@ -81,7 +82,7 @@ describe("managed message edit service", () => {
   it("gives confirmed deletion precedence over an apparent no-op and persists detection once", async () => {
     const fixture = createFixture({ editResult: { outcome: "DELETED" } });
 
-    await expect(fixture.service.edit({ ...baseInput, content: "old content" })).resolves.toEqual({
+    await expect(fixture.service.edit({ ...baseInput, payload: oldPayload })).resolves.toEqual({
       outcome: "DELETED",
     });
     expect(fixture.store.markDeleted).toHaveBeenCalledExactlyOnceWith({
@@ -90,7 +91,7 @@ describe("managed message edit service", () => {
       guildId: baseInput.guildId,
       channelId: baseInput.channelId,
       expectedRevision: 1,
-      content: "old content",
+      payload: oldPayload,
       occurredAt: new Date("2026-08-31T09:10:11.000Z"),
     });
     expect(fixture.store.edit).not.toHaveBeenCalled();
@@ -165,7 +166,7 @@ describe("managed message edit service", () => {
     expect(JSON.stringify(fixture.logger.warn.mock.calls)).not.toContain(
       "sensitive database detail",
     );
-    expect(JSON.stringify(fixture.logger.warn.mock.calls)).not.toContain(baseInput.content);
+    expect(JSON.stringify(fixture.logger.warn.mock.calls)).not.toContain(baseInput.payload.content);
   });
 
   it("restores once only when database and Discord compensation preconditions are exact", async () => {
@@ -183,9 +184,9 @@ describe("managed message edit service", () => {
       guildId: baseInput.guildId,
       channelId: baseInput.channelId,
       messageId: baseInput.messageId,
-      expectedContent: baseInput.content,
+      expectedPayload: baseInput.payload,
       expectedEditedAt: editedAt,
-      restoreContent: "old content",
+      restorePayload: oldPayload,
     });
   });
 
@@ -212,13 +213,50 @@ describe("managed message edit service", () => {
     const fixture = createFixture();
     vi.mocked(fixture.store.find)
       .mockResolvedValueOnce(managedRow())
-      .mockResolvedValueOnce(managedRow({ revision: 2, content: "first" }));
+      .mockResolvedValueOnce(
+        managedRow({ revision: 2, payload: { content: "first", embed: null } }),
+      );
     vi.mocked(fixture.discord.editManagedMessage).mockImplementationOnce(() => firstDiscord);
 
-    const first = fixture.service.edit({ ...baseInput, content: "first" });
-    const second = fixture.service.edit({ ...baseInput, content: "second" });
+    const first = fixture.service.edit({
+      ...baseInput,
+      payload: { content: "first", embed: null },
+    });
+    const second = fixture.service.edit({
+      ...baseInput,
+      payload: { content: "second", embed: null },
+    });
     await vi.waitFor(() => expect(fixture.discord.editManagedMessage).toHaveBeenCalledOnce());
     expect(fixture.store.find).toHaveBeenCalledOnce();
+
+    settleFirst();
+    await expect(first).resolves.toMatchObject({ outcome: "SUCCESS" });
+    await expect(second).resolves.toEqual({ outcome: "FAILURE", code: "CONFLICT" });
+    expect(fixture.discord.editManagedMessage).toHaveBeenCalledOnce();
+  });
+
+  it("serializes same-revision edits with competing embed title and color", async () => {
+    let settleFirst!: () => void;
+    const firstDiscord = new Promise<{ outcome: "EDITED"; editedAt: Date }>((resolve) => {
+      settleFirst = () => resolve({ outcome: "EDITED", editedAt });
+    });
+    const firstPayload = {
+      content: "same content",
+      embed: { title: "Winner A", color: 0xaaaaaa },
+    };
+    const secondPayload = {
+      content: "same content",
+      embed: { title: "Winner B", color: 0xbbbbbb },
+    };
+    const fixture = createFixture();
+    vi.mocked(fixture.store.find)
+      .mockResolvedValueOnce(managedRow())
+      .mockResolvedValueOnce(managedRow({ revision: 2, payload: firstPayload }));
+    vi.mocked(fixture.discord.editManagedMessage).mockImplementationOnce(() => firstDiscord);
+
+    const first = fixture.service.edit({ ...baseInput, payload: firstPayload });
+    const second = fixture.service.edit({ ...baseInput, payload: secondPayload });
+    await vi.waitFor(() => expect(fixture.discord.editManagedMessage).toHaveBeenCalledOnce());
 
     settleFirst();
     await expect(first).resolves.toMatchObject({ outcome: "SUCCESS" });
@@ -233,7 +271,7 @@ describe("managed message edit service", () => {
       .mockResolvedValueOnce({ outcome: "UNCHANGED" });
 
     const first = fixture.service.edit(baseInput);
-    const second = fixture.service.edit({ ...baseInput, content: "old content" });
+    const second = fixture.service.edit({ ...baseInput, payload: oldPayload });
     await expect(first).resolves.toEqual({
       outcome: "FAILURE",
       code: "CURRENT_STATE_CHECK_FAILED",
@@ -259,7 +297,7 @@ describe("managed message edit service", () => {
     const second = fixture.service.edit({
       ...baseInput,
       messageId: "900000000000000002",
-      content: "old content",
+      payload: oldPayload,
     });
     await vi.waitFor(() => expect(fixture.discord.editManagedMessage).toHaveBeenCalledTimes(2));
     await expect(second).resolves.toEqual({ outcome: "UNCHANGED" });
@@ -274,7 +312,7 @@ function managedRow(overrides: Partial<ManagedMessage> = {}): ManagedMessage {
     guildId: baseInput.guildId,
     channelId: baseInput.channelId,
     creatorUserId: "500000000000000001",
-    content: "old content",
+    payload: oldPayload,
     revision: 1,
     status: "ACTIVE",
     createdAt: new Date("2026-08-31T01:02:03.000Z"),

@@ -1,11 +1,19 @@
-import { ChannelType, DiscordAPIError, HTTPError, PermissionFlagsBits, Routes } from "discord.js";
+import {
+  ChannelType,
+  DiscordAPIError,
+  EmbedType,
+  HTTPError,
+  PermissionFlagsBits,
+  Routes,
+} from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
-import type { Client } from "discord.js";
+import type { Client, Embed } from "discord.js";
 
 import {
   createManagedMessageDiscord,
   isSupportedManagedMessageTargetType,
+  projectManagedMessageEmbed,
 } from "../../src/managed-message-discord.js";
 
 describe("managed message Discord target support", () => {
@@ -43,12 +51,13 @@ describe("managed message Discord boundary", () => {
         channelId: "channel-id",
         messageId: "message-id",
         createdAt,
+        payload: sendInput.payload,
       },
     });
     expect(fixture.fetchChannel).toHaveBeenCalledExactlyOnceWith("channel-id", { force: true });
     expect(fixture.fetchMember).toHaveBeenCalledTimes(2);
     expect(fixture.send).toHaveBeenCalledExactlyOnceWith({
-      content: sendInput.content,
+      content: sendInput.payload.content,
       allowedMentions: { parse: [] },
       nonce: "stable-nonce",
       enforceNonce: true,
@@ -112,6 +121,67 @@ describe("managed message Discord boundary", () => {
     expect(fixture.send).not.toHaveBeenCalled();
   });
 
+  it("sends embed-only and combined payloads with exactly one explicit supported embed", async () => {
+    const managedEmbed = richEmbed({
+      title: "Title",
+      description: "Description",
+      color: 0,
+      image: { url: "https://example.invalid/image.png", proxy_url: "https://proxy.invalid/x" },
+    });
+    for (const content of ["", "combined"] as const) {
+      const fixture = createFixture({ returnedContent: content, returnedEmbeds: [managedEmbed] });
+      const payload = {
+        content,
+        embed: {
+          title: "Title",
+          description: "Description",
+          color: 0,
+          imageUrl: "https://example.invalid/image.png",
+        },
+      };
+      await expect(
+        createManagedMessageDiscord(fixture.client).sendManagedMessage({
+          ...sendInput,
+          payload,
+        }),
+      ).resolves.toMatchObject({ outcome: "SENT", message: { payload } });
+      const sent = (
+        fixture.send.mock.calls as unknown as Array<
+          [
+            {
+              content?: string;
+              embeds?: Array<{ toJSON: () => unknown }>;
+            },
+          ]
+        >
+      )[0]?.[0];
+      expect(sent?.content).toBe(content === "" ? undefined : content);
+      expect(sent?.embeds).toHaveLength(1);
+      expect(sent?.embeds?.[0]?.toJSON()).toEqual({
+        title: "Title",
+        description: "Description",
+        color: 0,
+        image: { url: "https://example.invalid/image.png" },
+      });
+    }
+  });
+
+  it("requires EmbedLinks only when the outgoing operation has a managed embed", async () => {
+    const text = createFixture({ botCanEmbed: false });
+    await expect(
+      createManagedMessageDiscord(text.client).sendManagedMessage(sendInput),
+    ).resolves.toMatchObject({ outcome: "SENT" });
+
+    const embed = createFixture({ botCanEmbed: false });
+    await expect(
+      createManagedMessageDiscord(embed.client).sendManagedMessage({
+        ...sendInput,
+        payload: { content: "", embed: { title: "Title" } },
+      }),
+    ).resolves.toEqual({ outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" });
+    expect(embed.send).not.toHaveBeenCalled();
+  });
+
   it("classifies current-state failures before POST", async () => {
     const fetchChannel = vi.fn(() => Promise.reject(new Error("transport")));
     const discord = createManagedMessageDiscord({
@@ -162,6 +232,7 @@ describe("managed message Discord boundary", () => {
       channelId: "channel-id",
       messageId: "message-id",
       createdAt,
+      payload: sendInput.payload,
     };
 
     await expect(discord.deleteManagedMessage(message)).resolves.toEqual({ outcome: "DELETED" });
@@ -176,12 +247,73 @@ describe("managed message Discord boundary", () => {
   });
 });
 
+describe("managed rich embed projection", () => {
+  it("ignores documented non-rich URL previews and projects one supported rich embed", () => {
+    expect(
+      projectManagedMessageEmbed([
+        richEmbed({ type: EmbedType.Link, title: "preview" }),
+        richEmbed({
+          title: "Managed",
+          image: {
+            url: "https://example.invalid/image.png",
+            proxy_url: "https://proxy.invalid/image.png",
+            width: 100,
+            height: 50,
+            content_type: "image/png",
+            placeholder: "response-placeholder",
+            placeholder_version: 1,
+          },
+        }),
+      ]),
+    ).toEqual({
+      ok: true,
+      embed: { title: "Managed", imageUrl: "https://example.invalid/image.png" },
+    });
+  });
+
+  it.each([
+    ["missing type", [richEmbed({ type: undefined })]],
+    ["unknown type", [richEmbed({ type: "unknown" })]],
+    ["multiple rich", [richEmbed({ title: "a" }), richEmbed({ title: "b" })]],
+    ["unsupported URL", [richEmbed({ title: "a", url: "https://example.invalid" })]],
+    ["unsupported fields", [richEmbed({ title: "a", fields: [{ name: "n", value: "v" }] })]],
+    [
+      "image alt text",
+      [
+        richEmbed({
+          title: "a",
+          image: { url: "https://example.invalid/image.png", description: "meaningful alt text" },
+        }),
+      ],
+    ],
+    [
+      "image media flags",
+      [richEmbed({ title: "a", image: { url: "https://example.invalid/image.png", flags: 32 } })],
+    ],
+    [
+      "unknown image state",
+      [
+        richEmbed({
+          title: "a",
+          image: { url: "https://example.invalid/image.png", future_meaningful_state: true },
+        }),
+      ],
+    ],
+    ["color only", [richEmbed({ color: 0 })]],
+  ])("fails conservatively for %s", (_label, embeds) => {
+    expect(projectManagedMessageEmbed(embeds)).toEqual({ ok: false });
+  });
+});
+
 const createdAt = new Date("2026-08-31T04:05:06.789Z");
 const sendInput = {
   guildId: "guild-id",
   channelId: "channel-id",
   actorUserId: "actor-id",
-  content: "exact <@123456789012345678> <@&234567890123456789> @everyone @here content",
+  payload: {
+    content: "exact <@123456789012345678> <@&234567890123456789> @everyone @here content",
+    embed: null,
+  },
   nonce: "stable-nonce",
 };
 
@@ -192,8 +324,11 @@ function createFixture(
     archived?: boolean | null;
     actorCanManage?: boolean;
     botCanSend?: boolean;
+    botCanEmbed?: boolean;
     sendable?: boolean;
     sendFailure?: Error;
+    returnedContent?: string;
+    returnedEmbeds?: Embed[];
   } = {},
 ) {
   const type = overrides.type ?? ChannelType.GuildText;
@@ -202,9 +337,9 @@ function createFixture(
   const permissionsFor = vi.fn((member: { id: string }) => ({
     has: (permission: unknown) => {
       permissionChecks.push(permission);
-      return member.id === "actor-id"
-        ? (overrides.actorCanManage ?? true)
-        : (overrides.botCanSend ?? true);
+      if (member.id === "actor-id") return overrides.actorCanManage ?? true;
+      if (permission === PermissionFlagsBits.EmbedLinks) return overrides.botCanEmbed ?? true;
+      return overrides.botCanSend ?? true;
     },
   }));
   const send = vi.fn(() =>
@@ -214,6 +349,9 @@ function createFixture(
           guildId: "guild-id",
           channelId: "channel-id",
           createdAt,
+          author: { id: "bot-id" },
+          content: overrides.returnedContent ?? sendInput.payload.content,
+          embeds: overrides.returnedEmbeds ?? [],
         })
       : Promise.reject(overrides.sendFailure),
   );
@@ -242,4 +380,10 @@ function createFixture(
     rest: { delete: vi.fn() },
   } as unknown as Client;
   return { client, fetchChannel, fetchMember, permissionsFor, permissionChecks, send, join };
+}
+
+function richEmbed(data: Record<string, unknown>): Embed {
+  return {
+    data: { type: EmbedType.Rich, ...data },
+  } as unknown as Embed;
 }

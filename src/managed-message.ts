@@ -13,32 +13,22 @@ import type {
   EditManagedMessage,
   ManagedMessageStore,
 } from "./managed-message-persistence.js";
+import {
+  managedMessagePayloadsEqual,
+  validateManagedMessagePayload,
+  type ManagedMessagePayload,
+  type ManagedMessagePayloadInput,
+  type ManagedMessagePayloadValidationCode,
+} from "./managed-message-payload.js";
 
-export const MANAGED_MESSAGE_CONTENT_MAX_LENGTH = 2_000;
 export const MANAGED_MESSAGE_MAX_EDITABLE_REVISION = 2_147_483_646;
-
-export type ManagedMessageContentValidationResult =
-  { ok: true; content: string } | { ok: false; code: "EMPTY_CONTENT" | "CONTENT_TOO_LONG" };
-
-export function validateManagedMessageContent(
-  content: unknown,
-): ManagedMessageContentValidationResult {
-  if (typeof content !== "string" || content.trim().length === 0) {
-    return { ok: false, code: "EMPTY_CONTENT" };
-  }
-  if ([...content].length > MANAGED_MESSAGE_CONTENT_MAX_LENGTH) {
-    return { ok: false, code: "CONTENT_TOO_LONG" };
-  }
-  return { ok: true, content };
-}
 
 export type ManagedMessageNonceGenerator = () => string;
 export const generateManagedMessageNonce: ManagedMessageNonceGenerator = () =>
   randomBytes(16).toString("base64url");
 
 export type ManagedMessageSendFailureCode =
-  | "EMPTY_CONTENT"
-  | "CONTENT_TOO_LONG"
+  | ManagedMessagePayloadValidationCode
   | ManagedMessageDiscordFailureCode
   | "PERSISTENCE_UNCONFIRMED_COMPENSATED";
 export type ManagedMessageSendResult =
@@ -47,14 +37,13 @@ export type ManagedMessageSendResult =
   | { outcome: "PARTIAL_FAILURE"; messageId: string };
 
 export type ManagedMessageEditLookupResult =
-  | { outcome: "FOUND"; messageId: string; content: string; revision: number }
+  | { outcome: "FOUND"; messageId: string; payload: ManagedMessagePayload; revision: number }
   | { outcome: "NOT_FOUND" }
   | { outcome: "DELETED" }
   | { outcome: "FAILURE" };
 
 export type ManagedMessageEditFailureCode =
-  | "EMPTY_CONTENT"
-  | "CONTENT_TOO_LONG"
+  | ManagedMessagePayloadValidationCode
   | ManagedMessageDiscordEditFailureCode
   | "TARGET_NOT_FOUND"
   | "CONFLICT"
@@ -76,7 +65,7 @@ export type ManagedMessageService = {
     guildId: string;
     channelId: string;
     actorUserId: string;
-    content: string;
+    payload: ManagedMessagePayloadInput;
   }) => Promise<ManagedMessageSendResult>;
   findForEdit: (input: {
     guildId: string;
@@ -89,7 +78,7 @@ export type ManagedMessageService = {
     messageId: string;
     actorUserId: string;
     expectedRevision: number;
-    content: string;
+    payload: ManagedMessagePayloadInput;
   }) => Promise<ManagedMessageEditResult>;
 };
 
@@ -162,7 +151,7 @@ export function createManagedMessageService({
   async function persistDeletion(
     input: { guildId: string; channelId: string; messageId: string },
     revision: number,
-    content: string,
+    payload: ManagedMessagePayload,
   ): Promise<ManagedMessageEditResult> {
     const deletion: DeleteManagedMessage = {
       auditId: generateAuditId(),
@@ -170,7 +159,7 @@ export function createManagedMessageService({
       channelId: input.channelId,
       messageId: input.messageId,
       expectedRevision: revision,
-      content,
+      payload,
       occurredAt: now(),
     };
     try {
@@ -231,9 +220,9 @@ export function createManagedMessageService({
         guildId: transition.guildId,
         channelId: transition.channelId,
         messageId: transition.messageId,
-        expectedContent: transition.content,
+        expectedPayload: transition.payload,
         expectedEditedAt: editedAt,
-        restoreContent: transition.previousContent,
+        restorePayload: transition.previousPayload,
       });
     } catch (error) {
       warn(
@@ -260,19 +249,49 @@ export function createManagedMessageService({
 
   return {
     async send(input) {
-      const validation = validateManagedMessageContent(input.content);
+      const validation = validateManagedMessagePayload(input.payload);
       if (!validation.ok) return { outcome: "FAILURE", code: validation.code };
 
       const nonce = generateNonce();
-      const discordResult = await discord.sendManagedMessage({ ...input, nonce });
+      const discordResult = await discord.sendManagedMessage({
+        guildId: input.guildId,
+        channelId: input.channelId,
+        actorUserId: input.actorUserId,
+        payload: validation.payload,
+        nonce,
+      });
       if (discordResult.outcome === "FAILURE")
         return { outcome: "FAILURE", code: discordResult.code };
 
+      if (
+        discordResult.message.payload === undefined ||
+        !managedMessagePayloadsEqual(discordResult.message.payload, validation.payload)
+      ) {
+        const deleteResult = await discord.deleteManagedMessage(discordResult.message);
+        if (deleteResult.outcome === "DELETED") {
+          warn(
+            "managed_message_send_confirmation_compensated",
+            discordResult.message,
+            "RETURNED_PAYLOAD_MISMATCH",
+          );
+          return { outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED_COMPENSATED" };
+        }
+        warn(
+          "managed_message_send_confirmation_partial_failure",
+          discordResult.message,
+          "RETURNED_PAYLOAD_MISMATCH",
+        );
+        return { outcome: "PARTIAL_FAILURE", messageId: discordResult.message.messageId };
+      }
+
       const creation: CreateManagedMessage = {
-        ...discordResult.message,
+        messageId: discordResult.message.messageId,
+        guildId: discordResult.message.guildId,
+        channelId: discordResult.message.channelId,
+        createdAt: discordResult.message.createdAt,
         auditId: generateAuditId(),
         creatorUserId: input.actorUserId,
-        content: validation.content,
+        payload: validation.payload,
       };
       try {
         await store.create(creation);
@@ -344,7 +363,7 @@ export function createManagedMessageService({
         return {
           outcome: "FOUND",
           messageId: message.messageId,
-          content: message.content,
+          payload: message.payload,
           revision: message.revision,
         };
       } catch {
@@ -354,7 +373,7 @@ export function createManagedMessageService({
 
     edit(input) {
       return serializeEdit(input.messageId, async () => {
-        const validation = validateManagedMessageContent(input.content);
+        const validation = validateManagedMessagePayload(input.payload);
         if (!validation.ok) return { outcome: "FAILURE", code: validation.code };
 
         let current;
@@ -387,8 +406,8 @@ export function createManagedMessageService({
             channelId: input.channelId,
             messageId: input.messageId,
             actorUserId: input.actorUserId,
-            previousContent: current.content,
-            content: validation.content,
+            previousPayload: current.payload,
+            payload: validation.payload,
           });
         } catch (error) {
           warn(
@@ -400,7 +419,7 @@ export function createManagedMessageService({
           return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
         }
         if (discordResult.outcome === "DELETED") {
-          return persistDeletion(input, current.revision, current.content);
+          return persistDeletion(input, current.revision, current.payload);
         }
         if (discordResult.outcome === "FAILURE") {
           return { outcome: "FAILURE", code: discordResult.code };
@@ -414,8 +433,8 @@ export function createManagedMessageService({
           channelId: input.channelId,
           actorUserId: input.actorUserId,
           expectedRevision: current.revision,
-          previousContent: current.content,
-          content: validation.content,
+          previousPayload: current.payload,
+          payload: validation.payload,
           occurredAt: discordResult.editedAt,
         };
         try {
