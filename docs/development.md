@@ -228,8 +228,9 @@ The implemented scheduled thread-close delivery queue uses:
 - expiration: `86399` seconds
 
 These values describe the scheduled thread-close delivery queue only. They are not defaults for
-other scheduled-action categories. Scheduled-message retry count and backoff parameters remain an
-unresolved product decision and must be decided before scheduled-message implementation.
+other scheduled-action categories. The separately approved future `SEND_MESSAGE` delivery queue
+uses a retry limit of 3, a retry delay of 30 seconds, exponential backoff, and a maximum retry delay
+of 900 seconds. Phase 8A does not create that queue or implement its worker or runtime execution.
 
 pg-boss retries each delivery for a finite cycle. If that cycle is exhausted while the authoritative
 application action remains active, a later runtime reconciliation sweep may create a new delivery
@@ -1019,15 +1020,29 @@ listener, attachment support, scheduled-message worker, or failed-operation audi
 
 ### Phase 8: Scheduled messages
 
-Before implementation, decide:
+Phase 8A reuses `scheduled_actions` as the generic scheduling envelope for one-time scheduled
+managed messages. A `SEND_MESSAGE` action stores the target Discord channel ID in `target_id`; its
+one-to-one `scheduled_message_states` row stores the existing canonical `ManagedMessagePayload`
+shape in explicit columns and reserves a nullable resulting Discord message ID. Creation commits
+the `ACTIVE` action, action-specific state, and exact `CREATED` user audit in one PostgreSQL
+transaction.
 
-- the overdue grace period,
-- retry count and backoff parameters,
-- the recurring-schedule input format.
+The application validates through the existing managed-message payload validator and generates
+the scheduled-action ID, audit ID, and audit occurrence timestamp before persistence. If the
+transaction response is ambiguous, persistence performs one read-only confirmation and accepts
+success only when the complete action, state, and stable audit match. It does not retry the write.
+PostgreSQL-owned scheduled-action creation and update timestamps are not confirmation invariants.
 
-Then:
+Phase 8A does not expose a command and does not create a pg-boss `SEND_MESSAGE` queue, worker,
+startup recovery, runtime reconciliation, or execution transition. The future delivery queue will
+use its separately approved retry limit of 3, 30-second delay, exponential backoff, and 900-second
+maximum delay. One-time overdue execution uses the inclusive 60-minute grace rule. Future
+recurrence uses structured calendar-oriented input with IANA timezone semantics rather than raw
+user-facing cron; exact Discord command fields remain deferred.
 
-- implement one-time scheduled messages,
+Later Phase 8 work will:
+
+- expose and execute one-time scheduled messages,
 - persist resulting Discord message IDs,
 - implement recurring messages,
 - skip missed recurring occurrences after downtime,

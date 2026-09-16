@@ -520,7 +520,20 @@ Requirements:
 - Successful scheduled sends persist the resulting Discord message ID.
 - Schedule creation, modification, cancellation, execution, retry, and failure are audited.
 
-The exact overdue grace period and retry parameters must be decided before scheduled-message implementation.
+An overdue one-time scheduled message may execute once through the inclusive 60-minute grace
+boundary: it is eligible while `now <= execute_at + 60 minutes` and is outside the grace period
+when `now > execute_at + 60 minutes`.
+
+The `SEND_MESSAGE` delivery queue uses a retry limit of 3, a retry delay of 30 seconds,
+exponential backoff, and a maximum retry delay of 900 seconds. These values are specific to
+scheduled-message delivery rather than shared scheduler defaults.
+
+Recurring managed messages use structured, calendar-oriented input and IANA timezone semantics.
+Raw cron expressions are not accepted through the user-facing Discord interface. The exact
+Discord command fields for recurring schedules remain deferred.
+
+Phase 8A provides only the one-time scheduled-message persistence and creation-audit foundation.
+No scheduled-message command, queue, worker, or execution behavior is available yet.
 
 Scheduled-message administration requires the Discord `ManageMessages` permission in the MVP.
 
@@ -633,7 +646,4 @@ WEFT is not intended to:
 
 The following decisions must be made before their corresponding implementation work:
 
-- the exact overdue grace period for one-time scheduled messages,
-- retry count and backoff parameters for scheduled messages,
-- the command input format for recurring schedules,
 - whether audit retention will be configurable per guild.
