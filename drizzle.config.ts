@@ -8,6 +8,7 @@ export const baseDrizzleConfig = {
     "./src/guild-settings.ts",
     "./src/managed-message-persistence.ts",
     "./src/scheduled-action-persistence.ts",
+    "./src/scheduled-message-persistence.ts",
     "./src/scheduled-thread-close-persistence.ts",
     "./src/thread-persistence.ts",
   ] as string[],

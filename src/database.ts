@@ -10,6 +10,7 @@ import type { DatabaseConfig } from "./config.js";
 import { guildSettings } from "./guild-settings.js";
 import { managedMessageAudits, managedMessages } from "./managed-message-persistence.js";
 import { scheduledActions } from "./scheduled-action-persistence.js";
+import { scheduledMessageAudits, scheduledMessageStates } from "./scheduled-message-persistence.js";
 import { scheduledThreadCloseAudits } from "./scheduled-thread-close-persistence.js";
 import { managedThreads, threadAudits } from "./thread-persistence.js";
 
@@ -34,6 +35,8 @@ export function createDatabase(config: DatabaseConfig) {
       managedMessages,
       managedThreads,
       scheduledActions,
+      scheduledMessageAudits,
+      scheduledMessageStates,
       scheduledThreadCloseAudits,
       threadAudits,
     },
