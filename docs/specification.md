@@ -526,14 +526,35 @@ when `now > execute_at + 60 minutes`.
 
 The `SEND_MESSAGE` delivery queue uses a retry limit of 3, a retry delay of 30 seconds,
 exponential backoff, and a maximum retry delay of 900 seconds. These values are specific to
-scheduled-message delivery rather than shared scheduler defaults.
+scheduled-message delivery rather than shared scheduler defaults. Its delivery expiration is 900
+seconds.
+
+Scheduled-message execution reloads the authoritative action and payload from PostgreSQL. It does
+not revalidate the original creator's current guild membership, roles, or `ManageMessages`
+permission. It does freshly inspect the target guild and channel, active thread state, and WEFT's
+current view/send permissions; an explicit rich embed also requires `EmbedLinks`.
+
+Application-authorized retry is bounded to three safe failures before any Discord Create Message
+request capable of creating the message has occurred. Each such retry is persisted and audited.
+Create Message uses mention suppression and a stable action-derived nonce. An ambiguous request is
+replayed at most once immediately with the same nonce and is never followed by a delayed blind
+resend. A returned message must match the intended guild, channel, bot author, canonical payload,
+and the nonce when Discord returns one.
+
+Once Discord creation is confirmed, that action can never return to active delivery. Successful
+database finalization atomically establishes the completed schedule, result message ID, managed
+message, managed-message creation audit, and scheduled execution audit. A safely confirmed
+compensation deletion after finalization failure is terminal rather than retryable. If database
+commit status cannot be determined, WEFT neither deletes nor resends. On startup, an interrupted
+`EXECUTING SEND_MESSAGE` action fails conservatively as unconfirmed instead of being released for
+another send.
 
 Recurring managed messages use structured, calendar-oriented input and IANA timezone semantics.
 Raw cron expressions are not accepted through the user-facing Discord interface. The exact
 Discord command fields for recurring schedules remain deferred.
 
-Phase 8A provides only the one-time scheduled-message persistence and creation-audit foundation.
-No scheduled-message command, queue, worker, or execution behavior is available yet.
+Phase 8B provides the one-time scheduled-message execution runtime for already persisted actions.
+No user-facing scheduled-message creation or administration command is available until Phase 8C.
 
 Scheduled-message administration requires the Discord `ManageMessages` permission in the MVP.
 

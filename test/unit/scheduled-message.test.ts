@@ -80,6 +80,8 @@ describe("scheduled message exact creation confirmation", () => {
   };
   const state: ScheduledMessageState = {
     scheduledActionId: expected.scheduledActionId,
+    creatorUserId: expected.actorId,
+    retryCount: 0,
     ...scheduledMessagePayloadToColumns(expected.payload),
     resultMessageId: null,
   };
@@ -95,6 +97,8 @@ describe("scheduled message exact creation confirmation", () => {
     ...scheduledMessagePayloadToColumns(expected.payload),
     occurredAt,
     outcome: "SUCCESS",
+    failureCode: null,
+    resultMessageId: null,
   };
 
   it("accepts only the exact action, state, and audit", () => {
@@ -193,6 +197,8 @@ describe("scheduled message application operation", () => {
         createdAt: occurredAt,
         updatedAt: occurredAt,
       },
+      creatorUserId: "actor-id",
+      retryCount: 0,
       payload: { content: "", embed: { title: "title", color: 0 } },
       resultMessageId: null,
     } satisfies Awaited<ReturnType<ScheduledMessageStore["create"]>>;

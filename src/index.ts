@@ -23,6 +23,14 @@ import { createManagedMessageStore } from "./managed-message-persistence.js";
 import { createManagedMessageService } from "./managed-message.js";
 import { createPgBossRuntime } from "./pg-boss.js";
 import { createScheduledActionStore } from "./scheduled-action-persistence.js";
+import { createScheduledMessageDiscord } from "./scheduled-message-discord.js";
+import { createScheduledMessageExecutor } from "./scheduled-message-execution.js";
+import { createScheduledMessageStore } from "./scheduled-message-persistence.js";
+import {
+  createScheduledMessageRuntimeReconciler,
+  createScheduledMessageStartupReconciler,
+} from "./scheduled-message-reconciler.js";
+import { createScheduledMessageWorkerController } from "./scheduled-message-worker.js";
 import { createScheduledThreadCloseCommandService } from "./scheduled-thread-close-command.js";
 import { createScheduledThreadCloseStore } from "./scheduled-thread-close-persistence.js";
 import { createScheduledThreadCloseExecutor } from "./scheduled-thread-close.js";
@@ -59,6 +67,7 @@ async function main(): Promise<void> {
   const audits = createThreadAuditStore(database.client);
   const scheduledActions = createScheduledActionStore(database.client);
   const scheduledThreadCloses = createScheduledThreadCloseStore(database.client);
+  const scheduledMessageStore = createScheduledMessageStore(database.client);
   const automaticCloses = createAutomaticClosePersistenceStore(database.client);
   const managedMessageStore = createManagedMessageStore(database.client);
   const discordRuntime = createDiscordRuntime(logger, { guildSettings, managedThreads, audits });
@@ -126,6 +135,16 @@ async function main(): Promise<void> {
     threadLifecycle: discordRuntime.threadLifecycle,
     logger,
   });
+  const scheduledMessageExecutor = createScheduledMessageExecutor({
+    store: scheduledMessageStore,
+    discord: createScheduledMessageDiscord(discordRuntime.client),
+  });
+  const scheduledMessageWorkers = createScheduledMessageWorkerController({
+    boss: pgBoss.client,
+    scheduledActions,
+    executor: scheduledMessageExecutor,
+    logger,
+  });
   registerDiscordCommandHandler(discordRuntime.client, {
     automaticCloseConfiguration,
     automaticCloseMaintenance,
@@ -146,15 +165,33 @@ async function main(): Promise<void> {
     delivery: scheduledThreadCloseWorkers,
     logger,
   });
+  const scheduledMessageStartupReconciler = createScheduledMessageStartupReconciler({
+    scheduledActions,
+    store: scheduledMessageStore,
+    executor: scheduledMessageExecutor,
+    delivery: scheduledMessageWorkers,
+    logger,
+  });
+  const scheduledMessageRuntimeReconciler = createScheduledMessageRuntimeReconciler({
+    scheduledActions,
+    executor: scheduledMessageExecutor,
+    delivery: scheduledMessageWorkers,
+    logger,
+  });
   const startupAbortController = new AbortController();
   const shutdown = createShutdown(
     [
       { name: "automatic-close-runtime", close: () => automaticCloseRuntime.stop() },
       {
+        name: "scheduled-message-runtime-reconciler",
+        close: () => scheduledMessageRuntimeReconciler.stop(),
+      },
+      {
         name: "scheduled-thread-close-runtime-reconciler",
         close: () => scheduledThreadCloseRuntimeReconciler.stop(),
       },
       { name: "scheduled-thread-close-workers", close: () => scheduledThreadCloseWorkers.stop() },
+      { name: "scheduled-message-workers", close: () => scheduledMessageWorkers.stop() },
       { name: "pg-boss", close: () => pgBoss.stop() },
       { name: "discord", close: () => discordRuntime.client.destroy() },
       { name: "database", close: () => database.close() },
@@ -177,8 +214,10 @@ async function main(): Promise<void> {
       verifyDatabaseConnection: () => database.verifyConnection(),
       startPgBoss: () => pgBoss.start(),
       ensureScheduledThreadCloseQueue: () => scheduledThreadCloseWorkers.ensureQueue(),
+      ensureScheduledMessageQueue: () => scheduledMessageWorkers.ensureQueue(),
       recoverScheduledThreadCloseDeliveries: () =>
         scheduledThreadCloseReconciler.recoverAtStartup(),
+      recoverScheduledMessageDeliveries: () => scheduledMessageStartupReconciler.recoverAtStartup(),
       startDiscord: () =>
         startDiscordClient(
           discordRuntime.client,
@@ -186,8 +225,10 @@ async function main(): Promise<void> {
           startupAbortController.signal,
         ),
       startScheduledThreadCloseWorkers: () => scheduledThreadCloseWorkers.start(),
+      startScheduledMessageWorker: () => scheduledMessageWorkers.start(),
       startScheduledThreadCloseRuntimeReconciliation: () =>
         scheduledThreadCloseRuntimeReconciler.start(),
+      startScheduledMessageRuntimeReconciliation: () => scheduledMessageRuntimeReconciler.start(),
       reconcileAutomaticCloseBaselines: () =>
         automaticCloseBaselineReconciler.reconcileMissingBaselines(),
       startAutomaticCloseRuntime: () => automaticCloseRuntime.start(),

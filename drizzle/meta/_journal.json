@@ -92,6 +92,13 @@
       "when": 1789531760234,
       "tag": "0012_lumpy_marten_broadcloak",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789553926924,
+      "tag": "0013_brown_makkari",
+      "breakpoints": true
     }
   ]
 }
