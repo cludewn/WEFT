@@ -141,7 +141,11 @@ describe("scheduled thread close pg-boss delivery", () => {
     });
     notifyWorkers();
 
-    await waitFor(async () => (await store.findById(action.id))?.status === "COMPLETED");
+    await waitFor(async () => {
+      const current = await store.findById(action.id);
+      const job = await findJob(action.id);
+      return current?.status === "COMPLETED" && job?.state === "completed";
+    });
     expect(fixture.closeAsSystem).toHaveBeenCalledTimes(2);
     await expect(findJob(action.id)).resolves.toMatchObject({
       state: "completed",

@@ -195,6 +195,8 @@ export type ManagedMessageStore = {
   readCompensationSafety: (input: EditManagedMessage) => Promise<ManagedMessageCompensationSafety>;
 };
 
+export type DatabaseTransaction = Parameters<Parameters<DatabaseClient["transaction"]>[0]>[0];
+
 type FlatPayload = {
   content: string;
   embedTitle: string | null;
@@ -308,6 +310,39 @@ function matchesCreation(
     audit.occurredAt.getTime() === expected.createdAt.getTime() &&
     audit.outcome === "SUCCESS"
   );
+}
+
+export async function insertManagedMessageCreation(
+  transaction: DatabaseTransaction,
+  input: CreateManagedMessage,
+): Promise<ManagedMessage> {
+  const [created] = await transaction
+    .insert(managedMessages)
+    .values({
+      messageId: input.messageId,
+      guildId: input.guildId,
+      channelId: input.channelId,
+      creatorUserId: input.creatorUserId,
+      ...flattenPayload(input.payload),
+      createdAt: input.createdAt,
+    })
+    .returning();
+  if (created === undefined) throw new Error("Managed message could not be created");
+  await transaction.insert(managedMessageAudits).values({
+    id: input.auditId,
+    messageId: input.messageId,
+    guildId: input.guildId,
+    channelId: input.channelId,
+    event: "CREATED",
+    actorType: "USER",
+    actorId: input.creatorUserId,
+    ...auditPayloadValues("after", input.payload),
+    afterRevision: 1,
+    afterStatus: "ACTIVE",
+    occurredAt: input.createdAt,
+    outcome: "SUCCESS",
+  });
+  return toManagedMessage(created);
 }
 
 function matchesEdit(
@@ -453,35 +488,9 @@ export function createManagedMessageStore(database: DatabaseClient): ManagedMess
       return message === undefined ? undefined : toManagedMessage(message);
     },
     async create(input) {
-      return database.transaction(async (transaction) => {
-        const [created] = await transaction
-          .insert(managedMessages)
-          .values({
-            messageId: input.messageId,
-            guildId: input.guildId,
-            channelId: input.channelId,
-            creatorUserId: input.creatorUserId,
-            ...flattenPayload(input.payload),
-            createdAt: input.createdAt,
-          })
-          .returning();
-        if (created === undefined) throw new Error("Managed message could not be created");
-        await transaction.insert(managedMessageAudits).values({
-          id: input.auditId,
-          messageId: input.messageId,
-          guildId: input.guildId,
-          channelId: input.channelId,
-          event: "CREATED",
-          actorType: "USER",
-          actorId: input.creatorUserId,
-          ...auditPayloadValues("after", input.payload),
-          afterRevision: 1,
-          afterStatus: "ACTIVE",
-          occurredAt: input.createdAt,
-          outcome: "SUCCESS",
-        });
-        return toManagedMessage(created);
-      });
+      return database.transaction((transaction) =>
+        insertManagedMessageCreation(transaction, input),
+      );
     },
     async confirmCreation(input) {
       const state = await readStateAndAudit(input.messageId, input.auditId);

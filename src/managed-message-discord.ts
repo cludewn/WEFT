@@ -258,7 +258,7 @@ export function projectManagedMessageEmbed(
   return { ok: true, embed: projected };
 }
 
-function projectManagedMessagePayload(message: Message): ManagedMessagePayload | undefined {
+export function projectManagedMessagePayload(message: Message): ManagedMessagePayload | undefined {
   const projection = projectManagedMessageEmbed(message.embeds);
   return projection.ok ? { content: message.content, embed: projection.embed } : undefined;
 }

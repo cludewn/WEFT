@@ -48,6 +48,9 @@ export const scheduledActions = pgTable(
     index("scheduled_actions_active_close_execute_at_id_idx")
       .on(table.executeAt, table.id)
       .where(sql`${table.actionType} = 'CLOSE_THREAD' and ${table.status} = 'ACTIVE'`),
+    index("scheduled_actions_active_send_execute_at_id_idx")
+      .on(table.executeAt, table.id)
+      .where(sql`${table.actionType} = 'SEND_MESSAGE' and ${table.status} = 'ACTIVE'`),
   ],
 );
 
@@ -67,6 +70,11 @@ export type ActiveScheduledThreadCloseCursor = {
   id: string;
 };
 
+export type ScheduledMessageActionCursor = {
+  executeAt: Date;
+  id: string;
+};
+
 export type CurrentScheduledThreadClose = {
   status: Extract<ScheduledActionStatus, "ACTIVE" | "EXECUTING">;
   executeAt: Date;
@@ -81,6 +89,10 @@ export type ScheduledActionStore = {
     cursor?: ActiveScheduledThreadCloseCursor,
   ) => Promise<ScheduledAction[]>;
   findExecutingThreadClosesPage: (afterId?: string) => Promise<ScheduledAction[]>;
+  findActiveScheduledMessagesPage: (
+    cursor?: ScheduledMessageActionCursor,
+  ) => Promise<ScheduledAction[]>;
+  findExecutingScheduledMessagesPage: (afterId?: string) => Promise<ScheduledAction[]>;
   findCurrentThreadClose: (
     guildId: string,
     threadId: string,
@@ -176,6 +188,42 @@ export function createScheduledActionStore(database: DatabaseClient): ScheduledA
         .where(
           and(
             eq(scheduledActions.actionType, "CLOSE_THREAD"),
+            eq(scheduledActions.status, "EXECUTING"),
+            afterId === undefined ? undefined : gt(scheduledActions.id, afterId),
+          ),
+        )
+        .orderBy(asc(scheduledActions.id))
+        .limit(SCHEDULED_THREAD_CLOSE_RECOVERY_PAGE_SIZE);
+    },
+    async findActiveScheduledMessagesPage(cursor) {
+      return database
+        .select()
+        .from(scheduledActions)
+        .where(
+          and(
+            eq(scheduledActions.actionType, "SEND_MESSAGE"),
+            eq(scheduledActions.status, "ACTIVE"),
+            cursor === undefined
+              ? undefined
+              : or(
+                  gt(scheduledActions.executeAt, cursor.executeAt),
+                  and(
+                    eq(scheduledActions.executeAt, cursor.executeAt),
+                    gt(scheduledActions.id, cursor.id),
+                  ),
+                ),
+          ),
+        )
+        .orderBy(asc(scheduledActions.executeAt), asc(scheduledActions.id))
+        .limit(SCHEDULED_THREAD_CLOSE_RECOVERY_PAGE_SIZE);
+    },
+    async findExecutingScheduledMessagesPage(afterId) {
+      return database
+        .select()
+        .from(scheduledActions)
+        .where(
+          and(
+            eq(scheduledActions.actionType, "SEND_MESSAGE"),
             eq(scheduledActions.status, "EXECUTING"),
             afterId === undefined ? undefined : gt(scheduledActions.id, afterId),
           ),

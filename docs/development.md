@@ -228,9 +228,9 @@ The implemented scheduled thread-close delivery queue uses:
 - expiration: `86399` seconds
 
 These values describe the scheduled thread-close delivery queue only. They are not defaults for
-other scheduled-action categories. The separately approved future `SEND_MESSAGE` delivery queue
-uses a retry limit of 3, a retry delay of 30 seconds, exponential backoff, and a maximum retry delay
-of 900 seconds. Phase 8A does not create that queue or implement its worker or runtime execution.
+other scheduled-action categories. The implemented `weft-send-message` queue uses `exclusive`
+policy, a retry limit of 3, a retry delay of 30 seconds, exponential backoff, a maximum retry delay
+of 900 seconds, and a 900-second expiration.
 
 pg-boss retries each delivery for a finite cycle. If that cycle is exhausted while the authoritative
 application action remains active, a later runtime reconciliation sweep may create a new delivery
@@ -1033,17 +1033,54 @@ transaction response is ambiguous, persistence performs one read-only confirmati
 success only when the complete action, state, and stable audit match. It does not retry the write.
 PostgreSQL-owned scheduled-action creation and update timestamps are not confirmation invariants.
 
-Phase 8A does not expose a command and does not create a pg-boss `SEND_MESSAGE` queue, worker,
-startup recovery, runtime reconciliation, or execution transition. The future delivery queue will
-use its separately approved retry limit of 3, 30-second delay, exponential backoff, and 900-second
-maximum delay. One-time overdue execution uses the inclusive 60-minute grace rule. Future
-recurrence uses structured calendar-oriented input with IANA timezone semantics rather than raw
-user-facing cron; exact Discord command fields remain deferred.
+Phase 8B adds runtime execution without exposing a command. Action-specific state stores the
+original creator independently of audit retention and an authoritative retry count from zero
+through three. Migration 0013 backfills each Phase 8A creator only from exactly one creation audit
+that agrees with the complete action, target, execution time, and canonical payload; missing,
+duplicate, or mismatched sources fail migration.
+
+Execution loads authoritative state, validates the payload and initial inclusive 60-minute grace,
+performs read-only Discord preflight, rechecks grace, and only then conditionally claims
+`ACTIVE -> EXECUTING`. A claim loser performs no Create Message, execution audit, retry-count
+change, or execution-state mutation. Retryable preflight results are processed only by the claim
+winner. Safe pre-send retry atomically returns to `ACTIVE`, increments the persisted retry count,
+and records `EXECUTION_RETRY`; count three converts another retryable condition into audited
+terminal failure. Recreated pg-boss delivery never resets this budget.
+
+The scheduled SYSTEM Discord boundary does not query the creator's current membership or
+permission. It freshly validates target type, guild, active thread state, bot view/send permission,
+and `EmbedLinks` for an explicit embed. Create Message suppresses mentions, enforces a deterministic
+action-derived nonce of at most 25 characters, and permits at most one immediate replay with the
+same request and nonce after an ambiguous result. A non-null returned nonce must match; a null nonce
+does not trigger a refetch. Returned guild, channel, bot author, and canonical payload must also
+match exactly.
+
+Confirmed or ambiguous Create Message effects never use the pre-send retry transition. Returned
+message mismatch, confirmed rejection, unresolved ambiguity, and compensation paths are terminal.
+After exact creation, successful finalization atomically commits the completed action, state result
+ID, active managed message, user-attributed managed-message creation audit, and system-attributed
+scheduled execution audit. Both audit IDs are generated before the transaction. Response loss is
+accepted only after a read-only match of the complete intended result. Compensation deletion is
+allowed only when a reliable read proves finalization uncommitted; confirmed deletion remains
+terminal. An unreadable commit confirmation causes neither deletion, resend, nor a guessed database
+transition.
+
+Startup recovery handles scheduled messages before their active reconciliation. Interrupted
+`EXECUTING SEND_MESSAGE` actions have stale active delivery cleared and become audited `FAILED`
+with `EXECUTION_INTERRUPTED_UNCONFIRMED`; they are never released to `ACTIVE` and no Discord call is
+made. Startup and runtime active scans use `(execute_at, id)` keyset ordering. They fail actions
+outside grace through normal claim/audit semantics and repair missing delivery without changing the
+retry count. Runtime reconciliation is ACTIVE-only, non-overlapping, begins after 60 seconds, and
+waits 60 seconds after each completed sweep. The worker count is one; correctness remains based on
+the database claim rather than worker count.
+
+Phase 8B still exposes no `/message schedule` command. Phase 8C owns one-time creation and schedule
+administration. Future recurrence uses structured calendar-oriented input with IANA timezone
+semantics rather than raw user-facing cron; exact Discord command fields remain deferred.
 
 Later Phase 8 work will:
 
-- expose and execute one-time scheduled messages,
-- persist resulting Discord message IDs,
+- expose one-time scheduled-message creation and administration,
 - implement recurring messages,
 - skip missed recurring occurrences after downtime,
 - implement cancellation,
