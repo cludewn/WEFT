@@ -30,6 +30,7 @@ function definition(
     },
     creatorUserId: "creator-id",
     retryCount: 0,
+    revision: 0,
     payload: { content: "scheduled content", embed: null },
     resultMessageId: null,
     ...overrides,
@@ -148,6 +149,26 @@ describe("scheduled message execution rules", () => {
     expect(f.discord.createMessage).not.toHaveBeenCalled();
   });
 
+  it("skips an authoritative ACTIVE definition whose execution time is still future", async () => {
+    const futureExecuteAt = new Date(executeAt.getTime() + 60_000);
+    const loaded = definition({
+      action: { ...definition().action, executeAt: futureExecuteAt },
+      revision: 1,
+    });
+    const f = fixture({ loaded, now: [executeAt] });
+
+    await expect(f.executor.execute("action-id")).resolves.toEqual({
+      outcome: "SKIPPED",
+      reason: "NOT_DUE",
+    });
+    expect(f.discord.preflight).not.toHaveBeenCalled();
+    expect(f.store.claimExecution).not.toHaveBeenCalled();
+    expect(f.discord.createMessage).not.toHaveBeenCalled();
+    expect(f.store.retryPreSendFailure).not.toHaveBeenCalled();
+    expect(f.store.failExecution).not.toHaveBeenCalled();
+    expect(f.store.finalizeSuccess).not.toHaveBeenCalled();
+  });
+
   it("terminally fails a claimed ACTIVE SEND_MESSAGE whose required state is missing", async () => {
     const f = fixture();
     f.store.findForExecution.mockResolvedValue({
@@ -163,7 +184,7 @@ describe("scheduled message execution rules", () => {
       outcome: "PERMANENT_FAILURE",
       code: "PERSISTED_PAYLOAD_INVALID",
     });
-    expect(f.store.claimExecution).toHaveBeenCalledWith("action-id");
+    expect(f.store.claimExecution).toHaveBeenCalledWith("action-id", undefined);
     expect(f.store.failMissingState).toHaveBeenCalledWith(
       expect.objectContaining({ action: f.executing.action }),
     );
@@ -205,6 +226,7 @@ describe("scheduled message execution rules", () => {
       reason: "NOT_ACTIVE",
     });
     expect(calls).toEqual(["preflight", "claim"]);
+    expect(f.store.claimExecution).toHaveBeenCalledWith("action-id", f.loaded.revision);
     expect(f.discord.createMessage).not.toHaveBeenCalled();
     expect(f.store.retryPreSendFailure).not.toHaveBeenCalled();
     expect(f.store.failExecution).not.toHaveBeenCalled();

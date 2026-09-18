@@ -8,6 +8,10 @@ import type {
 } from "./scheduled-message-discord.js";
 import type {
   ScheduledMessageDefinition,
+  ScheduledMessageEditableLoadResult,
+  EditScheduledMessageResult,
+  ScheduledMessageListResult,
+  ModifyScheduledMessageResult,
   ScheduledMessageStatusResult,
   ScheduledMessageStore,
 } from "./scheduled-message-persistence.js";
@@ -53,6 +57,14 @@ export type CancelScheduledMessageCommandResult =
         | "PERSISTENCE_UNCONFIRMED";
     };
 
+export type RescheduleScheduledMessageCommandResult =
+  | ({ deliveryPendingReconciliation: boolean } & Extract<
+      ModifyScheduledMessageResult,
+      { outcome: "RESCHEDULED" }
+    >)
+  | Exclude<ModifyScheduledMessageResult, { outcome: "RESCHEDULED" | "EDITED" | "UNCHANGED" }>
+  | { outcome: "INVALID_DURATION" | "UNAVAILABLE" };
+
 export type ScheduledMessageCommandService = {
   create: (
     input: CreateScheduledMessageCommandInput,
@@ -68,14 +80,52 @@ export type ScheduledMessageCommandService = {
     guildId: string;
     channelId: string;
   }) => Promise<ScheduledMessageStatusResult>;
+  list: (input: {
+    guildId: string;
+    channelId: string;
+    page: number;
+  }) => Promise<ScheduledMessageListResult | { outcome: "INVALID_PAGE" }>;
+  findEditable: (input: {
+    scheduledActionId: string;
+    guildId: string;
+    channelId: string;
+  }) => Promise<ScheduledMessageEditableLoadResult>;
+  edit: (input: {
+    scheduledActionId: string;
+    guildId: string;
+    channelId: string;
+    actorUserId: string;
+    expectedRevision: number;
+    payload: ManagedMessagePayloadInput;
+  }) => Promise<
+    | EditScheduledMessageResult
+    | { outcome: "INVALID_PAYLOAD"; code: ManagedMessagePayloadValidationCode }
+  >;
+  reschedule: (input: {
+    scheduledActionId: string;
+    guildId: string;
+    channelId: string;
+    actorUserId: string;
+    durationMs: number;
+  }) => Promise<RescheduleScheduledMessageCommandResult>;
 };
 
 type Dependencies = {
   discord: ScheduledMessageCreationDiscord;
-  store: Pick<ScheduledMessageStore, "create" | "cancel" | "findStatus">;
+  store: Pick<
+    ScheduledMessageStore,
+    | "create"
+    | "cancel"
+    | "findStatus"
+    | "listNonterminal"
+    | "findEditable"
+    | "edit"
+    | "reschedule"
+    | "find"
+  >;
   delivery: Pick<
     ScheduledMessageWorkerController,
-    "enqueueScheduledMessage" | "hasCreatedOrRetryDelivery" | "cancelScheduledMessageDeliveries"
+    "ensureScheduledMessageDelivery" | "cancelScheduledMessageDeliveries"
   >;
   logger: Pick<Logger, "warn">;
   generateId?: () => string;
@@ -145,17 +195,16 @@ export function createScheduledMessageCommandService({
         return { outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED" };
       }
 
-      let deliveryPendingReconciliation = false;
+      let deliveryPendingReconciliation: boolean;
       try {
-        await delivery.enqueueScheduledMessage(definition.action.id, definition.action.executeAt);
+        deliveryPendingReconciliation =
+          (await delivery.ensureScheduledMessageDelivery({
+            scheduledActionId: definition.action.id,
+            executeAt: definition.action.executeAt,
+            revision: definition.revision,
+          })) === "PENDING_RECONCILIATION";
       } catch {
-        try {
-          deliveryPendingReconciliation = !(await delivery.hasCreatedOrRetryDelivery(
-            definition.action.id,
-          ));
-        } catch {
-          deliveryPendingReconciliation = true;
-        }
+        deliveryPendingReconciliation = true;
       }
       if (deliveryPendingReconciliation) {
         logger.warn(
@@ -218,6 +267,101 @@ export function createScheduledMessageCommandService({
       } catch {
         return { outcome: "UNAVAILABLE" };
       }
+    },
+
+    async list(input) {
+      if (!Number.isSafeInteger(input.page) || input.page < 1) return { outcome: "INVALID_PAGE" };
+      const offset = (input.page - 1) * 10;
+      if (!Number.isSafeInteger(offset)) return { outcome: "INVALID_PAGE" };
+      try {
+        return await store.listNonterminal(input.guildId, input.channelId, offset);
+      } catch {
+        return { outcome: "UNAVAILABLE" };
+      }
+    },
+
+    async findEditable(input) {
+      try {
+        return await store.findEditable(input.scheduledActionId, input.guildId, input.channelId);
+      } catch {
+        return { outcome: "UNAVAILABLE" };
+      }
+    },
+
+    async edit(input) {
+      const validation = validateManagedMessagePayload(input.payload);
+      if (!validation.ok) return { outcome: "INVALID_PAYLOAD", code: validation.code };
+      return store.edit({
+        scheduledActionId: input.scheduledActionId,
+        guildId: input.guildId,
+        channelId: input.channelId,
+        actorId: input.actorUserId,
+        expectedRevision: input.expectedRevision,
+        payload: validation.payload,
+        auditId: generateId(),
+        occurredAt: now(),
+      });
+    },
+
+    async reschedule(input) {
+      let current: ScheduledMessageEditableLoadResult;
+      try {
+        current = await store.findEditable(input.scheduledActionId, input.guildId, input.channelId);
+      } catch {
+        return { outcome: "UNAVAILABLE" };
+      }
+      if (current.outcome !== "ACTIVE") return current;
+      const establishedAt = now();
+      let executeAt: Date;
+      try {
+        executeAt = addRelativeDuration(establishedAt, input.durationMs);
+      } catch (error) {
+        if (!(error instanceof InvalidRelativeDurationError)) throw error;
+        return { outcome: "INVALID_DURATION" };
+      }
+      const result = await store.reschedule({
+        scheduledActionId: input.scheduledActionId,
+        guildId: input.guildId,
+        channelId: input.channelId,
+        actorId: input.actorUserId,
+        expectedRevision: current.definition.revision,
+        executeAt,
+        auditId: generateId(),
+        occurredAt: establishedAt,
+      });
+      if (result.outcome !== "RESCHEDULED") return result;
+
+      let authoritative: ScheduledMessageDefinition | undefined;
+      try {
+        authoritative = await store.find(input.scheduledActionId);
+      } catch {
+        authoritative = undefined;
+      }
+      let deliveryPendingReconciliation = true;
+      if (authoritative?.action.status === "ACTIVE") {
+        try {
+          deliveryPendingReconciliation =
+            (await delivery.ensureScheduledMessageDelivery({
+              scheduledActionId: authoritative.action.id,
+              executeAt: authoritative.action.executeAt,
+              revision: authoritative.revision,
+            })) === "PENDING_RECONCILIATION";
+        } catch {
+          deliveryPendingReconciliation = true;
+        }
+      }
+      if (deliveryPendingReconciliation) {
+        logger.warn(
+          {
+            event: "scheduled_message_reschedule_delivery_pending",
+            scheduledActionId: input.scheduledActionId,
+            guildId: input.guildId,
+            channelId: input.channelId,
+          },
+          "Rescheduled message delivery is pending reconciliation",
+        );
+      }
+      return { ...result, deliveryPendingReconciliation };
     },
   };
 }

@@ -375,6 +375,10 @@ describe("managed message modal routing", () => {
       create: vi.fn(),
       cancel: vi.fn(),
       status: vi.fn(),
+      list: vi.fn(),
+      findEditable: vi.fn(),
+      edit: vi.fn(),
+      reschedule: vi.fn(),
     };
     const client = createDiscordClient(logger, discordDependencies);
     registerManagedMessageModalHandler(client, service, scheduledMessages, logger);
@@ -406,6 +410,10 @@ describe("managed message modal routing", () => {
       create: vi.fn(),
       cancel: vi.fn(),
       status: vi.fn(),
+      list: vi.fn(),
+      findEditable: vi.fn(),
+      edit: vi.fn(),
+      reschedule: vi.fn(),
     };
     const client = createDiscordClient(logger, discordDependencies);
     registerManagedMessageModalHandler(client, service, scheduledMessages, logger);
@@ -681,6 +689,10 @@ function registerTestCommandHandler(
       create: vi.fn(),
       cancel: vi.fn(),
       status: vi.fn(),
+      list: vi.fn(),
+      findEditable: vi.fn(),
+      edit: vi.fn(),
+      reschedule: vi.fn(),
     },
     scheduledThreadClose: { schedule: vi.fn(), cancel: vi.fn(), closeManually: vi.fn() },
     threadLifecycle: lifecycle,

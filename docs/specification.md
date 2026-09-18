@@ -559,6 +559,9 @@ One-time scheduled messages expose these commands:
 /message schedule create after:<duration>
 /message schedule cancel id:<schedule-id>
 /message schedule status id:<schedule-id>
+/message schedule list [page:<positive-integer>]
+/message schedule edit id:<schedule-id>
+/message schedule reschedule id:<schedule-id> after:<duration>
 ```
 
 Creation accepts one relative duration from `1m` through `365d`, using a single `m`, `h`, or `d`
@@ -576,7 +579,46 @@ permission. Cancellation changes only `ACTIVE` to `CANCELLED`, atomically record
 not undo confirmed cancellation. Status is read-only and does not expose the scheduled payload.
 Completed status includes a canonical Discord message link when the result message ID is present.
 
-Listing, editing, and rescheduling one-time schedules are not implemented.
+List returns only `ACTIVE` and `EXECUTING` one-time messages for the current guild and channel,
+ordered by execution time and schedule ID in fixed pages of 10. Each row contains the full schedule
+ID, status, execution time, and creator ID. It never returns scheduled content and performs no
+Discord, pg-boss, repair, or database mutation work.
+
+Edit is available only while a one-time schedule remains `ACTIVE`. It loads the current canonical
+managed-message payload into the existing five-field modal and binds the form to the persisted
+scheduled-message revision. Submission revalidates the current guild, channel, administrator
+permission, canonical payload, active state, and expected revision. An exact payload no-op changes
+nothing. A successful edit replaces the complete payload, increments revision once, and commits an
+`EDITED` user audit atomically. A stale form never overwrites a later edit or reschedule.
+
+Reschedule accepts the same `1m` through `365d` single-unit relative duration as creation. The new
+execution time is derived from the reschedule establishment time, not from the old execution time.
+Only `ACTIVE` schedules may change. A successful reschedule updates only execution time and the
+scheduled-message revision, preserves payload, creator, retry count, and result state, and commits
+a complete `RESCHEDULED` user audit atomically.
+
+The persisted scheduled-message revision starts at zero and increments exactly once for each
+successful edit or reschedule. Execution loads the authoritative revision before Discord preflight
+and must still match it while atomically claiming `ACTIVE` to `EXECUTING`. Thus an edit or
+reschedule that commits during preflight prevents the stale executor from creating a Discord
+message; a claim that commits first prevents the administrative mutation. Cancellation, safe
+pre-send retry, failure, and finalization do not change revision.
+
+Scheduled-message delivery payloads include the action ID, canonical projected execution time, and
+projected revision while remaining backward compatible with older ID-only deliveries. PostgreSQL
+state and the revision-aware claim remain execution authority. A projected revision difference
+alone does not stale a delivery when the authoritative execution time is unchanged after a
+payload-only edit.
+
+Created delivery is current only when its projected time and effective start time match the
+authoritative execution time. Retry and active delivery use the projected execution time because a
+retry start time is its next retry wake time. Created and retry delivery are updated in place with
+the public pg-boss `upsert()` API. A stale active delivery is cancelled and confirmed ineffective
+before current delivery is upserted. Terminal history does not suppress repair. Legacy created
+delivery is adopted only when its effective time matches; legacy retry delivery may be upgraded in
+place without resetting its retry wake time; legacy active delivery is cancelled conservatively
+before replacement. Startup and runtime reconciliation apply these timing-aware rules and leave an
+unconfirmed repair pending for a later sweep rather than guessing.
 
 Scheduled-message administration requires the Discord `ManageMessages` permission in the MVP.
 

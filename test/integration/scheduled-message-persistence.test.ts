@@ -258,6 +258,7 @@ describe("scheduled message persistence", () => {
     const migrationsSchema = `weft_smg_14_${suffix}`;
     const actionId = `upgrade-0014-${suffix}`;
     const migrationDirectory = await createMigrationSubset(13);
+    const upgradeMigrationDirectory = await createMigrationSubset(14);
     let isolatedPool: Pool | undefined;
 
     try {
@@ -339,7 +340,10 @@ describe("scheduled message persistence", () => {
           `),
         ]).then((results) => results.map((result) => result.rows));
       const before = await readHistoricalRows();
-      await migrate(isolatedDatabase, { migrationsFolder: "drizzle", migrationsSchema });
+      await migrate(isolatedDatabase, {
+        migrationsFolder: upgradeMigrationDirectory,
+        migrationsSchema,
+      });
       const after = await readHistoricalRows();
       expect(after).toEqual(before);
 
@@ -401,6 +405,7 @@ describe("scheduled message persistence", () => {
       );
       await database.client.delete(scheduledActions).where(eq(scheduledActions.id, actionId));
       await rm(migrationDirectory, { recursive: true, force: true });
+      await rm(upgradeMigrationDirectory, { recursive: true, force: true });
     }
   });
 
@@ -557,7 +562,7 @@ describe("scheduled message persistence", () => {
       action: { id: input.scheduledActionId, status: "ACTIVE" },
     });
 
-    const claim = await store.claimExecution(input.scheduledActionId);
+    const claim = await store.claimExecution(input.scheduledActionId, undefined);
     expect(claim).toMatchObject({
       outcome: "COMMITTED_STATE_MISSING",
       action: { id: input.scheduledActionId, status: "EXECUTING" },
@@ -599,7 +604,7 @@ describe("scheduled message persistence", () => {
     const input = creation("retry-budget-action", { content: "retry me", embed: null });
     let definition = await store.create(input);
     for (let retryCount = 1; retryCount <= 3; retryCount += 1) {
-      const claim = await store.claimExecution(input.scheduledActionId);
+      const claim = await store.claimExecution(input.scheduledActionId, 0);
       expect(claim.outcome).toBe("COMMITTED");
       if (claim.outcome !== "COMMITTED") throw new Error("claim failed");
       const retried = await store.retryPreSendFailure({
@@ -614,7 +619,7 @@ describe("scheduled message persistence", () => {
     }
     expect(definition.retryCount).toBe(3);
 
-    const finalClaim = await store.claimExecution(input.scheduledActionId);
+    const finalClaim = await store.claimExecution(input.scheduledActionId, 0);
     if (finalClaim.outcome !== "COMMITTED") throw new Error("final claim failed");
     const failed = await store.failExecution({
       definition: finalClaim.definition,
@@ -638,7 +643,7 @@ describe("scheduled message persistence", () => {
   it("rolls back a safe retry when its execution audit cannot be inserted", async () => {
     const input = creation("retry-audit-rollback", { content: "retry rollback", embed: null });
     await store.create(input);
-    const claim = await store.claimExecution(input.scheduledActionId);
+    const claim = await store.claimExecution(input.scheduledActionId, 0);
     if (claim.outcome !== "COMMITTED") throw new Error("claim failed");
     await insertDirectAudit({
       id: "conflicting-retry-audit",
@@ -664,7 +669,7 @@ describe("scheduled message persistence", () => {
   it("exactly confirms a safe retry after database response loss", async () => {
     const input = creation("retry-response-loss", { content: "retry response loss", embed: null });
     await store.create(input);
-    const claim = await store.claimExecution(input.scheduledActionId);
+    const claim = await store.claimExecution(input.scheduledActionId, 0);
     if (claim.outcome !== "COMMITTED") throw new Error("claim failed");
     const responseLossStore = createScheduledMessageStore(
       transactionResponseLossDatabase(new Error("response lost")),
@@ -689,8 +694,8 @@ describe("scheduled message persistence", () => {
     await store.create(input);
 
     const results = await Promise.all([
-      store.claimExecution(input.scheduledActionId),
-      store.claimExecution(input.scheduledActionId),
+      store.claimExecution(input.scheduledActionId, 0),
+      store.claimExecution(input.scheduledActionId, 0),
     ]);
     expect(results.filter((result) => result.outcome === "COMMITTED")).toHaveLength(1);
     expect(results.filter((result) => result.outcome === "NOT_TRANSITIONED")).toHaveLength(1);
@@ -705,7 +710,7 @@ describe("scheduled message persistence", () => {
   it("persists an uncompensated terminal failure without changing retry or state result ID", async () => {
     const input = creation("uncompensated-failure", { content: "terminal", embed: null });
     await store.create(input);
-    const claim = await store.claimExecution(input.scheduledActionId);
+    const claim = await store.claimExecution(input.scheduledActionId, 0);
     if (claim.outcome !== "COMMITTED") throw new Error("claim failed");
 
     await expect(
@@ -742,7 +747,7 @@ describe("scheduled message persistence", () => {
       embed: { title: "final title", color: 0 },
     });
     await store.create(input);
-    const claim = await store.claimExecution(input.scheduledActionId);
+    const claim = await store.claimExecution(input.scheduledActionId, 0);
     if (claim.outcome !== "COMMITTED") throw new Error("claim failed");
     const messageCreatedAt = new Date("2030-01-02T03:04:06.000Z");
     await expect(
@@ -807,7 +812,7 @@ describe("scheduled message persistence", () => {
   it("confirms all five exact finalization effects after database response loss", async () => {
     const input = creation("finalization-response-loss", { content: "confirmed", embed: null });
     await store.create(input);
-    const claim = await store.claimExecution(input.scheduledActionId);
+    const claim = await store.claimExecution(input.scheduledActionId, 0);
     if (claim.outcome !== "COMMITTED") throw new Error("claim failed");
     const responseLossStore = createScheduledMessageStore(
       finalizationResponseLossDatabase(new Error("response lost")),
@@ -827,7 +832,7 @@ describe("scheduled message persistence", () => {
   it("rejects response-loss confirmation when a matcher field is changed", async () => {
     const input = creation("finalization-mismatch", { content: "confirmed", embed: null });
     await store.create(input);
-    const claim = await store.claimExecution(input.scheduledActionId);
+    const claim = await store.claimExecution(input.scheduledActionId, 0);
     if (claim.outcome !== "COMMITTED") throw new Error("claim failed");
     const originalError = new Error("response lost with corrupted confirmation");
     const responseLossStore = createScheduledMessageStore(
@@ -858,7 +863,7 @@ describe("scheduled message persistence", () => {
   it("rolls back successful finalization completely on a managed-message conflict", async () => {
     const input = creation("finalization-conflict-action", { content: "scheduled", embed: null });
     await store.create(input);
-    const claim = await store.claimExecution(input.scheduledActionId);
+    const claim = await store.claimExecution(input.scheduledActionId, 0);
     if (claim.outcome !== "COMMITTED") throw new Error("claim failed");
     await database.client.insert(managedMessages).values({
       messageId: "conflicting-message-id",
@@ -894,7 +899,7 @@ describe("scheduled message persistence", () => {
   it("rolls back all successful finalization state when the execution audit insert fails", async () => {
     const input = creation("finalization-audit-conflict", { content: "scheduled", embed: null });
     await store.create(input);
-    const claim = await store.claimExecution(input.scheduledActionId);
+    const claim = await store.claimExecution(input.scheduledActionId, 0);
     if (claim.outcome !== "COMMITTED") throw new Error("claim failed");
     await insertDirectAudit({
       id: "conflicting-execution-audit",
@@ -1446,7 +1451,7 @@ describe("scheduled message persistence", () => {
     });
     await store.create(input);
 
-    await expect(store.claimExecution(input.scheduledActionId)).resolves.toMatchObject({
+    await expect(store.claimExecution(input.scheduledActionId, 0)).resolves.toMatchObject({
       outcome: "COMMITTED",
       definition: { action: { status: "EXECUTING" } },
     });

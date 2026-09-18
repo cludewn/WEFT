@@ -17,12 +17,26 @@ const queueOptions = {
   expireInSeconds: 900,
 } as const;
 const workOptions = { batchSize: 1, includeMetadata: true } as const;
-const payloadSchema = z.strictObject({ scheduledActionId: z.string().min(1) });
-type Payload = z.infer<typeof payloadSchema>;
+const legacyPayloadSchema = z.strictObject({ scheduledActionId: z.string().min(1) });
+const projectedPayloadSchema = z.strictObject({
+  scheduledActionId: z.string().min(1),
+  scheduledExecuteAt: z.string().min(1),
+  scheduleRevision: z.number().int().nonnegative(),
+});
+const payloadSchema = z.union([projectedPayloadSchema, legacyPayloadSchema]);
+type ProjectedPayload = z.infer<typeof projectedPayloadSchema>;
+
+export type ScheduledMessageDeliveryProjection = {
+  scheduledActionId: string;
+  executeAt: Date;
+  revision: number;
+};
+export type ScheduledMessageDeliveryInspection = "CURRENT" | "STALE" | "MISSING" | "UNCONFIRMED";
+export type ScheduledMessageDeliveryRepairResult = "CURRENT" | "PENDING_RECONCILIATION";
 
 type BossClient = Pick<
   PgBoss,
-  "createQueue" | "getQueue" | "send" | "work" | "offWork" | "findJobs" | "cancel"
+  "createQueue" | "getQueue" | "upsert" | "work" | "offWork" | "findJobs" | "cancel"
 >;
 type WorkerLogger = Pick<Logger, "debug" | "info" | "warn">;
 
@@ -35,15 +49,16 @@ export class ScheduledMessageDeliveryRetryError extends Error {
 
 export type ScheduledMessageWorkerController = {
   ensureQueue: () => Promise<void>;
-  enqueueScheduledMessage: (
-    scheduledActionId: string,
-    executeAt: Date,
-  ) => Promise<"ENQUEUED" | "ALREADY_PRESENT">;
+  inspectScheduledMessageDelivery: (
+    projection: ScheduledMessageDeliveryProjection,
+  ) => Promise<ScheduledMessageDeliveryInspection>;
+  ensureScheduledMessageDelivery: (
+    projection: ScheduledMessageDeliveryProjection,
+  ) => Promise<ScheduledMessageDeliveryRepairResult>;
   cancelStaleActiveDeliveries: (scheduledActionId: string) => Promise<number>;
   cancelScheduledMessageDeliveries: (
     scheduledActionId: string,
   ) => Promise<{ outcome: "CONFIRMED" | "UNCONFIRMED"; matchedDeliveryCount: number }>;
-  hasCreatedOrRetryDelivery: (scheduledActionId: string) => Promise<boolean>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
 };
@@ -54,6 +69,31 @@ type Dependencies = {
   executor: ScheduledMessageExecutor;
   logger: WorkerLogger;
 };
+
+type EffectiveJob = JobWithMetadata<unknown> & {
+  state: "created" | "retry" | "active";
+};
+type DeliveryDetails =
+  | { outcome: "CURRENT" | "STALE"; job: EffectiveJob; legacy: boolean }
+  | { outcome: "MISSING" | "UNCONFIRMED" };
+
+function projectionPayload(projection: ScheduledMessageDeliveryProjection): ProjectedPayload {
+  return {
+    scheduledActionId: projection.scheduledActionId,
+    scheduledExecuteAt: projection.executeAt.toISOString(),
+    scheduleRevision: projection.revision,
+  };
+}
+
+function parseProjectedPayload(value: unknown): ProjectedPayload | undefined {
+  const parsed = projectedPayloadSchema.safeParse(value);
+  if (!parsed.success) return undefined;
+  const timestamp = new Date(parsed.data.scheduledExecuteAt);
+  return !Number.isNaN(timestamp.getTime()) &&
+    timestamp.toISOString() === parsed.data.scheduledExecuteAt
+    ? parsed.data
+    : undefined;
+}
 
 export function createScheduledMessageWorkerController({
   boss,
@@ -67,9 +107,86 @@ export function createScheduledMessageWorkerController({
   let startPromise: Promise<void> | undefined;
   let stopPromise: Promise<void> | undefined;
 
+  const inspectDetails = async (
+    projection: ScheduledMessageDeliveryProjection,
+  ): Promise<DeliveryDetails> => {
+    let jobs: JobWithMetadata<unknown>[];
+    try {
+      jobs = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, {
+        key: projection.scheduledActionId,
+      });
+    } catch {
+      return { outcome: "UNCONFIRMED" };
+    }
+    const effective = jobs.filter(
+      (job): job is EffectiveJob =>
+        job.state === "created" || job.state === "retry" || job.state === "active",
+    );
+    if (effective.length === 0) return { outcome: "MISSING" };
+    if (effective.length !== 1) return { outcome: "UNCONFIRMED" };
+
+    const job = effective[0]!;
+    const projected = parseProjectedPayload(job.data);
+    if (projected !== undefined) {
+      if (projected.scheduledActionId !== projection.scheduledActionId) {
+        return { outcome: "UNCONFIRMED" };
+      }
+      const timeMatches = projected.scheduledExecuteAt === projection.executeAt.toISOString();
+      const startMatches = job.startAfter.getTime() === projection.executeAt.getTime();
+      return {
+        outcome: timeMatches && (job.state !== "created" || startMatches) ? "CURRENT" : "STALE",
+        job,
+        legacy: false,
+      };
+    }
+
+    const legacy = legacyPayloadSchema.safeParse(job.data);
+    if (!legacy.success || legacy.data.scheduledActionId !== projection.scheduledActionId) {
+      return { outcome: "UNCONFIRMED" };
+    }
+    if (job.state === "created") {
+      return {
+        outcome: job.startAfter.getTime() === projection.executeAt.getTime() ? "CURRENT" : "STALE",
+        job,
+        legacy: true,
+      };
+    }
+    if (job.state === "retry") return { outcome: "CURRENT", job, legacy: true };
+    return { outcome: "STALE", job, legacy: true };
+  };
+
+  const confirmCurrent = async (
+    projection: ScheduledMessageDeliveryProjection,
+  ): Promise<ScheduledMessageDeliveryRepairResult> =>
+    (await inspectDetails(projection)).outcome === "CURRENT" ? "CURRENT" : "PENDING_RECONCILIATION";
+
+  const upsertProjection = async (
+    projection: ScheduledMessageDeliveryProjection,
+    updateStartAfter: boolean,
+  ): Promise<ScheduledMessageDeliveryRepairResult> => {
+    try {
+      await boss.upsert(SCHEDULED_MESSAGE_QUEUE, projectionPayload(projection), {
+        singletonKey: projection.scheduledActionId,
+        ...(updateStartAfter ? { startAfter: projection.executeAt } : {}),
+        retryLimit: queueOptions.retryLimit,
+        retryDelay: queueOptions.retryDelay,
+        retryBackoff: queueOptions.retryBackoff,
+        retryDelayMax: queueOptions.retryDelayMax,
+        expireInSeconds: queueOptions.expireInSeconds,
+      });
+    } catch {
+      // An ambiguous state-changing result is resolved only by the read below.
+    }
+    return confirmCurrent(projection);
+  };
+
   const processJob = async (job: JobWithMetadata<unknown>): Promise<void> => {
     const parsed = payloadSchema.safeParse(job.data);
-    if (!parsed.success) {
+    if (
+      !parsed.success ||
+      ("scheduledExecuteAt" in (parsed.success ? parsed.data : {}) &&
+        parseProjectedPayload(job.data) === undefined)
+    ) {
       logger.warn(
         {
           event: "scheduled_message_payload_invalid",
@@ -242,13 +359,47 @@ export function createScheduledMessageWorkerController({
         "Scheduled message queue is ready",
       );
     },
-    async enqueueScheduledMessage(scheduledActionId, executeAt) {
-      const jobId = await boss.send(
-        SCHEDULED_MESSAGE_QUEUE,
-        { scheduledActionId } satisfies Payload,
-        { singletonKey: scheduledActionId, startAfter: executeAt },
-      );
-      return jobId === null ? "ALREADY_PRESENT" : "ENQUEUED";
+    async inspectScheduledMessageDelivery(projection) {
+      return (await inspectDetails(projection)).outcome;
+    },
+    async ensureScheduledMessageDelivery(projection) {
+      const inspected = await inspectDetails(projection);
+      if (inspected.outcome === "UNCONFIRMED") return "PENDING_RECONCILIATION";
+      if (inspected.outcome === "MISSING") return upsertProjection(projection, true);
+      if (inspected.outcome === "CURRENT") {
+        if (!inspected.legacy) return "CURRENT";
+        // A legacy retry's startAfter is its retry wake time and must be preserved while metadata
+        // is adopted. A trusted legacy created delivery already has the authoritative start time.
+        return upsertProjection(projection, false);
+      }
+      if (inspected.outcome !== "STALE") return "PENDING_RECONCILIATION";
+      if (inspected.job.state === "created" || inspected.job.state === "retry") {
+        return upsertProjection(projection, true);
+      }
+
+      try {
+        await boss.cancel(SCHEDULED_MESSAGE_QUEUE, inspected.job.id);
+      } catch {
+        // Confirm ineffectiveness below before any replacement is attempted.
+      }
+      let afterCancellation: JobWithMetadata<unknown>[];
+      try {
+        afterCancellation = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, {
+          key: projection.scheduledActionId,
+        });
+      } catch {
+        return "PENDING_RECONCILIATION";
+      }
+      if (
+        afterCancellation.some(
+          (job) =>
+            job.id === inspected.job.id &&
+            (job.state === "created" || job.state === "retry" || job.state === "active"),
+        )
+      ) {
+        return "PENDING_RECONCILIATION";
+      }
+      return upsertProjection(projection, true);
     },
     async cancelStaleActiveDeliveries(scheduledActionId) {
       const jobs = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, { key: scheduledActionId });
@@ -298,10 +449,6 @@ export function createScheduledMessageWorkerController({
       } catch {
         return { outcome: "UNCONFIRMED", matchedDeliveryCount: cancellableIds.length };
       }
-    },
-    async hasCreatedOrRetryDelivery(scheduledActionId) {
-      const jobs = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, { key: scheduledActionId });
-      return jobs.some((job) => job.state === "created" || job.state === "retry");
     },
     start() {
       startPromise ??= (async () => {
