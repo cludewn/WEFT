@@ -30,6 +30,7 @@ function definition(value: ScheduledAction): ScheduledMessageDefinition {
     action: value,
     creatorUserId: "creator-id",
     retryCount: 2,
+    revision: 0,
     payload: { content: "content", embed: null },
     resultMessageId: null,
   };
@@ -61,21 +62,23 @@ describe("scheduled message reconciliation", () => {
         },
       });
     });
-    const enqueueScheduledMessage = vi.fn(() => {
-      calls.push("enqueue");
-      return Promise.resolve("ENQUEUED" as const);
+    const ensureScheduledMessageDelivery = vi.fn(() => {
+      calls.push("ensure");
+      return Promise.resolve("CURRENT" as const);
     });
     const reconciler = createScheduledMessageStartupReconciler({
       scheduledActions: { findExecutingScheduledMessagesPage, findActiveScheduledMessagesPage },
-      store: { find: vi.fn(() => Promise.resolve(definition(executing))), failExecution },
+      store: {
+        find: vi.fn((id) => Promise.resolve(definition(id === executing.id ? executing : active))),
+        failExecution,
+      },
       executor: { execute: vi.fn(() => Promise.resolve({ outcome: "SUCCESS" as const })) },
       delivery: {
         cancelStaleActiveDeliveries: vi.fn((id) => {
           calls.push(`cancel:${id}`);
           return Promise.resolve(1);
         }),
-        hasCreatedOrRetryDelivery: vi.fn(() => Promise.resolve(false)),
-        enqueueScheduledMessage,
+        ensureScheduledMessageDelivery,
       },
       logger: logger(),
       now: () => new Date("2030-01-01T00:00:00Z"),
@@ -86,8 +89,7 @@ describe("scheduled message reconciliation", () => {
     expect(calls).toEqual([
       "cancel:executing-id",
       "fail:EXECUTION_INTERRUPTED_UNCONFIRMED",
-      "cancel:active-id",
-      "enqueue",
+      "ensure",
     ]);
     expect(failExecution).toHaveBeenCalledWith(
       expect.objectContaining({ auditId: "recovery-audit-id", resultMessageId: null }),
@@ -98,7 +100,7 @@ describe("scheduled message reconciliation", () => {
     const executing = action("executing-id", "EXECUTING");
     const findActiveScheduledMessagesPage = vi.fn(() => Promise.resolve([]));
     const execute = vi.fn(() => Promise.resolve({ outcome: "SUCCESS" as const }));
-    const enqueueScheduledMessage = vi.fn(() => Promise.resolve("ENQUEUED" as const));
+    const ensureScheduledMessageDelivery = vi.fn(() => Promise.resolve("CURRENT" as const));
     const reconciler = createScheduledMessageStartupReconciler({
       scheduledActions: {
         findExecutingScheduledMessagesPage: vi
@@ -116,8 +118,7 @@ describe("scheduled message reconciliation", () => {
       executor: { execute },
       delivery: {
         cancelStaleActiveDeliveries: vi.fn(() => Promise.resolve(1)),
-        hasCreatedOrRetryDelivery: vi.fn(() => Promise.resolve(false)),
-        enqueueScheduledMessage,
+        ensureScheduledMessageDelivery,
       },
       logger: logger(),
     });
@@ -127,7 +128,75 @@ describe("scheduled message reconciliation", () => {
     );
     expect(execute).not.toHaveBeenCalled();
     expect(findActiveScheduledMessagesPage).not.toHaveBeenCalled();
-    expect(enqueueScheduledMessage).not.toHaveBeenCalled();
+    expect(ensureScheduledMessageDelivery).not.toHaveBeenCalled();
+  });
+
+  it("leaves unconfirmed ACTIVE delivery repair for runtime reconciliation", async () => {
+    const active = action("active-id", "ACTIVE");
+    const testLogger = logger();
+    const reconciler = createScheduledMessageStartupReconciler({
+      scheduledActions: {
+        findExecutingScheduledMessagesPage: vi.fn(() => Promise.resolve([])),
+        findActiveScheduledMessagesPage: vi
+          .fn()
+          .mockResolvedValueOnce([active])
+          .mockResolvedValueOnce([]),
+      },
+      store: {
+        find: vi.fn(() => Promise.resolve(definition(active))),
+        failExecution: vi.fn(),
+      },
+      executor: { execute: vi.fn(() => Promise.resolve({ outcome: "SUCCESS" as const })) },
+      delivery: {
+        cancelStaleActiveDeliveries: vi.fn(() => Promise.resolve(0)),
+        ensureScheduledMessageDelivery: vi.fn(() =>
+          Promise.resolve("PENDING_RECONCILIATION" as const),
+        ),
+      },
+      logger: testLogger,
+      now: () => executeAt,
+    });
+
+    await expect(reconciler.recoverAtStartup()).resolves.toBeUndefined();
+    expect(testLogger.warn).toHaveBeenCalledWith(
+      {
+        event: "scheduled_message_startup_delivery_pending",
+        scheduledActionId: "active-id",
+      },
+      "Scheduled message delivery is pending runtime reconciliation",
+    );
+  });
+
+  it("accepts an executor not-due skip after an outer overdue read", async () => {
+    const outerOverdue = action("rescheduled-during-startup", "ACTIVE");
+    const execute = vi.fn(() =>
+      Promise.resolve({ outcome: "SKIPPED" as const, reason: "NOT_DUE" as const }),
+    );
+    const ensureScheduledMessageDelivery = vi.fn(() => Promise.resolve("CURRENT" as const));
+    const reconciler = createScheduledMessageStartupReconciler({
+      scheduledActions: {
+        findExecutingScheduledMessagesPage: vi.fn(() => Promise.resolve([])),
+        findActiveScheduledMessagesPage: vi
+          .fn()
+          .mockResolvedValueOnce([outerOverdue])
+          .mockResolvedValueOnce([]),
+      },
+      store: {
+        find: vi.fn(() => Promise.resolve(definition(outerOverdue))),
+        failExecution: vi.fn(),
+      },
+      executor: { execute },
+      delivery: {
+        cancelStaleActiveDeliveries: vi.fn(() => Promise.resolve(0)),
+        ensureScheduledMessageDelivery,
+      },
+      logger: logger(),
+      now: () => new Date(executeAt.getTime() + 3_600_001),
+    });
+
+    await expect(reconciler.recoverAtStartup()).resolves.toBeUndefined();
+    expect(execute).toHaveBeenCalledWith(outerOverdue.id);
+    expect(ensureScheduledMessageDelivery).not.toHaveBeenCalled();
   });
 
   it("runtime reconciliation scans ACTIVE only and never resets retry state", async () => {
@@ -136,18 +205,23 @@ describe("scheduled message reconciliation", () => {
       .fn()
       .mockResolvedValueOnce([active])
       .mockResolvedValueOnce([]);
-    const enqueueScheduledMessage = vi.fn(() => Promise.resolve("ENQUEUED" as const));
+    const ensureScheduledMessageDelivery = vi.fn(() => Promise.resolve("CURRENT" as const));
     const executor = { execute: vi.fn(() => Promise.resolve({ outcome: "SUCCESS" as const })) };
     const reconciler = createScheduledMessageRuntimeReconciler({
       scheduledActions: { findActiveScheduledMessagesPage },
+      store: { find: vi.fn(() => Promise.resolve(definition(active))) },
       executor,
-      delivery: { enqueueScheduledMessage },
+      delivery: { ensureScheduledMessageDelivery },
       logger: logger(),
       now: () => executeAt,
     });
 
     await reconciler.reconcileOnce();
-    expect(enqueueScheduledMessage).toHaveBeenCalledWith("active-id", executeAt);
+    expect(ensureScheduledMessageDelivery).toHaveBeenCalledWith({
+      scheduledActionId: "active-id",
+      executeAt,
+      revision: 0,
+    });
     expect(executor.execute).not.toHaveBeenCalled();
     await reconciler.stop();
   });
@@ -164,18 +238,19 @@ describe("scheduled message reconciliation", () => {
         code: "OVERDUE_GRACE_EXCEEDED" as const,
       }),
     );
-    const enqueueScheduledMessage = vi.fn(() => Promise.resolve("ENQUEUED" as const));
+    const ensureScheduledMessageDelivery = vi.fn(() => Promise.resolve("CURRENT" as const));
     const reconciler = createScheduledMessageRuntimeReconciler({
       scheduledActions: { findActiveScheduledMessagesPage },
+      store: { find: vi.fn(() => Promise.resolve(definition(expired))) },
       executor: { execute },
-      delivery: { enqueueScheduledMessage },
+      delivery: { ensureScheduledMessageDelivery },
       logger: logger(),
       now: () => new Date(executeAt.getTime() + 3_600_001),
     });
 
     await reconciler.reconcileOnce();
     expect(execute).toHaveBeenCalledWith("expired-id");
-    expect(enqueueScheduledMessage).not.toHaveBeenCalled();
+    expect(ensureScheduledMessageDelivery).not.toHaveBeenCalled();
     await reconciler.stop();
   });
 });

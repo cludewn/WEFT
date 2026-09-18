@@ -22,7 +22,7 @@ type ActionReads = Pick<
 >;
 type Delivery = Pick<
   ScheduledMessageWorkerController,
-  "cancelStaleActiveDeliveries" | "enqueueScheduledMessage" | "hasCreatedOrRetryDelivery"
+  "cancelStaleActiveDeliveries" | "ensureScheduledMessageDelivery"
 >;
 type ReconciliationLogger = Pick<Logger, "info" | "warn">;
 
@@ -45,8 +45,9 @@ type StartupDependencies = {
 
 type RuntimeDependencies = {
   scheduledActions: Pick<ScheduledActionStore, "findActiveScheduledMessagesPage">;
+  store: Pick<ScheduledMessageStore, "find">;
   executor: ScheduledMessageExecutor;
-  delivery: Pick<ScheduledMessageWorkerController, "enqueueScheduledMessage">;
+  delivery: Pick<ScheduledMessageWorkerController, "ensureScheduledMessageDelivery">;
   logger: ReconciliationLogger;
   now?: () => Date;
 };
@@ -118,9 +119,9 @@ export function createScheduledMessageStartupReconciler({
         }
 
         activeScanned = await scanActive(scheduledActions, async (action) => {
-          await delivery.cancelStaleActiveDeliveries(action.id);
           if (!isWithinScheduledMessageGrace(action.executeAt, now())) {
             const result = await executor.execute(action.id);
+            if (result.outcome === "SKIPPED" && result.reason === "NOT_DUE") return;
             if (
               result.outcome !== "PERMANENT_FAILURE" ||
               result.code !== "OVERDUE_GRACE_EXCEEDED"
@@ -129,12 +130,23 @@ export function createScheduledMessageStartupReconciler({
             }
             return;
           }
-          try {
-            await delivery.enqueueScheduledMessage(action.id, action.executeAt);
-          } catch {
-            if (!(await delivery.hasCreatedOrRetryDelivery(action.id))) {
-              throw new ScheduledMessageStartupRecoveryError();
-            }
+          const definition = await store.find(action.id);
+          if (definition === undefined || definition.action.status !== "ACTIVE") {
+            throw new ScheduledMessageStartupRecoveryError();
+          }
+          const deliveryResult = await delivery.ensureScheduledMessageDelivery({
+            scheduledActionId: definition.action.id,
+            executeAt: definition.action.executeAt,
+            revision: definition.revision,
+          });
+          if (deliveryResult !== "CURRENT") {
+            logger.warn(
+              {
+                event: "scheduled_message_startup_delivery_pending",
+                scheduledActionId: definition.action.id,
+              },
+              "Scheduled message delivery is pending runtime reconciliation",
+            );
           }
         });
       } catch (error) {
@@ -166,6 +178,7 @@ export function createScheduledMessageStartupReconciler({
 
 export function createScheduledMessageRuntimeReconciler({
   scheduledActions,
+  store,
   executor,
   delivery,
   logger,
@@ -189,7 +202,18 @@ export function createScheduledMessageRuntimeReconciler({
             throw new Error("Scheduled message overdue transition could not be confirmed");
           }
         } else {
-          await delivery.enqueueScheduledMessage(action.id, action.executeAt);
+          const definition = await store.find(action.id);
+          if (definition === undefined || definition.action.status !== "ACTIVE") {
+            throw new Error("Scheduled message definition could not be loaded");
+          }
+          const deliveryResult = await delivery.ensureScheduledMessageDelivery({
+            scheduledActionId: definition.action.id,
+            executeAt: definition.action.executeAt,
+            revision: definition.revision,
+          });
+          if (deliveryResult !== "CURRENT") {
+            throw new Error("Scheduled message delivery repair is unconfirmed");
+          }
         }
       });
     } catch {

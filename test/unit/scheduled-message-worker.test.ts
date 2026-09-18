@@ -45,6 +45,18 @@ function job(data: unknown = { scheduledActionId: "action-id" }): JobWithMetadat
     retryLimit: 3,
   } as JobWithMetadata<unknown>;
 }
+function deliveryJob(input: {
+  state: "created" | "retry" | "active" | "completed";
+  data: unknown;
+  startAfter?: Date;
+}): JobWithMetadata<unknown> {
+  return {
+    ...job(input.data),
+    state: input.state,
+    startAfter: input.startAfter ?? new Date("2030-01-01T00:00:00.000Z"),
+    singletonKey: "action-id",
+  };
+}
 function fixture(
   result: ScheduledMessageExecutionResult = { outcome: "SUCCESS" },
   configuredCurrent: ScheduledAction | null = action(),
@@ -54,7 +66,7 @@ function fixture(
   const boss = {
     createQueue: vi.fn(() => Promise.resolve()),
     getQueue: vi.fn(() => Promise.resolve(requiredQueue)),
-    send: vi.fn(() => Promise.resolve("job-id" as string | null)),
+    upsert: vi.fn(() => Promise.resolve({ jobs: ["job-id"], updated: 0, inserted: 1 })),
     findJobs: vi.fn(() => Promise.resolve([])),
     cancel: vi.fn(() => Promise.resolve({})),
     work: vi.fn((_queue: string, _options: unknown, registered: Handler) => {
@@ -64,7 +76,7 @@ function fixture(
     offWork: vi.fn(() => Promise.resolve()),
   } as unknown as Pick<
     PgBoss,
-    "createQueue" | "getQueue" | "send" | "findJobs" | "cancel" | "work" | "offWork"
+    "createQueue" | "getQueue" | "upsert" | "findJobs" | "cancel" | "work" | "offWork"
   >;
   const execute = vi.fn(() => Promise.resolve(result));
   const findById = vi.fn(() => Promise.resolve(current));
@@ -83,7 +95,7 @@ function fixture(
 }
 
 describe("scheduled message pg-boss worker", () => {
-  it("creates the exact queue and enqueues only the action ID", async () => {
+  it("creates the exact queue and upserts projection metadata", async () => {
     const f = fixture();
     await f.controller.ensureQueue();
     expect(f.boss.createQueue).toHaveBeenCalledWith(SCHEDULED_MESSAGE_QUEUE, {
@@ -95,11 +107,19 @@ describe("scheduled message pg-boss worker", () => {
       expireInSeconds: 900,
     });
     const executeAt = new Date("2030-01-01T00:00:00Z");
-    await f.controller.enqueueScheduledMessage("action-id", executeAt);
-    expect(f.boss.send).toHaveBeenCalledWith(
+    await f.controller.ensureScheduledMessageDelivery({
+      scheduledActionId: "action-id",
+      executeAt,
+      revision: 0,
+    });
+    expect(f.boss.upsert).toHaveBeenCalledWith(
       SCHEDULED_MESSAGE_QUEUE,
-      { scheduledActionId: "action-id" },
-      { singletonKey: "action-id", startAfter: executeAt },
+      {
+        scheduledActionId: "action-id",
+        scheduledExecuteAt: executeAt.toISOString(),
+        scheduleRevision: 0,
+      },
+      expect.objectContaining({ singletonKey: "action-id", startAfter: executeAt }),
     );
   });
 
@@ -107,6 +127,175 @@ describe("scheduled message pg-boss worker", () => {
     const f = fixture();
     await f.run(job({ scheduledActionId: "action-id", guildId: "not-allowed" }));
     expect(f.execute).not.toHaveBeenCalled();
+  });
+
+  it("classifies projected created/retry timing and ignores revision-only drift", async () => {
+    const executeAt = new Date("2030-01-01T00:00:00.000Z");
+    const projection = { scheduledActionId: "action-id", executeAt, revision: 9 };
+    const f = fixture();
+    vi.mocked(f.boss.findJobs).mockResolvedValue([
+      deliveryJob({
+        state: "created",
+        data: {
+          scheduledActionId: "action-id",
+          scheduledExecuteAt: executeAt.toISOString(),
+          scheduleRevision: 1,
+        },
+        startAfter: executeAt,
+      }),
+    ]);
+    await expect(f.controller.inspectScheduledMessageDelivery(projection)).resolves.toBe("CURRENT");
+
+    vi.mocked(f.boss.findJobs).mockResolvedValue([
+      deliveryJob({
+        state: "retry",
+        data: {
+          scheduledActionId: "action-id",
+          scheduledExecuteAt: executeAt.toISOString(),
+          scheduleRevision: 1,
+        },
+        startAfter: new Date("2030-01-01T00:05:00.000Z"),
+      }),
+    ]);
+    await expect(f.controller.inspectScheduledMessageDelivery(projection)).resolves.toBe("CURRENT");
+  });
+
+  it("does not replace a current active delivery", async () => {
+    const f = fixture();
+    const executeAt = new Date("2030-01-01T00:00:00.000Z");
+    vi.mocked(f.boss.findJobs).mockResolvedValue([
+      deliveryJob({
+        state: "active",
+        data: {
+          scheduledActionId: "action-id",
+          scheduledExecuteAt: executeAt.toISOString(),
+          scheduleRevision: 0,
+        },
+      }),
+    ]);
+
+    await expect(
+      f.controller.ensureScheduledMessageDelivery({
+        scheduledActionId: "action-id",
+        executeAt,
+        revision: 1,
+      }),
+    ).resolves.toBe("CURRENT");
+    expect(f.boss.cancel).not.toHaveBeenCalled();
+    expect(f.boss.upsert).not.toHaveBeenCalled();
+  });
+
+  it("treats malformed or multiple effective deliveries as unconfirmed", async () => {
+    const f = fixture();
+    const projection = {
+      scheduledActionId: "action-id",
+      executeAt: new Date("2030-01-01T00:00:00.000Z"),
+      revision: 0,
+    };
+    vi.mocked(f.boss.findJobs).mockResolvedValue([
+      deliveryJob({ state: "created", data: { scheduledActionId: "action-id", extra: true } }),
+    ]);
+    await expect(f.controller.inspectScheduledMessageDelivery(projection)).resolves.toBe(
+      "UNCONFIRMED",
+    );
+    vi.mocked(f.boss.findJobs).mockResolvedValue([
+      deliveryJob({ state: "created", data: { scheduledActionId: "action-id" } }),
+      deliveryJob({ state: "retry", data: { scheduledActionId: "action-id" } }),
+    ]);
+    await expect(f.controller.inspectScheduledMessageDelivery(projection)).resolves.toBe(
+      "UNCONFIRMED",
+    );
+  });
+
+  it("adopts legacy retry metadata without rewriting its retry wake time", async () => {
+    const f = fixture();
+    const retryWake = new Date("2030-01-01T00:05:00.000Z");
+    const executeAt = new Date("2030-01-01T00:00:00.000Z");
+    vi.mocked(f.boss.findJobs)
+      .mockResolvedValueOnce([
+        deliveryJob({
+          state: "retry",
+          data: { scheduledActionId: "action-id" },
+          startAfter: retryWake,
+        }),
+      ])
+      .mockResolvedValueOnce([
+        deliveryJob({
+          state: "retry",
+          data: {
+            scheduledActionId: "action-id",
+            scheduledExecuteAt: executeAt.toISOString(),
+            scheduleRevision: 3,
+          },
+          startAfter: retryWake,
+        }),
+      ]);
+    await expect(
+      f.controller.ensureScheduledMessageDelivery({
+        scheduledActionId: "action-id",
+        executeAt,
+        revision: 3,
+      }),
+    ).resolves.toBe("CURRENT");
+    expect(f.boss.upsert).toHaveBeenCalledWith(
+      SCHEDULED_MESSAGE_QUEUE,
+      expect.objectContaining({ scheduleRevision: 3 }),
+      expect.any(Object),
+    );
+    expect(vi.mocked(f.boss.upsert).mock.calls[0]?.[2]).not.toHaveProperty("startAfter");
+  });
+
+  it("confirms an ambiguous upsert result without retrying the mutation", async () => {
+    const f = fixture();
+    const executeAt = new Date("2030-01-01T00:00:00.000Z");
+    vi.mocked(f.boss.findJobs)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        deliveryJob({
+          state: "created",
+          data: {
+            scheduledActionId: "action-id",
+            scheduledExecuteAt: executeAt.toISOString(),
+            scheduleRevision: 4,
+          },
+          startAfter: executeAt,
+        }),
+      ]);
+    vi.mocked(f.boss.upsert).mockRejectedValue(new Error("response lost"));
+
+    await expect(
+      f.controller.ensureScheduledMessageDelivery({
+        scheduledActionId: "action-id",
+        executeAt,
+        revision: 4,
+      }),
+    ).resolves.toBe("CURRENT");
+    expect(f.boss.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not replace a stale active delivery until cancellation is confirmed", async () => {
+    const f = fixture();
+    const executeAt = new Date("2030-01-01T00:00:00.000Z");
+    const staleActive = deliveryJob({
+      state: "active",
+      data: {
+        scheduledActionId: "action-id",
+        scheduledExecuteAt: "2029-12-31T23:00:00.000Z",
+        scheduleRevision: 0,
+      },
+    });
+    vi.mocked(f.boss.findJobs).mockResolvedValue([staleActive]);
+    vi.mocked(f.boss.cancel).mockRejectedValue(new Error("cancellation unconfirmed"));
+
+    await expect(
+      f.controller.ensureScheduledMessageDelivery({
+        scheduledActionId: "action-id",
+        executeAt,
+        revision: 1,
+      }),
+    ).resolves.toBe("PENDING_RECONCILIATION");
+    expect(f.boss.cancel).toHaveBeenCalledExactlyOnceWith(SCHEDULED_MESSAGE_QUEUE, staleActive.id);
+    expect(f.boss.upsert).not.toHaveBeenCalled();
   });
 
   it.each([

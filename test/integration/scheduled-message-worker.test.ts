@@ -126,12 +126,9 @@ describe("scheduled message pg-boss delivery", () => {
     const controller = createController(discord);
     await controller.ensureQueue();
     const executeAt = new Date("2999-01-01T00:00:00Z");
-    await expect(controller.enqueueScheduledMessage("duplicate-action", executeAt)).resolves.toBe(
-      "ENQUEUED",
-    );
-    await expect(controller.enqueueScheduledMessage("duplicate-action", executeAt)).resolves.toBe(
-      "ALREADY_PRESENT",
-    );
+    const projection = { scheduledActionId: "duplicate-action", executeAt, revision: 0 };
+    await expect(controller.ensureScheduledMessageDelivery(projection)).resolves.toBe("CURRENT");
+    await expect(controller.ensureScheduledMessageDelivery(projection)).resolves.toBe("CURRENT");
     await expect(pgBoss.client.getQueue(SCHEDULED_MESSAGE_QUEUE)).resolves.toMatchObject({
       policy: "exclusive",
       retryLimit: 3,
@@ -141,16 +138,270 @@ describe("scheduled message pg-boss delivery", () => {
       expireInSeconds: 900,
     });
     await expect(pgBoss.client.fetch(SCHEDULED_MESSAGE_QUEUE)).resolves.toEqual([]);
-    const jobs = await pgBoss.client.findJobs<{ scheduledActionId: string }>(
-      SCHEDULED_MESSAGE_QUEUE,
-    );
+    const jobs = await pgBoss.client.findJobs<{
+      scheduledActionId: string;
+      scheduledExecuteAt: string;
+      scheduleRevision: number;
+    }>(SCHEDULED_MESSAGE_QUEUE);
     expect(jobs).toEqual([
       expect.objectContaining({
         singletonKey: "duplicate-action",
         startAfter: executeAt,
-        data: { scheduledActionId: "duplicate-action" },
+        data: {
+          scheduledActionId: "duplicate-action",
+          scheduledExecuteAt: executeAt.toISOString(),
+          scheduleRevision: 0,
+        },
       }),
     ]);
+  });
+
+  it.each([
+    ["later", 120_000],
+    ["earlier", 30_000],
+  ] as const)("reschedules a created delivery %s in place", async (_label, offsetMs) => {
+    const controller = createController(createDiscord());
+    await controller.ensureQueue();
+    const initialAt = new Date(Date.now() + 60_000);
+    const definition = await createScheduledMessage(`created-${_label}`, initialAt);
+    await controller.ensureScheduledMessageDelivery({
+      scheduledActionId: definition.action.id,
+      executeAt: definition.action.executeAt,
+      revision: definition.revision,
+    });
+    const before = await findJob(definition.action.id);
+    const nextAt = new Date(Date.now() + offsetMs);
+
+    await expect(
+      controller.ensureScheduledMessageDelivery({
+        scheduledActionId: definition.action.id,
+        executeAt: nextAt,
+        revision: definition.revision + 1,
+      }),
+    ).resolves.toBe("CURRENT");
+
+    const after = await findJob(definition.action.id);
+    expect(after).toMatchObject({
+      id: before?.id,
+      state: "created",
+      retryCount: before?.retryCount,
+      startAfter: nextAt,
+      data: {
+        scheduledActionId: definition.action.id,
+        scheduledExecuteAt: nextAt.toISOString(),
+        scheduleRevision: definition.revision + 1,
+      },
+    });
+  });
+
+  it("reschedules retry delivery in place while preserving retry metadata", async () => {
+    const controller = createController(createDiscord());
+    await controller.ensureQueue();
+    const definition = await createScheduledMessage(
+      "retry-reschedule",
+      new Date(Date.now() - 1_000),
+    );
+    await controller.ensureScheduledMessageDelivery({
+      scheduledActionId: definition.action.id,
+      executeAt: definition.action.executeAt,
+      revision: 0,
+    });
+    const [active] = await pgBoss.client.fetch(SCHEDULED_MESSAGE_QUEUE, { includeMetadata: true });
+    await pgBoss.client.fail(SCHEDULED_MESSAGE_QUEUE, active!.id);
+    const retry = await findJob(definition.action.id);
+    expect(retry?.state).toBe("retry");
+    const nextAt = new Date(Date.now() + 120_000);
+
+    await expect(
+      controller.ensureScheduledMessageDelivery({
+        scheduledActionId: definition.action.id,
+        executeAt: nextAt,
+        revision: 1,
+      }),
+    ).resolves.toBe("CURRENT");
+
+    await expect(findJob(definition.action.id)).resolves.toMatchObject({
+      id: retry?.id,
+      state: "retry",
+      retryCount: retry?.retryCount,
+      startAfter: nextAt,
+      data: {
+        scheduledActionId: definition.action.id,
+        scheduledExecuteAt: nextAt.toISOString(),
+        scheduleRevision: 1,
+      },
+    });
+  });
+
+  it("adopts legacy created and retry deliveries conservatively", async () => {
+    const controller = createController(createDiscord());
+    await controller.ensureQueue();
+    const createdAt = new Date(Date.now() + 60_000);
+    const createdId = await pgBoss.client.send(
+      SCHEDULED_MESSAGE_QUEUE,
+      { scheduledActionId: "legacy-created" },
+      { singletonKey: "legacy-created", startAfter: createdAt },
+    );
+    await expect(
+      controller.ensureScheduledMessageDelivery({
+        scheduledActionId: "legacy-created",
+        executeAt: createdAt,
+        revision: 4,
+      }),
+    ).resolves.toBe("CURRENT");
+    await expect(findJob("legacy-created")).resolves.toMatchObject({
+      id: createdId,
+      state: "created",
+      startAfter: createdAt,
+      data: {
+        scheduledActionId: "legacy-created",
+        scheduledExecuteAt: createdAt.toISOString(),
+        scheduleRevision: 4,
+      },
+    });
+
+    const retryExecuteAt = new Date(Date.now() - 1_000);
+    const retryId = await pgBoss.client.send(
+      SCHEDULED_MESSAGE_QUEUE,
+      { scheduledActionId: "legacy-retry" },
+      { singletonKey: "legacy-retry", startAfter: retryExecuteAt },
+    );
+    const [active] = await pgBoss.client.fetch(SCHEDULED_MESSAGE_QUEUE, { includeMetadata: true });
+    expect(active?.id).toBe(retryId);
+    await pgBoss.client.fail(SCHEDULED_MESSAGE_QUEUE, active!.id);
+    const legacyRetry = await findJob("legacy-retry");
+    await expect(
+      controller.ensureScheduledMessageDelivery({
+        scheduledActionId: "legacy-retry",
+        executeAt: retryExecuteAt,
+        revision: 2,
+      }),
+    ).resolves.toBe("CURRENT");
+    await expect(findJob("legacy-retry")).resolves.toMatchObject({
+      id: legacyRetry?.id,
+      state: "retry",
+      retryCount: legacyRetry?.retryCount,
+      startAfter: legacyRetry?.startAfter,
+      data: {
+        scheduledActionId: "legacy-retry",
+        scheduledExecuteAt: retryExecuteAt.toISOString(),
+        scheduleRevision: 2,
+      },
+    });
+  });
+
+  it("cancels a stale legacy active delivery before inserting the current projection", async () => {
+    const controller = createController(createDiscord());
+    await controller.ensureQueue();
+    const oldAt = new Date(Date.now() - 1_000);
+    const currentAt = new Date(Date.now() + 60_000);
+    const oldId = await pgBoss.client.send(
+      SCHEDULED_MESSAGE_QUEUE,
+      { scheduledActionId: "legacy-active" },
+      { singletonKey: "legacy-active", startAfter: oldAt },
+    );
+    const [active] = await pgBoss.client.fetch(SCHEDULED_MESSAGE_QUEUE, { includeMetadata: true });
+    expect(active?.id).toBe(oldId);
+
+    await expect(
+      controller.ensureScheduledMessageDelivery({
+        scheduledActionId: "legacy-active",
+        executeAt: currentAt,
+        revision: 1,
+      }),
+    ).resolves.toBe("CURRENT");
+
+    const jobs = await findJobsForAction("legacy-active");
+    expect(jobs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: oldId, state: "cancelled" }),
+        expect.objectContaining({
+          state: "created",
+          startAfter: currentAt,
+          data: {
+            scheduledActionId: "legacy-active",
+            scheduledExecuteAt: currentAt.toISOString(),
+            scheduleRevision: 1,
+          },
+        }),
+      ]),
+    );
+  });
+
+  it("read-confirms an ambiguous upsert without issuing a second mutation", async () => {
+    const calls = { upsert: 0 };
+    const boss = proxyBoss(async (original, args) => {
+      calls.upsert += 1;
+      await Reflect.apply(original, pgBoss.client, args);
+      throw new Error("injected response loss after commit");
+    });
+    const controller = createControllerWithBoss(boss, createDiscord());
+    await controller.ensureQueue();
+    const executeAt = new Date(Date.now() + 60_000);
+
+    await expect(
+      controller.ensureScheduledMessageDelivery({
+        scheduledActionId: "ambiguous-upsert",
+        executeAt,
+        revision: 3,
+      }),
+    ).resolves.toBe("CURRENT");
+    expect(calls.upsert).toBe(1);
+    await expect(findJobsForAction("ambiguous-upsert")).resolves.toEqual([
+      expect.objectContaining({
+        state: "created",
+        startAfter: executeAt,
+        data: {
+          scheduledActionId: "ambiguous-upsert",
+          scheduledExecuteAt: executeAt.toISOString(),
+          scheduleRevision: 3,
+        },
+      }),
+    ]);
+  });
+
+  it("keeps a committed reschedule authoritative when pg-boss repair is unconfirmed", async () => {
+    const controller = createController(createDiscord());
+    await controller.ensureQueue();
+    const originalAt = new Date(Date.now() + 60_000);
+    const definition = await createScheduledMessage("repair-failure-authority", originalAt);
+    await controller.ensureScheduledMessageDelivery({
+      scheduledActionId: definition.action.id,
+      executeAt: originalAt,
+      revision: definition.revision,
+    });
+    const newExecuteAt = new Date(originalAt.getTime() + 60_000);
+    const changed = await messages.reschedule({
+      scheduledActionId: definition.action.id,
+      guildId,
+      channelId: definition.action.targetId,
+      actorId: "administrator-id",
+      expectedRevision: definition.revision,
+      executeAt: newExecuteAt,
+      auditId: "repair-failure-authority-audit",
+      occurredAt: new Date(),
+    });
+    expect(changed).toMatchObject({ outcome: "RESCHEDULED", definition: { revision: 1 } });
+    const failingController = createControllerWithBoss(
+      proxyBoss(() => Promise.reject(new Error("injected pg-boss mutation failure"))),
+      createDiscord(),
+    );
+
+    await expect(
+      failingController.ensureScheduledMessageDelivery({
+        scheduledActionId: definition.action.id,
+        executeAt: newExecuteAt,
+        revision: 1,
+      }),
+    ).resolves.toBe("PENDING_RECONCILIATION");
+    await expect(messages.find(definition.action.id)).resolves.toMatchObject({
+      revision: 1,
+      action: { executeAt: newExecuteAt, status: "ACTIVE" },
+    });
+    await expect(findJob(definition.action.id)).resolves.toMatchObject({
+      state: "created",
+      startAfter: originalAt,
+    });
   });
 
   it("advances the authoritative retry count and succeeds on the pg-boss retry", async () => {
@@ -174,7 +425,7 @@ describe("scheduled message pg-boss delivery", () => {
     });
     const controller = createController(discord);
     await controller.ensureQueue();
-    await controller.enqueueScheduledMessage(scheduledActionId, definition.action.executeAt);
+    await ensureDelivery(controller, definition);
     await controller.start();
 
     await waitFor(async () => {
@@ -226,7 +477,7 @@ describe("scheduled message pg-boss delivery", () => {
     });
     const controller = createController(discord);
     await controller.ensureQueue();
-    await controller.enqueueScheduledMessage(definition.action.id, definition.action.executeAt);
+    await ensureDelivery(controller, definition);
     await controller.start();
 
     await waitFor(async () => {
@@ -262,7 +513,7 @@ describe("scheduled message pg-boss delivery", () => {
     const discord = createDiscord();
     const controller = createController(discord);
     await controller.ensureQueue();
-    await controller.enqueueScheduledMessage(definition.action.id, definition.action.executeAt);
+    await ensureDelivery(controller, definition);
     await expect(actions.cancel(definition.action.id)).resolves.toMatchObject({
       status: "CANCELLED",
     });
@@ -291,6 +542,69 @@ describe("scheduled message pg-boss delivery", () => {
     expect(discord.createMessage).not.toHaveBeenCalled();
   });
 
+  it("allows at most one execution claim when legacy and projected deliveries both arrive", async () => {
+    const definition = await createScheduledMessage("legacy-current-duplicate-arrival");
+    const discord = createDiscord();
+    const realExecutor = createScheduledMessageExecutor({ store: messages, discord });
+    const execute = vi.fn(realExecutor.execute.bind(realExecutor));
+    const controller = createScheduledMessageWorkerController({
+      boss: pgBoss.client,
+      scheduledActions: actions,
+      executor: { execute },
+      logger: createLogger(),
+    });
+    controllers.push(controller);
+    await controller.ensureQueue();
+    const legacyId = await pgBoss.client.send(
+      SCHEDULED_MESSAGE_QUEUE,
+      { scheduledActionId: definition.action.id },
+      {
+        singletonKey: `${definition.action.id}-legacy`,
+        startAfter: definition.action.executeAt,
+      },
+    );
+    const projectedId = await pgBoss.client.send(
+      SCHEDULED_MESSAGE_QUEUE,
+      {
+        scheduledActionId: definition.action.id,
+        scheduledExecuteAt: definition.action.executeAt.toISOString(),
+        scheduleRevision: definition.revision,
+      },
+      {
+        singletonKey: `${definition.action.id}-projected`,
+        startAfter: definition.action.executeAt,
+      },
+    );
+    expect(legacyId).not.toBeNull();
+    expect(projectedId).not.toBeNull();
+    await controller.start();
+
+    await waitFor(async () => {
+      const jobs = await pgBoss.client.findJobs(SCHEDULED_MESSAGE_QUEUE);
+      return [legacyId, projectedId].every((id) =>
+        jobs.some((job) => job.id === id && job.state === "completed"),
+      );
+    });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(discord.createMessage).toHaveBeenCalledOnce();
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(eq(scheduledMessageAudits.scheduledActionId, definition.action.id)),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ event: "CREATED" }),
+        expect.objectContaining({ event: "EXECUTION_COMPLETED" }),
+      ]),
+    );
+    const audits = await database.client
+      .select()
+      .from(scheduledMessageAudits)
+      .where(eq(scheduledMessageAudits.scheduledActionId, definition.action.id));
+    expect(audits.filter((audit) => audit.event === "EXECUTION_COMPLETED")).toHaveLength(1);
+  });
+
   it("skips a retained real delivery after authoritative cancellation when cleanup is unconfirmed", async () => {
     const scheduledActionId = "cancelled-unconfirmed-cleanup";
     const definition = await createScheduledMessage(scheduledActionId);
@@ -305,9 +619,7 @@ describe("scheduled message pg-boss delivery", () => {
     });
     controllers.push(deliveryController);
     await deliveryController.ensureQueue();
-    await expect(
-      deliveryController.enqueueScheduledMessage(scheduledActionId, definition.action.executeAt),
-    ).resolves.toBe("ENQUEUED");
+    await expect(ensureDelivery(deliveryController, definition)).resolves.toBe("CURRENT");
     await expect(findJob(scheduledActionId)).resolves.toMatchObject({ state: "created" });
 
     const cancellationAt = new Date("2026-09-17T03:04:05.678Z");
@@ -443,7 +755,7 @@ describe("scheduled message pg-boss delivery", () => {
     });
     controllers.push(controller);
     await controller.ensureQueue();
-    await controller.enqueueScheduledMessage(scheduledActionId, definition.action.executeAt);
+    await ensureDelivery(controller, definition);
     await controller.start();
 
     await waitFor(async () => {
@@ -481,7 +793,7 @@ describe("scheduled message pg-boss delivery", () => {
     discord.createMessage.mockResolvedValue({ outcome: "REJECTED" });
     const controller = createController(discord);
     await controller.ensureQueue();
-    await controller.enqueueScheduledMessage(definition.action.id, definition.action.executeAt);
+    await ensureDelivery(controller, definition);
     await controller.start();
 
     await waitFor(async () => {
@@ -503,7 +815,7 @@ describe("scheduled message pg-boss delivery", () => {
     discord.createMessage.mockResolvedValue({ outcome: "AMBIGUOUS" });
     const controller = createController(discord);
     await controller.ensureQueue();
-    await controller.enqueueScheduledMessage(definition.action.id, definition.action.executeAt);
+    await ensureDelivery(controller, definition);
     await controller.start();
 
     await waitFor(async () => {
@@ -541,7 +853,7 @@ describe("scheduled message pg-boss delivery", () => {
     );
     const controller = createController(discord);
     await controller.ensureQueue();
-    await controller.enqueueScheduledMessage(definition.action.id, definition.action.executeAt);
+    await ensureDelivery(controller, definition);
     await controller.start();
 
     await waitFor(async () => {
@@ -560,7 +872,7 @@ describe("scheduled message pg-boss delivery", () => {
   it("keeps the application retry budget bounded across a recreated delivery cycle", async () => {
     let definition = await createScheduledMessage("retry-budget-recreated-cycle");
     for (let expectedRetryCount = 1; expectedRetryCount <= 3; expectedRetryCount += 1) {
-      const claim = await messages.claimExecution(definition.action.id);
+      const claim = await messages.claimExecution(definition.action.id, definition.revision);
       if (claim.outcome !== "COMMITTED") throw new Error("retry budget preparation claim failed");
       const retried = await messages.retryPreSendFailure({
         definition: claim.definition,
@@ -599,9 +911,7 @@ describe("scheduled message pg-boss delivery", () => {
     expect(historicalJob?.id).toBe(historicalJobId);
     await pgBoss.client.fail(SCHEDULED_MESSAGE_QUEUE, historicalJob!.id);
 
-    await expect(
-      controller.enqueueScheduledMessage(definition.action.id, definition.action.executeAt),
-    ).resolves.toBe("ENQUEUED");
+    await expect(ensureDelivery(controller, definition)).resolves.toBe("CURRENT");
     await controller.start();
 
     await waitFor(async () => {
@@ -646,8 +956,8 @@ describe("scheduled message pg-boss delivery", () => {
     const definition = await createScheduledMessage("startup-interrupted");
     const controller = createController(createDiscord());
     await controller.ensureQueue();
-    await controller.enqueueScheduledMessage(definition.action.id, definition.action.executeAt);
-    const claim = await messages.claimExecution(definition.action.id);
+    await ensureDelivery(controller, definition);
+    const claim = await messages.claimExecution(definition.action.id, definition.revision);
     expect(claim.outcome).toBe("COMMITTED");
     await pgBoss.client.fetch(SCHEDULED_MESSAGE_QUEUE, { includeMetadata: true });
     const execute = vi.fn(() => Promise.reject(new Error("startup recovery must not execute")));
@@ -711,7 +1021,7 @@ describe("scheduled message pg-boss delivery", () => {
     });
     const controller = createController(discord);
     await controller.ensureQueue();
-    await controller.enqueueScheduledMessage(definition.action.id, definition.action.executeAt);
+    await ensureDelivery(controller, definition);
     await controller.start();
     await waitFor(async () => (await findJob(definition.action.id))?.state === "retry");
     const retryJob = await findJob(definition.action.id);
@@ -773,10 +1083,10 @@ describe("scheduled message pg-boss delivery", () => {
 
   it("runtime reconciliation excludes EXECUTING and compensated FAILED actions", async () => {
     const executing = await createScheduledMessage("runtime-executing");
-    const executingClaim = await messages.claimExecution(executing.action.id);
+    const executingClaim = await messages.claimExecution(executing.action.id, executing.revision);
     expect(executingClaim.outcome).toBe("COMMITTED");
     const failed = await createScheduledMessage("runtime-failed-compensated");
-    const failedClaim = await messages.claimExecution(failed.action.id);
+    const failedClaim = await messages.claimExecution(failed.action.id, failed.revision);
     if (failedClaim.outcome !== "COMMITTED") throw new Error("failed action claim failed");
     await messages.failExecution({
       definition: failedClaim.definition,
@@ -794,6 +1104,7 @@ describe("scheduled message pg-boss delivery", () => {
     const execute = vi.fn(() => Promise.resolve({ outcome: "SUCCESS" as const }));
     const reconciler = createScheduledMessageRuntimeReconciler({
       scheduledActions: actions,
+      store: messages,
       executor: { execute },
       delivery: controller,
       logger: createLogger(),
@@ -825,7 +1136,7 @@ describe("scheduled message pg-boss delivery", () => {
     });
     controllers.push(controller);
     await controller.ensureQueue();
-    await controller.enqueueScheduledMessage(definition.action.id, definition.action.executeAt);
+    await ensureDelivery(controller, definition);
     await controller.start();
     await waitFor(() => execute.mock.calls.length === 1);
 
@@ -852,12 +1163,13 @@ describe("scheduled message pg-boss delivery", () => {
     const entered = createDeferred<void>();
     const reconciler = createScheduledMessageRuntimeReconciler({
       scheduledActions: actions,
+      store: messages,
       executor: { execute: vi.fn(() => Promise.resolve({ outcome: "SUCCESS" as const })) },
       delivery: {
-        enqueueScheduledMessage: async (scheduledActionId, executeAt) => {
+        ensureScheduledMessageDelivery: async (projection) => {
           entered.resolve();
           await gate.promise;
-          return controller.enqueueScheduledMessage(scheduledActionId, executeAt);
+          return controller.ensureScheduledMessageDelivery(projection);
         },
       },
       logger: createLogger(),
@@ -907,15 +1219,37 @@ function createDiscord() {
 }
 
 function createController(discord: ScheduledMessageDiscord): ScheduledMessageWorkerController {
+  return createControllerWithBoss(pgBoss.client, discord);
+}
+
+function createControllerWithBoss(
+  boss: Parameters<typeof createScheduledMessageWorkerController>[0]["boss"],
+  discord: ScheduledMessageDiscord,
+): ScheduledMessageWorkerController {
   const executor = createScheduledMessageExecutor({ store: messages, discord });
   const controller = createScheduledMessageWorkerController({
-    boss: pgBoss.client,
+    boss,
     scheduledActions: actions,
     executor,
     logger: createLogger(),
   });
   controllers.push(controller);
   return controller;
+}
+
+function proxyBoss(
+  upsert: (original: typeof pgBoss.client.upsert, args: unknown[]) => Promise<unknown>,
+): typeof pgBoss.client {
+  const originalUpsert = pgBoss.client.upsert.bind(pgBoss.client);
+  return new Proxy(pgBoss.client, {
+    get(target, property): unknown {
+      if (property === "upsert") {
+        return (...args: unknown[]) => upsert(originalUpsert, args);
+      }
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 function createScheduledMessage(
@@ -931,6 +1265,17 @@ function createScheduledMessage(
     executeAt,
     payload: { content: `content-${scheduledActionId}`, embed: null },
     occurredAt: new Date(),
+  });
+}
+
+function ensureDelivery(
+  controller: ScheduledMessageWorkerController,
+  definition: Awaited<ReturnType<typeof createScheduledMessage>>,
+) {
+  return controller.ensureScheduledMessageDelivery({
+    scheduledActionId: definition.action.id,
+    executeAt: definition.action.executeAt,
+    revision: definition.revision,
   });
 }
 

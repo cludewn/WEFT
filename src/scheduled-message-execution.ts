@@ -21,7 +21,10 @@ export const SCHEDULED_MESSAGE_MAX_RETRY_COUNT = 3;
 
 export type ScheduledMessageExecutionResult =
   | { outcome: "SUCCESS" }
-  | { outcome: "SKIPPED"; reason: "MISSING" | "NOT_ACTIVE" | "ACTION_TYPE_MISMATCH" }
+  | {
+      outcome: "SKIPPED";
+      reason: "MISSING" | "NOT_ACTIVE" | "ACTION_TYPE_MISMATCH" | "NOT_DUE";
+    }
   | { outcome: "RETRYABLE_FAILURE"; code: "CURRENT_STATE_CHECK_FAILED" }
   | { outcome: "PERMANENT_FAILURE"; code: ScheduledMessageFailureCode }
   | { outcome: "UNCONFIRMED"; code: ScheduledMessageFailureCode | "PERSISTENCE_UNCONFIRMED" };
@@ -80,6 +83,8 @@ function hasValidPersistedDefinition(definition: ScheduledMessageDefinition): bo
     Number.isInteger(definition.retryCount) &&
     definition.retryCount >= 0 &&
     definition.retryCount <= SCHEDULED_MESSAGE_MAX_RETRY_COUNT &&
+    Number.isInteger(definition.revision) &&
+    definition.revision >= 0 &&
     definition.resultMessageId === null &&
     validation.ok &&
     managedMessagePayloadsEqual(validation.payload, definition.payload)
@@ -190,9 +195,14 @@ export function createScheduledMessageExecutor({
       const loadedAction = load.outcome === "FOUND" ? load.definition.action : load.action;
       if (loadedAction.status !== "ACTIVE") return { outcome: "SKIPPED", reason: "NOT_ACTIVE" };
 
+      const loadedAt = now();
+      if (loadedAction.executeAt.getTime() > loadedAt.getTime()) {
+        return { outcome: "SKIPPED", reason: "NOT_DUE" };
+      }
+
       const loaded = load.outcome === "FOUND" ? load.definition : undefined;
       const persistedDefinitionValid = loaded !== undefined && hasValidPersistedDefinition(loaded);
-      const initiallyWithinGrace = isWithinScheduledMessageGrace(loadedAction.executeAt, now());
+      const initiallyWithinGrace = isWithinScheduledMessageGrace(loadedAction.executeAt, loadedAt);
       let preflight: ScheduledMessagePreflightResult | undefined;
       if (persistedDefinitionValid && initiallyWithinGrace) {
         try {
@@ -216,7 +226,7 @@ export function createScheduledMessageExecutor({
       );
       let claim;
       try {
-        claim = await store.claimExecution(loadedAction.id);
+        claim = await store.claimExecution(loadedAction.id, loaded?.revision);
       } catch {
         // Ownership cannot be proven after response loss. Sending would risk a duplicate.
         return { outcome: "UNCONFIRMED", code: "PERSISTENCE_UNCONFIRMED" };
