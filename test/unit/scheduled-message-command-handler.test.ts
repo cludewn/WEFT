@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ManagedMessageService } from "../../src/managed-message.js";
 import {
   createScheduledMessageCreateModalId,
+  createScheduledMessageEditModalId,
   handleManagedMessageModalSubmit,
   handleMessageCommand,
   MANAGED_MESSAGE_CONTENT_INPUT_ID,
@@ -13,7 +14,9 @@ import {
   MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID,
   MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID,
   parseScheduledMessageCreateModalId,
+  parseScheduledMessageEditModalId,
   SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX,
+  SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX,
 } from "../../src/message-command.js";
 import type { ScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
 
@@ -39,6 +42,7 @@ function services(
         },
         creatorUserId: "actor-id",
         retryCount: 0,
+        revision: 0,
         payload: {
           content: "sensitive scheduled content",
           embed: {
@@ -88,6 +92,18 @@ function services(
     create,
     cancel,
     status: vi.fn<ScheduledMessageCommandService["status"]>(() => Promise.resolve(statusResult)),
+    list: vi.fn<ScheduledMessageCommandService["list"]>(() =>
+      Promise.resolve({ outcome: "FOUND", schedules: [] }),
+    ),
+    findEditable: vi.fn<ScheduledMessageCommandService["findEditable"]>(() =>
+      Promise.resolve({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" }),
+    ),
+    edit: vi.fn<ScheduledMessageCommandService["edit"]>(() =>
+      Promise.resolve({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" }),
+    ),
+    reschedule: vi.fn<ScheduledMessageCommandService["reschedule"]>(() =>
+      Promise.resolve({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" }),
+    ),
   } satisfies ScheduledMessageCommandService;
   const managed = {
     send: vi.fn(),
@@ -98,8 +114,9 @@ function services(
 }
 
 function commandInteraction(input: {
-  subcommand: "create" | "cancel" | "status";
+  subcommand: "create" | "cancel" | "status" | "list" | "edit" | "reschedule";
   value: string;
+  after?: string;
   archived?: boolean;
 }) {
   const showModal = vi.fn((modal: ModalBuilder) => {
@@ -118,7 +135,8 @@ function commandInteraction(input: {
     options: {
       getSubcommand: () => input.subcommand,
       getSubcommandGroup: () => "schedule",
-      getString: () => input.value,
+      getString: (name: string) => (name === "after" ? (input.after ?? input.value) : input.value),
+      getInteger: () => 1,
     },
     inGuild: () => true,
     channel,
@@ -136,29 +154,43 @@ function commandInteraction(input: {
   return { interaction, showModal, reply, deferReply, editReply };
 }
 
-function modalInteraction(customId: string) {
+function modalInteraction(
+  customId: string,
+  options: {
+    authorized?: boolean;
+    content?: string;
+    inGuild?: boolean;
+    channel?: ModalSubmitInteraction["channel"];
+  } = {},
+) {
   const reply = vi.fn(() => Promise.resolve());
   const deferReply = vi.fn(() => Promise.resolve());
   const editReply = vi.fn(() => Promise.resolve());
   const values: Record<string, string> = {
-    [MANAGED_MESSAGE_CONTENT_INPUT_ID]: "sensitive scheduled content",
+    [MANAGED_MESSAGE_CONTENT_INPUT_ID]: options.content ?? "sensitive scheduled content",
     [MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID]: "",
     [MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID]: "",
     [MANAGED_MESSAGE_EMBED_COLOR_INPUT_ID]: "",
     [MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID]: "",
   };
+  const getTextInputValue = vi.fn((id: string) => values[id] ?? "");
   const interaction = {
     customId,
-    fields: { getTextInputValue: (id: string) => values[id] ?? "" },
-    inGuild: () => true,
+    fields: { getTextInputValue },
+    inGuild: () => options.inGuild ?? true,
     guildId: "guild-id",
     channelId: "channel-id",
+    channel: options.channel ?? { type: ChannelType.GuildText },
+    memberPermissions: {
+      has: (permission: bigint) =>
+        (options.authorized ?? true) && permission === PermissionFlagsBits.ManageMessages,
+    },
     user: { id: "actor-id" },
     reply,
     deferReply,
     editReply,
   } as unknown as ModalSubmitInteraction;
-  return { interaction, reply, deferReply, editReply };
+  return { interaction, reply, deferReply, editReply, getTextInputValue };
 }
 
 describe("scheduled message command handler", () => {
@@ -235,6 +267,197 @@ describe("scheduled message command handler", () => {
     );
     expect(f.deferReply).not.toHaveBeenCalled();
     expect(s.create).not.toHaveBeenCalled();
+  });
+
+  it("round-trips only schedule identity and revision in the edit modal ID", () => {
+    const scheduleId = "123e4567-e89b-42d3-a456-426614174000";
+    const customId = createScheduledMessageEditModalId(scheduleId, 0);
+    expect(customId).toBe(`${SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX}${scheduleId}:0`);
+    expect(parseScheduledMessageEditModalId(customId)).toEqual({
+      scheduledActionId: scheduleId,
+      expectedRevision: 0,
+    });
+    expect(parseScheduledMessageEditModalId(`${SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX}bad:0`)).toBe(
+      undefined,
+    );
+    expect(customId.length).toBeLessThanOrEqual(100);
+  });
+
+  it("loads a scoped ACTIVE schedule and prefills edit without deferring", async () => {
+    const scheduleId = "123e4567-e89b-42d3-a456-426614174000";
+    const f = commandInteraction({ subcommand: "edit", value: scheduleId, archived: true });
+    const s = services();
+    s.scheduled.findEditable.mockResolvedValue({
+      outcome: "ACTIVE",
+      definition: {
+        action: {
+          id: scheduleId,
+          guildId: "guild-id",
+          actionType: "SEND_MESSAGE",
+          targetId: "channel-id",
+          status: "ACTIVE",
+          executeAt,
+          createdAt: executeAt,
+          updatedAt: executeAt,
+        },
+        creatorUserId: "creator-id",
+        retryCount: 2,
+        revision: 4,
+        payload: {
+          content: "prefilled content",
+          embed: { title: "prefilled title", color: 0 },
+        },
+        resultMessageId: null,
+      },
+    });
+
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+
+    expect(f.deferReply).not.toHaveBeenCalled();
+    expect(s.scheduled.findEditable).toHaveBeenCalledWith({
+      scheduledActionId: scheduleId,
+      guildId: "guild-id",
+      channelId: "channel-id",
+    });
+    const modal = f.showModal.mock.calls[0]?.[0].toJSON();
+    expect(modal).toMatchObject({
+      custom_id: createScheduledMessageEditModalId(scheduleId, 4),
+      title: "Edit scheduled message",
+    });
+    expect(JSON.stringify(modal)).toContain("prefilled content");
+    expect(JSON.stringify(modal)).toContain("prefilled title");
+  });
+
+  it("rejects malformed scheduled edit modal IDs before acknowledgement", async () => {
+    const f = modalInteraction(`${SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX}tampered:0`);
+    const s = services();
+    await expect(
+      handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled),
+    ).resolves.toBe(true);
+    expect(f.reply).toHaveBeenCalledWith(
+      expect.objectContaining({ flags: MessageFlags.Ephemeral }),
+    );
+    expect(f.deferReply).not.toHaveBeenCalled();
+    expect(s.scheduled.edit).not.toHaveBeenCalled();
+  });
+
+  it("rejects a scheduled edit that lost authorization before reading invalid payload", async () => {
+    const scheduleId = "123e4567-e89b-42d3-a456-426614174000";
+    const f = modalInteraction(createScheduledMessageEditModalId(scheduleId, 7), {
+      authorized: false,
+      content: "",
+    });
+    const s = services();
+
+    await handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled);
+
+    expect(f.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: "You need the Manage Messages permission to manage messages.",
+      }),
+    );
+    expect(f.getTextInputValue).not.toHaveBeenCalled();
+    expect(f.deferReply).not.toHaveBeenCalled();
+    expect(s.scheduled.edit).not.toHaveBeenCalled();
+  });
+
+  it("rejects a scheduled edit outside guild context before reading invalid payload", async () => {
+    const scheduleId = "123e4567-e89b-42d3-a456-426614174000";
+    const f = modalInteraction(createScheduledMessageEditModalId(scheduleId, 7), {
+      content: "",
+      inGuild: false,
+    });
+    const s = services();
+
+    await handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled);
+
+    expect(f.reply).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content:
+          "Scheduled-message administration is only supported in a guild text or thread channel.",
+      }),
+    );
+    expect(f.getTextInputValue).not.toHaveBeenCalled();
+    expect(s.scheduled.edit).not.toHaveBeenCalled();
+  });
+
+  it("submits a canonical scheduled edit with the modal revision", async () => {
+    const scheduleId = "123e4567-e89b-42d3-a456-426614174000";
+    const f = modalInteraction(createScheduledMessageEditModalId(scheduleId, 7));
+    const s = services();
+    s.scheduled.edit.mockResolvedValue({
+      outcome: "EDITED",
+      definition: {
+        action: {
+          id: scheduleId,
+          guildId: "guild-id",
+          actionType: "SEND_MESSAGE",
+          targetId: "channel-id",
+          status: "ACTIVE",
+          executeAt,
+          createdAt: executeAt,
+          updatedAt: executeAt,
+        },
+        creatorUserId: "creator-id",
+        retryCount: 0,
+        revision: 8,
+        payload: { content: "sensitive scheduled content", embed: null },
+        resultMessageId: null,
+      },
+    });
+
+    await handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled);
+
+    expect(s.scheduled.edit).toHaveBeenCalledWith({
+      scheduledActionId: scheduleId,
+      guildId: "guild-id",
+      channelId: "channel-id",
+      actorUserId: "actor-id",
+      expectedRevision: 7,
+      payload: { content: "sensitive scheduled content", embed: null },
+    });
+    expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+  });
+
+  it("renders list metadata without scheduled payload", async () => {
+    const f = commandInteraction({ subcommand: "list", value: "" });
+    const s = services();
+    s.scheduled.list.mockResolvedValue({
+      outcome: "FOUND",
+      schedules: [
+        {
+          scheduledActionId: "full-schedule-id",
+          status: "ACTIVE",
+          executeAt,
+          creatorUserId: "creator-id",
+        },
+      ],
+    });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    const response = JSON.stringify(f.editReply.mock.calls);
+    expect(response).toContain("full-schedule-id");
+    expect(response).toContain("ACTIVE");
+    expect(response).toContain("creator-id");
+    expect(response).not.toContain("sensitive scheduled content");
+  });
+
+  it("parses reschedule duration before deferring and routes the focused operation", async () => {
+    const f = commandInteraction({
+      subcommand: "reschedule",
+      value: "schedule-id",
+      after: "2h",
+    });
+    const s = services();
+    s.scheduled.reschedule.mockResolvedValue({ outcome: "EXECUTING" });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    expect(s.scheduled.reschedule).toHaveBeenCalledWith({
+      scheduledActionId: "schedule-id",
+      guildId: "guild-id",
+      channelId: "channel-id",
+      actorUserId: "actor-id",
+      durationMs: 7_200_000,
+    });
+    expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
   });
 
   it("allows cancellation from an archived supported thread and defers before persistence", async () => {

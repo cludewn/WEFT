@@ -42,6 +42,7 @@ import type {
 export const MANAGED_MESSAGE_SEND_MODAL_ID = "managed-message:send";
 export const MANAGED_MESSAGE_EDIT_MODAL_PREFIX = "managed-message:edit:";
 export const SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX = "scheduled-message:schedule-create:";
+export const SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX = "scheduled-message:schedule-edit:";
 export const MANAGED_MESSAGE_CONTENT_INPUT_ID = "managed-message:content";
 export const MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID = "managed-message:embed-title";
 export const MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID = "managed-message:embed-description";
@@ -55,7 +56,10 @@ const messageLinkRegex = new RegExp(
 );
 const editModalRegex = new RegExp(`^managed-message:edit:(${SNOWFLAKE_PATTERN}):([1-9][0-9]*)$`);
 const scheduledCreateModalRegex = /^scheduled-message:schedule-create:([1-9][0-9]*)$/;
+const scheduledEditModalRegex =
+  /^scheduled-message:schedule-edit:([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(0|[1-9][0-9]*)$/i;
 const MAX_UNSIGNED_64 = (1n << 64n) - 1n;
+const MAX_POSTGRES_INTEGER = 2_147_483_647;
 
 export type ManagedMessageReferenceResult =
   { ok: true; messageId: string } | { ok: false; code: "INVALID" | "CURRENT_CHANNEL_MISMATCH" };
@@ -119,6 +123,44 @@ export function parseScheduledMessageCreateModalId(customId: string): number | u
   return isValidRelativeDurationMilliseconds(durationMs) ? durationMs : undefined;
 }
 
+export type ScheduledMessageEditModalTarget = {
+  scheduledActionId: string;
+  expectedRevision: number;
+};
+
+export function createScheduledMessageEditModalId(
+  scheduledActionId: string,
+  expectedRevision: number,
+): string {
+  const customId = `${SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX}${scheduledActionId}:${expectedRevision}`;
+  if (
+    scheduledEditModalRegex.exec(customId) === null ||
+    !Number.isInteger(expectedRevision) ||
+    expectedRevision < 0 ||
+    expectedRevision > MAX_POSTGRES_INTEGER ||
+    customId.length > 100
+  ) {
+    throw new Error("Scheduled message edit modal identity is invalid");
+  }
+  return customId;
+}
+
+export function parseScheduledMessageEditModalId(
+  customId: string,
+): ScheduledMessageEditModalTarget | undefined {
+  const match = scheduledEditModalRegex.exec(customId);
+  if (match?.[1] === undefined || match[2] === undefined || customId.length > 100) return undefined;
+  const expectedRevision = Number(match[2]);
+  if (
+    !Number.isSafeInteger(expectedRevision) ||
+    expectedRevision < 0 ||
+    expectedRevision > MAX_POSTGRES_INTEGER
+  ) {
+    return undefined;
+  }
+  return { scheduledActionId: match[1].toLowerCase(), expectedRevision };
+}
+
 export const messageCommandDefinition = new SlashCommandBuilder()
   .setName("message")
   .setDescription("Manage messages sent by WEFT")
@@ -167,6 +209,36 @@ export const messageCommandDefinition = new SlashCommandBuilder()
           .setDescription("Show a scheduled message status in this channel")
           .addStringOption((option) =>
             option.setName("id").setDescription("Schedule ID").setRequired(true),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("list")
+          .setDescription("List active scheduled messages in this channel")
+          .addIntegerOption((option) =>
+            option.setName("page").setDescription("Page number").setMinValue(1),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("edit")
+          .setDescription("Edit a scheduled message in this channel")
+          .addStringOption((option) =>
+            option.setName("id").setDescription("Schedule ID").setRequired(true),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("reschedule")
+          .setDescription("Reschedule a message in this channel")
+          .addStringOption((option) =>
+            option.setName("id").setDescription("Schedule ID").setRequired(true),
+          )
+          .addStringOption((option) =>
+            option
+              .setName("after")
+              .setDescription("Delay such as 30m, 2h, or 7d")
+              .setRequired(true),
           ),
       ),
   );
@@ -272,6 +344,18 @@ export function createScheduledMessageCreateModal(durationMs: number): ModalBuil
   );
 }
 
+export function createScheduledMessageEditModal(
+  scheduledActionId: string,
+  revision: number,
+  payload: ManagedMessagePayload,
+): ModalBuilder {
+  return createPayloadModal(
+    createScheduledMessageEditModalId(scheduledActionId, revision),
+    "Edit scheduled message",
+    payload,
+  );
+}
+
 const ephemeralReply = (content: string): InteractionReplyOptions => ({
   content,
   flags: MessageFlags.Ephemeral,
@@ -308,7 +392,13 @@ export async function handleMessageCommand(
   const scheduled = group === "schedule";
   if (
     (!scheduled && subcommand !== "send" && subcommand !== "edit") ||
-    (scheduled && subcommand !== "create" && subcommand !== "cancel" && subcommand !== "status")
+    (scheduled &&
+      subcommand !== "create" &&
+      subcommand !== "cancel" &&
+      subcommand !== "status" &&
+      subcommand !== "list" &&
+      subcommand !== "edit" &&
+      subcommand !== "reschedule")
   ) {
     throw new Error("Unsupported message subcommand");
   }
@@ -351,11 +441,45 @@ export async function handleMessageCommand(
       return;
     }
 
+    const scheduledActionId =
+      subcommand === "list" ? undefined : interaction.options.getString("id", true);
+    if (subcommand === "edit") {
+      const target = await scheduledMessages.findEditable({
+        scheduledActionId: scheduledActionId!,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+      });
+      if (target.outcome !== "ACTIVE") {
+        await interaction.reply(ephemeralReply(scheduledMessageEditableLoadMessage(target)));
+        return;
+      }
+      await interaction.showModal(
+        createScheduledMessageEditModal(
+          target.definition.action.id,
+          target.definition.revision,
+          target.definition.payload,
+        ),
+      );
+      return;
+    }
+
+    let rescheduleDurationMs: number | undefined;
+    if (subcommand === "reschedule") {
+      try {
+        rescheduleDurationMs = parseRelativeDuration(interaction.options.getString("after", true));
+      } catch (error) {
+        if (!(error instanceof InvalidRelativeDurationError)) throw error;
+        await interaction.reply(
+          ephemeralReply("Enter one duration from 1m through 365d using m, h, or d."),
+        );
+        return;
+      }
+    }
+
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const scheduledActionId = interaction.options.getString("id", true);
     if (subcommand === "cancel") {
       const result = await scheduledMessages.cancel({
-        scheduledActionId,
+        scheduledActionId: scheduledActionId!,
         guildId: interaction.guildId,
         channelId: interaction.channelId,
         actorUserId: interaction.user.id,
@@ -363,8 +487,31 @@ export async function handleMessageCommand(
       await interaction.editReply(editReply(cancelScheduledMessageResultMessage(result)));
       return;
     }
+    if (subcommand === "list") {
+      const page = interaction.options.getInteger("page") ?? 1;
+      const result = await scheduledMessages.list({
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        page,
+      });
+      await interaction.editReply(editReply(scheduledMessageListMessage(result, page)));
+      return;
+    }
+    if (subcommand === "reschedule") {
+      if (rescheduleDurationMs === undefined)
+        throw new Error("Validated reschedule duration is missing");
+      const result = await scheduledMessages.reschedule({
+        scheduledActionId: scheduledActionId!,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        actorUserId: interaction.user.id,
+        durationMs: rescheduleDurationMs,
+      });
+      await interaction.editReply(editReply(scheduledMessageRescheduleResultMessage(result)));
+      return;
+    }
     const result = await scheduledMessages.status({
-      scheduledActionId,
+      scheduledActionId: scheduledActionId!,
       guildId: interaction.guildId,
       channelId: interaction.channelId,
     });
@@ -503,6 +650,114 @@ function scheduledMessageStatusMessage(
   }
 }
 
+function scheduledMessageEditableLoadMessage(
+  result: Exclude<
+    Awaited<ReturnType<ScheduledMessageCommandService["findEditable"]>>,
+    { outcome: "ACTIVE" }
+  >,
+): string {
+  switch (result.outcome) {
+    case "EXECUTING":
+      return "That scheduled message is already executing and cannot be edited.";
+    case "CANCELLED":
+      return "That scheduled message has been cancelled.";
+    case "COMPLETED":
+      return "That scheduled message has already completed.";
+    case "FAILED":
+      return "That scheduled message has already failed.";
+    case "NOT_FOUND_OR_WRONG_CONTEXT":
+      return "No scheduled message was found in this channel for that ID.";
+    case "CORRUPT":
+      return "WEFT found inconsistent scheduled-message state. Administrator inspection is required.";
+    case "UNAVAILABLE":
+      return "WEFT could not load the scheduled message. Please try again later.";
+  }
+}
+
+function scheduledMessageListMessage(
+  result: Awaited<ReturnType<ScheduledMessageCommandService["list"]>>,
+  page: number,
+): string {
+  if (result.outcome === "INVALID_PAGE") return "Page must be a positive integer.";
+  if (result.outcome === "UNAVAILABLE") {
+    return "WEFT could not load scheduled messages. Please try again later.";
+  }
+  if (result.schedules.length === 0) {
+    return `No active or executing scheduled messages were found on page ${page}.`;
+  }
+  const rows = result.schedules.map((schedule) => {
+    const when = Math.floor(schedule.executeAt.getTime() / 1_000);
+    return `- \`${schedule.scheduledActionId}\` — **${schedule.status}** — <t:${when}:F> (<t:${when}:R>) — creator \`${schedule.creatorUserId}\``;
+  });
+  return [`Scheduled messages — page ${page}`, ...rows].join("\n");
+}
+
+function scheduledMessageEditResultMessage(
+  result: Awaited<ReturnType<ScheduledMessageCommandService["edit"]>>,
+): string {
+  if (result.outcome === "EDITED") return "Scheduled message edited.";
+  if (result.outcome === "UNCHANGED") return "The scheduled message is already unchanged.";
+  if (result.outcome === "INVALID_PAYLOAD") {
+    return createScheduledMessageResultMessage({ outcome: "FAILURE", code: result.code });
+  }
+  if (result.outcome === "CONFLICT") {
+    return "This scheduled message changed after the edit form opened. Open a new edit form and try again.";
+  }
+  if (result.outcome === "PERSISTENCE_UNCONFIRMED") {
+    return "WEFT could not confirm the scheduled-message edit. Inspect the current schedule before retrying.";
+  }
+  if (result.outcome === "CORRUPT") {
+    return "WEFT found inconsistent scheduled-message state. Administrator inspection is required.";
+  }
+  if (result.outcome === "NOT_FOUND_OR_WRONG_CONTEXT") {
+    return "No scheduled message was found in this channel for that ID.";
+  }
+  if (result.outcome === "EXECUTING") {
+    return "That scheduled message is already executing and cannot be edited.";
+  }
+  if (result.outcome === "CANCELLED") return "That scheduled message has been cancelled.";
+  if (result.outcome === "COMPLETED") return "That scheduled message has already completed.";
+  if (result.outcome === "FAILED") return "That scheduled message has already failed.";
+  return "WEFT received an unexpected scheduled-message edit result.";
+}
+
+function scheduledMessageRescheduleResultMessage(
+  result: Awaited<ReturnType<ScheduledMessageCommandService["reschedule"]>>,
+): string {
+  if (result.outcome === "RESCHEDULED") {
+    const when = Math.floor(result.definition.action.executeAt.getTime() / 1_000);
+    const base = `Scheduled message rescheduled for <t:${when}:F> (<t:${when}:R>).`;
+    return result.deliveryPendingReconciliation
+      ? `${base} Delivery is pending reconciliation.`
+      : base;
+  }
+  if (result.outcome === "INVALID_DURATION") {
+    return "Enter one duration from 1m through 365d using m, h, or d.";
+  }
+  if (result.outcome === "CONFLICT") {
+    return "The scheduled message changed concurrently. Review it and retry the reschedule.";
+  }
+  if (result.outcome === "PERSISTENCE_UNCONFIRMED") {
+    return "WEFT could not confirm the reschedule. Inspect the current schedule before retrying.";
+  }
+  if (result.outcome === "UNAVAILABLE") {
+    return "WEFT could not load the scheduled message. Please try again later.";
+  }
+  if (result.outcome === "CORRUPT") {
+    return "WEFT found inconsistent scheduled-message state. Administrator inspection is required.";
+  }
+  if (result.outcome === "NOT_FOUND_OR_WRONG_CONTEXT") {
+    return "No scheduled message was found in this channel for that ID.";
+  }
+  if (result.outcome === "EXECUTING") {
+    return "That scheduled message is already executing and cannot be rescheduled.";
+  }
+  if (result.outcome === "CANCELLED") return "That scheduled message has been cancelled.";
+  if (result.outcome === "COMPLETED") return "That scheduled message has already completed.";
+  if (result.outcome === "FAILED") return "That scheduled message has already failed.";
+  return "WEFT received an unexpected scheduled-message reschedule result.";
+}
+
 function sendResultMessage(result: ManagedMessageSendResult): string {
   if (result.outcome === "SUCCESS") return "Managed message sent.";
   if (result.outcome === "PARTIAL_FAILURE") {
@@ -611,11 +866,15 @@ export async function handleManagedMessageModalSubmit(
   const ownedScheduledCreate = interaction.customId.startsWith(
     SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX,
   );
-  if (!send && !ownedEdit && !ownedScheduledCreate) return false;
+  const ownedScheduledEdit = interaction.customId.startsWith(SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX);
+  if (!send && !ownedEdit && !ownedScheduledCreate && !ownedScheduledEdit) return false;
 
   const editTarget = ownedEdit ? parseManagedMessageEditModalId(interaction.customId) : undefined;
   const scheduledDurationMs = ownedScheduledCreate
     ? parseScheduledMessageCreateModalId(interaction.customId)
+    : undefined;
+  const scheduledEditTarget = ownedScheduledEdit
+    ? parseScheduledMessageEditModalId(interaction.customId)
     : undefined;
   if (ownedEdit && editTarget === undefined) {
     await interaction.reply(
@@ -628,6 +887,36 @@ export async function handleManagedMessageModalSubmit(
       ephemeralReply("This scheduled-message form has an invalid or expired duration."),
     );
     return true;
+  }
+  if (ownedScheduledEdit && scheduledEditTarget === undefined) {
+    await interaction.reply(
+      ephemeralReply("This scheduled-message edit form is invalid or expired."),
+    );
+    return true;
+  }
+  if (ownedScheduledEdit) {
+    if (!interaction.inGuild() || interaction.channelId === null) {
+      await interaction.reply(
+        ephemeralReply(
+          "Scheduled-message administration is only supported in a guild text or thread channel.",
+        ),
+      );
+      return true;
+    }
+    if (!isSupportedTarget(interaction.channel)) {
+      await interaction.reply(
+        ephemeralReply(
+          "Scheduled-message administration is only supported in a guild text or thread channel.",
+        ),
+      );
+      return true;
+    }
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
+      await interaction.reply(
+        ephemeralReply("You need the Manage Messages permission to manage messages."),
+      );
+      return true;
+    }
   }
   const validation = validateManagedMessagePayload({
     content: interaction.fields.getTextInputValue(MANAGED_MESSAGE_CONTENT_INPUT_ID),
@@ -659,7 +948,6 @@ export async function handleManagedMessageModalSubmit(
     );
     return true;
   }
-
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   if (ownedScheduledCreate) {
     if (scheduledDurationMs === undefined)
@@ -674,6 +962,20 @@ export async function handleManagedMessageModalSubmit(
       payload: validation.payload,
     });
     await interaction.editReply(editReply(createScheduledMessageResultMessage(result)));
+  } else if (ownedScheduledEdit) {
+    if (scheduledEditTarget === undefined)
+      throw new Error("Validated scheduled edit target is missing");
+    if (scheduledMessages === undefined)
+      throw new Error("Scheduled message command service is unavailable");
+    const result = await scheduledMessages.edit({
+      scheduledActionId: scheduledEditTarget.scheduledActionId,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      actorUserId: interaction.user.id,
+      expectedRevision: scheduledEditTarget.expectedRevision,
+      payload: validation.payload,
+    });
+    await interaction.editReply(editReply(scheduledMessageEditResultMessage(result)));
   } else if (send) {
     const result = await service.send({
       guildId: interaction.guildId,

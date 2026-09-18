@@ -9,6 +9,7 @@ import {
   MANAGED_MESSAGE_EDIT_MODAL_PREFIX,
   MANAGED_MESSAGE_SEND_MODAL_ID,
   SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX,
+  SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX,
 } from "./message-command.js";
 import type { ManagedMessageService } from "./managed-message.js";
 import type { ScheduledMessageCommandService } from "./scheduled-message-command.js";
@@ -198,7 +199,8 @@ export function registerManagedMessageModalHandler(
       !interaction.isModalSubmit() ||
       (interaction.customId !== MANAGED_MESSAGE_SEND_MODAL_ID &&
         !interaction.customId.startsWith(MANAGED_MESSAGE_EDIT_MODAL_PREFIX) &&
-        !interaction.customId.startsWith(SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX))
+        !interaction.customId.startsWith(SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX) &&
+        !interaction.customId.startsWith(SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX))
     ) {
       return;
     }

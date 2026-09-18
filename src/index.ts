@@ -188,6 +188,7 @@ async function main(): Promise<void> {
   });
   const scheduledMessageRuntimeReconciler = createScheduledMessageRuntimeReconciler({
     scheduledActions,
+    store: scheduledMessageStore,
     executor: scheduledMessageExecutor,
     delivery: scheduledMessageWorkers,
     logger,

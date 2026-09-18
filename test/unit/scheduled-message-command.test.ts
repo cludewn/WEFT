@@ -24,6 +24,7 @@ function fixture() {
     },
     creatorUserId: "actor-id",
     retryCount: 0,
+    revision: 0,
     payload: { content: "scheduled content", embed: null },
     resultMessageId: null,
   };
@@ -57,8 +58,9 @@ function fixture() {
       },
     }),
   );
-  const enqueueScheduledMessage = vi.fn(() => Promise.resolve("ENQUEUED" as const));
-  const hasCreatedOrRetryDelivery = vi.fn(() => Promise.resolve(false));
+  const ensureScheduledMessageDelivery = vi.fn<
+    ScheduledMessageWorkerController["ensureScheduledMessageDelivery"]
+  >(() => Promise.resolve("CURRENT"));
   const cancelScheduledMessageDeliveries = vi.fn<
     ScheduledMessageWorkerController["cancelScheduledMessageDeliveries"]
   >(() => Promise.resolve({ outcome: "CONFIRMED", matchedDeliveryCount: 1 }));
@@ -69,12 +71,33 @@ function fixture() {
     .mockReturnValueOnce("cancellation-audit-id");
   const now = vi.fn(() => establishedAt);
   const logger = { warn: vi.fn() } as unknown as Logger;
+  const listNonterminal = vi.fn<ScheduledMessageStore["listNonterminal"]>(() =>
+    Promise.resolve({ outcome: "FOUND", schedules: [] }),
+  );
+  const findEditable = vi.fn<ScheduledMessageStore["findEditable"]>(() =>
+    Promise.resolve({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" }),
+  );
+  const edit = vi.fn<ScheduledMessageStore["edit"]>(() =>
+    Promise.resolve({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" }),
+  );
+  const reschedule = vi.fn<ScheduledMessageStore["reschedule"]>(() =>
+    Promise.resolve({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" }),
+  );
+  const find = vi.fn(() => Promise.resolve(definition));
   const service = createScheduledMessageCommandService({
     discord: { authorizeCreation },
-    store: { create, cancel, findStatus },
+    store: {
+      create,
+      cancel,
+      findStatus,
+      listNonterminal,
+      findEditable,
+      edit,
+      reschedule,
+      find,
+    },
     delivery: {
-      enqueueScheduledMessage,
-      hasCreatedOrRetryDelivery,
+      ensureScheduledMessageDelivery,
       cancelScheduledMessageDeliveries,
     },
     generateId,
@@ -88,8 +111,12 @@ function fixture() {
     create,
     cancel,
     findStatus,
-    enqueueScheduledMessage,
-    hasCreatedOrRetryDelivery,
+    definition,
+    findEditable,
+    edit,
+    reschedule,
+    find,
+    ensureScheduledMessageDelivery,
     cancelScheduledMessageDeliveries,
   };
 }
@@ -117,7 +144,11 @@ describe("scheduled message command service", () => {
       payload: { content: "scheduled content", embed: null },
       occurredAt: establishedAt,
     });
-    expect(f.enqueueScheduledMessage).toHaveBeenCalledWith("schedule-id", executeAt);
+    expect(f.ensureScheduledMessageDelivery).toHaveBeenCalledWith({
+      scheduledActionId: "schedule-id",
+      executeAt,
+      revision: 0,
+    });
   });
 
   it("does not persist or enqueue when fresh authorization fails", async () => {
@@ -136,13 +167,12 @@ describe("scheduled message command service", () => {
       }),
     ).resolves.toEqual({ outcome: "FAILURE", code: "ACTOR_PERMISSION_MISSING" });
     expect(f.create).not.toHaveBeenCalled();
-    expect(f.enqueueScheduledMessage).not.toHaveBeenCalled();
+    expect(f.ensureScheduledMessageDelivery).not.toHaveBeenCalled();
   });
 
-  it("accepts an enqueue throw when effective delivery is confirmed", async () => {
+  it("accepts a confirmed effective delivery", async () => {
     const f = fixture();
-    f.enqueueScheduledMessage.mockRejectedValue(new Error("response lost"));
-    f.hasCreatedOrRetryDelivery.mockResolvedValue(true);
+    f.ensureScheduledMessageDelivery.mockResolvedValue("CURRENT");
     await expect(
       f.service.create({
         guildId: "guild-id",
@@ -156,7 +186,7 @@ describe("scheduled message command service", () => {
 
   it("keeps the authoritative schedule active when delivery needs reconciliation", async () => {
     const f = fixture();
-    f.enqueueScheduledMessage.mockRejectedValue(new Error("enqueue failed"));
+    f.ensureScheduledMessageDelivery.mockResolvedValue("PENDING_RECONCILIATION");
     await expect(
       f.service.create({
         guildId: "guild-id",
@@ -193,5 +223,80 @@ describe("scheduled message command service", () => {
       }),
     ).resolves.toEqual({ outcome: "EXECUTING" });
     expect(f.cancelScheduledMessageDeliveries).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects invalid list pages before persistence", async () => {
+    const f = fixture();
+    await expect(
+      f.service.list({ guildId: "guild-id", channelId: "channel-id", page: 0 }),
+    ).resolves.toEqual({ outcome: "INVALID_PAGE" });
+  });
+
+  it("reschedules relative to one establishment time and repairs the authoritative projection", async () => {
+    const f = fixture();
+    f.findEditable.mockResolvedValue({ outcome: "ACTIVE", definition: f.definition });
+    const newExecuteAt = new Date(establishedAt.getTime() + 7_200_000);
+    const rescheduled = {
+      ...f.definition,
+      revision: 1,
+      action: { ...f.definition.action, executeAt: newExecuteAt },
+    };
+    f.reschedule.mockResolvedValue({ outcome: "RESCHEDULED", definition: rescheduled });
+    f.find.mockResolvedValue(rescheduled);
+
+    await expect(
+      f.service.reschedule({
+        scheduledActionId: "schedule-id",
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "administrator-id",
+        durationMs: 7_200_000,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "RESCHEDULED",
+      definition: { revision: 1, action: { executeAt: newExecuteAt } },
+      deliveryPendingReconciliation: false,
+    });
+    expect(f.reschedule).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedRevision: 0,
+        executeAt: newExecuteAt,
+        occurredAt: establishedAt,
+      }),
+    );
+    expect(f.ensureScheduledMessageDelivery).toHaveBeenCalledWith({
+      scheduledActionId: "schedule-id",
+      executeAt: newExecuteAt,
+      revision: 1,
+    });
+  });
+
+  it("keeps a committed reschedule authoritative when delivery repair fails", async () => {
+    const f = fixture();
+    f.findEditable.mockResolvedValue({ outcome: "ACTIVE", definition: f.definition });
+    const newExecuteAt = new Date(establishedAt.getTime() + 60_000);
+    const rescheduled = {
+      ...f.definition,
+      revision: 1,
+      action: { ...f.definition.action, executeAt: newExecuteAt },
+    };
+    f.reschedule.mockResolvedValue({ outcome: "RESCHEDULED", definition: rescheduled });
+    f.find.mockResolvedValue(rescheduled);
+    f.ensureScheduledMessageDelivery.mockRejectedValue(new Error("pg-boss unavailable"));
+
+    await expect(
+      f.service.reschedule({
+        scheduledActionId: "schedule-id",
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "administrator-id",
+        durationMs: 60_000,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "RESCHEDULED",
+      definition: { revision: 1, action: { executeAt: newExecuteAt } },
+      deliveryPendingReconciliation: true,
+    });
+    expect(f.reschedule).toHaveBeenCalledTimes(1);
   });
 });

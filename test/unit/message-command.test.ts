@@ -48,6 +48,15 @@ describe("message command", () => {
         { name: "create", options: [{ name: "after", required: true }] },
         { name: "cancel", options: [{ name: "id", required: true }] },
         { name: "status", options: [{ name: "id", required: true }] },
+        { name: "list", options: [{ name: "page", required: false, min_value: 1 }] },
+        { name: "edit", options: [{ name: "id", required: true }] },
+        {
+          name: "reschedule",
+          options: [
+            { name: "id", required: true },
+            { name: "after", required: true },
+          ],
+        },
       ],
     });
   });
