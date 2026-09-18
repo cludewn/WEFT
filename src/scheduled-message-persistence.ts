@@ -2,7 +2,10 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 import { check, index, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
-import type { ManagedMessagePayload } from "./managed-message-payload.js";
+import {
+  validateManagedMessagePayload,
+  type ManagedMessagePayload,
+} from "./managed-message-payload.js";
 import {
   insertManagedMessageCreation,
   managedMessageAudits,
@@ -13,6 +16,7 @@ import { scheduledActions, type ScheduledAction } from "./scheduled-action-persi
 
 export const SCHEDULED_MESSAGE_AUDIT_EVENTS = [
   "CREATED",
+  "CANCELLED",
   "EXECUTION_COMPLETED",
   "EXECUTION_RETRY",
   "EXECUTION_FAILED",
@@ -92,7 +96,7 @@ export const scheduledMessageAudits = pgTable(
   (table) => [
     check(
       "scheduled_message_audits_event_check",
-      sql`${table.event} in ('CREATED', 'EXECUTION_COMPLETED', 'EXECUTION_RETRY', 'EXECUTION_FAILED')`,
+      sql`${table.event} in ('CREATED', 'CANCELLED', 'EXECUTION_COMPLETED', 'EXECUTION_RETRY', 'EXECUTION_FAILED')`,
     ),
     check(
       "scheduled_message_audits_actor_type_check",
@@ -106,6 +110,11 @@ export const scheduledMessageAudits = pgTable(
       "scheduled_message_audits_shape_check",
       sql`(
         ${table.event} = 'CREATED'
+        and ${table.actorType} = 'USER' and ${table.actorId} is not null
+        and ${table.outcome} = 'SUCCESS' and ${table.failureCode} is null
+        and ${table.resultMessageId} is null
+      ) or (
+        ${table.event} = 'CANCELLED'
         and ${table.actorType} = 'USER' and ${table.actorId} is not null
         and ${table.outcome} = 'SUCCESS' and ${table.failureCode} is null
         and ${table.resultMessageId} is null
@@ -211,6 +220,31 @@ export type FinalizeScheduledMessageExecution = {
   occurredAt: Date;
 };
 export type ScheduledMessageFinalizationResult = "COMMITTED" | "PROVEN_UNCOMMITTED";
+export type ScheduledMessageStatusView = {
+  scheduledActionId: string;
+  status: ScheduledAction["status"];
+  guildId: string;
+  channelId: string;
+  executeAt: Date;
+  creatorUserId: string;
+  retryCount: number;
+  resultMessageId: string | null;
+};
+export type ScheduledMessageStatusResult =
+  | { outcome: "FOUND"; schedule: ScheduledMessageStatusView }
+  | { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" | "CORRUPT" | "UNAVAILABLE" };
+export type CancelScheduledMessage = {
+  scheduledActionId: string;
+  guildId: string;
+  channelId: string;
+  actorId: string;
+  auditId: string;
+  occurredAt: Date;
+};
+export type CancelScheduledMessageResult =
+  | { outcome: "CANCELLED" | "ALREADY_CANCELLED"; definition: ScheduledMessageDefinition }
+  | { outcome: "EXECUTING" | "COMPLETED" | "FAILED" }
+  | { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" | "PERSISTENCE_UNCONFIRMED" };
 export type ScheduledMessageStore = {
   create: (input: CreateScheduledMessage) => Promise<ScheduledMessageDefinition>;
   find: (scheduledActionId: string) => Promise<ScheduledMessageDefinition | undefined>;
@@ -229,6 +263,12 @@ export type ScheduledMessageStore = {
   finalizeSuccess: (
     input: FinalizeScheduledMessageExecution,
   ) => Promise<ScheduledMessageFinalizationResult>;
+  findStatus: (
+    scheduledActionId: string,
+    guildId: string,
+    channelId: string,
+  ) => Promise<ScheduledMessageStatusResult>;
+  cancel: (input: CancelScheduledMessage) => Promise<CancelScheduledMessageResult>;
 };
 
 export function scheduledMessagePayloadToColumns(
@@ -382,6 +422,40 @@ function definitionMatches(
   );
 }
 
+function stateIsValid(state: ScheduledMessageState, status: ScheduledAction["status"]): boolean {
+  const payload = validateManagedMessagePayload({
+    content: state.content,
+    embed: {
+      title: state.embedTitle,
+      description: state.embedDescription,
+      color: state.embedColor,
+      imageUrl: state.embedImageUrl,
+    },
+  });
+  return (
+    payload.ok &&
+    payloadColumnsMatch(state, payload.payload) &&
+    state.creatorUserId.length > 0 &&
+    Number.isInteger(state.retryCount) &&
+    state.retryCount >= 0 &&
+    state.retryCount <= 3 &&
+    (status === "COMPLETED" ? state.resultMessageId !== null : state.resultMessageId === null)
+  );
+}
+
+function toStatusView(definition: ScheduledMessageDefinition): ScheduledMessageStatusView {
+  return {
+    scheduledActionId: definition.action.id,
+    status: definition.action.status,
+    guildId: definition.action.guildId,
+    channelId: definition.action.targetId,
+    executeAt: definition.action.executeAt,
+    creatorUserId: definition.creatorUserId,
+    retryCount: definition.retryCount,
+    resultMessageId: definition.resultMessageId,
+  };
+}
+
 function payloadConditions(payload: ManagedMessagePayload) {
   const flat = scheduledMessagePayloadToColumns(payload);
   return [
@@ -402,6 +476,25 @@ function payloadConditions(payload: ManagedMessagePayload) {
 }
 
 export function createScheduledMessageStore(database: DatabaseClient): ScheduledMessageStore {
+  const findScoped = async (scheduledActionId: string, guildId: string, channelId: string) => {
+    const [result] = await database
+      .select({ action: scheduledActions, state: scheduledMessageStates })
+      .from(scheduledActions)
+      .leftJoin(
+        scheduledMessageStates,
+        eq(scheduledMessageStates.scheduledActionId, scheduledActions.id),
+      )
+      .where(
+        and(
+          eq(scheduledActions.id, scheduledActionId),
+          eq(scheduledActions.guildId, guildId),
+          eq(scheduledActions.targetId, channelId),
+          eq(scheduledActions.actionType, "SEND_MESSAGE"),
+        ),
+      )
+      .limit(1);
+    return result;
+  };
   const findForExecution = async (
     scheduledActionId: string,
   ): Promise<ScheduledMessageExecutionLoadResult> => {
@@ -432,6 +525,68 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
       .where(eq(scheduledMessageAudits.id, id))
       .limit(1);
     return audit;
+  };
+  const cancellationAuditMatches = (
+    audit: ScheduledMessageAudit | undefined,
+    definition: ScheduledMessageDefinition,
+    expected?: Pick<CancelScheduledMessage, "auditId" | "actorId" | "occurredAt">,
+  ): boolean =>
+    audit !== undefined &&
+    audit.event === "CANCELLED" &&
+    audit.actorId !== null &&
+    matchesAudit(audit, {
+      id: expected?.auditId ?? audit.id,
+      definition,
+      event: "CANCELLED",
+      actorType: "USER",
+      actorId: expected?.actorId ?? audit.actorId,
+      outcome: "SUCCESS",
+      failureCode: null,
+      resultMessageId: null,
+      occurredAt: expected?.occurredAt ?? audit.occurredAt,
+    });
+  const findMatchingCancellationAudit = async (
+    definition: ScheduledMessageDefinition,
+  ): Promise<ScheduledMessageAudit | undefined> => {
+    const audits = await database
+      .select()
+      .from(scheduledMessageAudits)
+      .where(
+        and(
+          eq(scheduledMessageAudits.scheduledActionId, definition.action.id),
+          eq(scheduledMessageAudits.guildId, definition.action.guildId),
+          eq(scheduledMessageAudits.channelId, definition.action.targetId),
+          eq(scheduledMessageAudits.event, "CANCELLED"),
+          eq(scheduledMessageAudits.actorType, "USER"),
+          sql`${scheduledMessageAudits.actorId} is not null`,
+          eq(scheduledMessageAudits.executeAt, definition.action.executeAt),
+          eq(scheduledMessageAudits.outcome, "SUCCESS"),
+          isNull(scheduledMessageAudits.failureCode),
+          isNull(scheduledMessageAudits.resultMessageId),
+        ),
+      );
+    return audits.find((audit) => cancellationAuditMatches(audit, definition));
+  };
+  const confirmCancellation = async (
+    input: CancelScheduledMessage,
+  ): Promise<CancelScheduledMessageResult> => {
+    const scoped = await findScoped(input.scheduledActionId, input.guildId, input.channelId);
+    if (scoped === undefined || scoped.state === null)
+      return { outcome: "PERSISTENCE_UNCONFIRMED" };
+    const definition = toDefinition(scoped.action, scoped.state);
+    if (
+      !stateIsValid(scoped.state, scoped.action.status) ||
+      definition.action.status !== "CANCELLED"
+    )
+      return { outcome: "PERSISTENCE_UNCONFIRMED" };
+    const ownAudit = await findAudit(input.auditId);
+    if (cancellationAuditMatches(ownAudit, definition, input)) {
+      return { outcome: "CANCELLED", definition };
+    }
+    const previousAudit = await findMatchingCancellationAudit(definition);
+    return previousAudit === undefined
+      ? { outcome: "PERSISTENCE_UNCONFIRMED" }
+      : { outcome: "ALREADY_CANCELLED", definition };
   };
   const confirmCreation = async (
     input: CreateScheduledMessage,
@@ -940,6 +1095,138 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
           /* commit status remains unknown */
         }
         throw error;
+      }
+    },
+    async findStatus(scheduledActionId, guildId, channelId) {
+      try {
+        const scoped = await findScoped(scheduledActionId, guildId, channelId);
+        if (scoped === undefined) return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" };
+        if (scoped.state === null) return { outcome: "CORRUPT" };
+        const definition = toDefinition(scoped.action, scoped.state);
+        return stateIsValid(scoped.state, scoped.action.status)
+          ? { outcome: "FOUND", schedule: toStatusView(definition) }
+          : { outcome: "CORRUPT" };
+      } catch {
+        return { outcome: "UNAVAILABLE" };
+      }
+    },
+    async cancel(input) {
+      try {
+        return await database.transaction(async (transaction) => {
+          const [scoped] = await transaction
+            .select({ action: scheduledActions, state: scheduledMessageStates })
+            .from(scheduledActions)
+            .leftJoin(
+              scheduledMessageStates,
+              eq(scheduledMessageStates.scheduledActionId, scheduledActions.id),
+            )
+            .where(
+              and(
+                eq(scheduledActions.id, input.scheduledActionId),
+                eq(scheduledActions.guildId, input.guildId),
+                eq(scheduledActions.targetId, input.channelId),
+                eq(scheduledActions.actionType, "SEND_MESSAGE"),
+              ),
+            )
+            .limit(1);
+          if (scoped === undefined) return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" } as const;
+          if (scoped.state === null) return { outcome: "PERSISTENCE_UNCONFIRMED" } as const;
+          const definition = toDefinition(scoped.action, scoped.state);
+          if (!stateIsValid(scoped.state, scoped.action.status))
+            return { outcome: "PERSISTENCE_UNCONFIRMED" } as const;
+          if (definition.action.status === "CANCELLED") {
+            const previousAudit = await transaction
+              .select()
+              .from(scheduledMessageAudits)
+              .where(
+                and(
+                  eq(scheduledMessageAudits.scheduledActionId, definition.action.id),
+                  eq(scheduledMessageAudits.event, "CANCELLED"),
+                ),
+              );
+            return previousAudit.some((audit) => cancellationAuditMatches(audit, definition))
+              ? ({ outcome: "ALREADY_CANCELLED", definition } as const)
+              : ({ outcome: "PERSISTENCE_UNCONFIRMED" } as const);
+          }
+          if (definition.action.status !== "ACTIVE") {
+            return { outcome: definition.action.status };
+          }
+
+          const [cancelled] = await transaction
+            .update(scheduledActions)
+            .set({ status: "CANCELLED", updatedAt: new Date() })
+            .where(
+              and(
+                eq(scheduledActions.id, input.scheduledActionId),
+                eq(scheduledActions.guildId, input.guildId),
+                eq(scheduledActions.targetId, input.channelId),
+                eq(scheduledActions.actionType, "SEND_MESSAGE"),
+                eq(scheduledActions.status, "ACTIVE"),
+              ),
+            )
+            .returning();
+          if (cancelled === undefined) {
+            const [current] = await transaction
+              .select({ status: scheduledActions.status })
+              .from(scheduledActions)
+              .where(
+                and(
+                  eq(scheduledActions.id, input.scheduledActionId),
+                  eq(scheduledActions.guildId, input.guildId),
+                  eq(scheduledActions.targetId, input.channelId),
+                  eq(scheduledActions.actionType, "SEND_MESSAGE"),
+                ),
+              )
+              .limit(1);
+            if (
+              current?.status === "EXECUTING" ||
+              current?.status === "COMPLETED" ||
+              current?.status === "FAILED"
+            ) {
+              return { outcome: current.status };
+            }
+            if (current?.status === "CANCELLED") {
+              const previousAudits = await transaction
+                .select()
+                .from(scheduledMessageAudits)
+                .where(
+                  and(
+                    eq(scheduledMessageAudits.scheduledActionId, definition.action.id),
+                    eq(scheduledMessageAudits.event, "CANCELLED"),
+                  ),
+                );
+              return previousAudits.some((audit) => cancellationAuditMatches(audit, definition))
+                ? ({ outcome: "ALREADY_CANCELLED", definition } as const)
+                : ({ outcome: "PERSISTENCE_UNCONFIRMED" } as const);
+            }
+            return { outcome: "PERSISTENCE_UNCONFIRMED" } as const;
+          }
+          await transaction.insert(scheduledMessageAudits).values({
+            id: input.auditId,
+            scheduledActionId: cancelled.id,
+            guildId: cancelled.guildId,
+            channelId: cancelled.targetId,
+            event: "CANCELLED",
+            actorType: "USER",
+            actorId: input.actorId,
+            executeAt: cancelled.executeAt,
+            ...scheduledMessagePayloadToColumns(definition.payload),
+            occurredAt: input.occurredAt,
+            outcome: "SUCCESS",
+            failureCode: null,
+            resultMessageId: null,
+          });
+          return {
+            outcome: "CANCELLED",
+            definition: { ...definition, action: cancelled },
+          } as const;
+        });
+      } catch {
+        try {
+          return await confirmCancellation(input);
+        } catch {
+          return { outcome: "PERSISTENCE_UNCONFIRMED" };
+        }
       }
     },
   };
