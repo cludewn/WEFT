@@ -1,8 +1,9 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { check, index, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
 import {
+  managedMessagePayloadsEqual,
   validateManagedMessagePayload,
   type ManagedMessagePayload,
 } from "./managed-message-payload.js";
@@ -17,6 +18,8 @@ import { scheduledActions, type ScheduledAction } from "./scheduled-action-persi
 export const SCHEDULED_MESSAGE_AUDIT_EVENTS = [
   "CREATED",
   "CANCELLED",
+  "EDITED",
+  "RESCHEDULED",
   "EXECUTION_COMPLETED",
   "EXECUTION_RETRY",
   "EXECUTION_FAILED",
@@ -50,6 +53,7 @@ export const scheduledMessageStates = pgTable(
       .references(() => scheduledActions.id),
     creatorUserId: text("creator_user_id").notNull(),
     retryCount: integer("retry_count").notNull().default(0),
+    revision: integer("revision").notNull().default(0),
     content: text("content").notNull(),
     embedTitle: text("embed_title"),
     embedDescription: text("embed_description"),
@@ -59,6 +63,7 @@ export const scheduledMessageStates = pgTable(
   },
   (table) => [
     check("scheduled_message_states_retry_count_check", sql`${table.retryCount} between 0 and 3`),
+    check("scheduled_message_states_revision_check", sql`${table.revision} >= 0`),
     check(
       "scheduled_message_states_payload_check",
       sql`char_length(${table.content}) between 0 and 2000
@@ -96,7 +101,7 @@ export const scheduledMessageAudits = pgTable(
   (table) => [
     check(
       "scheduled_message_audits_event_check",
-      sql`${table.event} in ('CREATED', 'CANCELLED', 'EXECUTION_COMPLETED', 'EXECUTION_RETRY', 'EXECUTION_FAILED')`,
+      sql`${table.event} in ('CREATED', 'CANCELLED', 'EDITED', 'RESCHEDULED', 'EXECUTION_COMPLETED', 'EXECUTION_RETRY', 'EXECUTION_FAILED')`,
     ),
     check(
       "scheduled_message_audits_actor_type_check",
@@ -115,6 +120,11 @@ export const scheduledMessageAudits = pgTable(
         and ${table.resultMessageId} is null
       ) or (
         ${table.event} = 'CANCELLED'
+        and ${table.actorType} = 'USER' and ${table.actorId} is not null
+        and ${table.outcome} = 'SUCCESS' and ${table.failureCode} is null
+        and ${table.resultMessageId} is null
+      ) or (
+        ${table.event} in ('EDITED', 'RESCHEDULED')
         and ${table.actorType} = 'USER' and ${table.actorId} is not null
         and ${table.outcome} = 'SUCCESS' and ${table.failureCode} is null
         and ${table.resultMessageId} is null
@@ -165,6 +175,7 @@ export type ScheduledMessageDefinition = {
   action: ScheduledAction;
   creatorUserId: string;
   retryCount: number;
+  revision: number;
   payload: ManagedMessagePayload;
   resultMessageId: string | null;
 };
@@ -233,6 +244,52 @@ export type ScheduledMessageStatusView = {
 export type ScheduledMessageStatusResult =
   | { outcome: "FOUND"; schedule: ScheduledMessageStatusView }
   | { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" | "CORRUPT" | "UNAVAILABLE" };
+export type ScheduledMessageListItem = {
+  scheduledActionId: string;
+  status: Extract<ScheduledAction["status"], "ACTIVE" | "EXECUTING">;
+  executeAt: Date;
+  creatorUserId: string;
+};
+export type ScheduledMessageListResult =
+  { outcome: "FOUND"; schedules: ScheduledMessageListItem[] } | { outcome: "UNAVAILABLE" };
+export type ScheduledMessageEditableLoadResult =
+  | { outcome: "ACTIVE"; definition: ScheduledMessageDefinition }
+  | { outcome: "EXECUTING" | "CANCELLED" | "COMPLETED" | "FAILED" }
+  | { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" | "CORRUPT" | "UNAVAILABLE" };
+export type EditScheduledMessage = {
+  scheduledActionId: string;
+  guildId: string;
+  channelId: string;
+  actorId: string;
+  expectedRevision: number;
+  payload: ManagedMessagePayload;
+  auditId: string;
+  occurredAt: Date;
+};
+export type RescheduleScheduledMessage = {
+  scheduledActionId: string;
+  guildId: string;
+  channelId: string;
+  actorId: string;
+  expectedRevision: number;
+  executeAt: Date;
+  auditId: string;
+  occurredAt: Date;
+};
+export type ModifyScheduledMessageResult =
+  | { outcome: "EDITED"; definition: ScheduledMessageDefinition }
+  | { outcome: "RESCHEDULED"; definition: ScheduledMessageDefinition }
+  | { outcome: "UNCHANGED"; definition: ScheduledMessageDefinition }
+  | { outcome: "CONFLICT" | "EXECUTING" | "CANCELLED" | "COMPLETED" | "FAILED" }
+  | { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" | "CORRUPT" | "PERSISTENCE_UNCONFIRMED" };
+export type EditScheduledMessageResult = Exclude<
+  ModifyScheduledMessageResult,
+  { outcome: "RESCHEDULED" }
+>;
+export type RescheduleScheduledMessageResult = Exclude<
+  ModifyScheduledMessageResult,
+  { outcome: "EDITED" | "UNCHANGED" }
+>;
 export type CancelScheduledMessage = {
   scheduledActionId: string;
   guildId: string;
@@ -250,7 +307,10 @@ export type ScheduledMessageStore = {
   find: (scheduledActionId: string) => Promise<ScheduledMessageDefinition | undefined>;
   findForExecution: (scheduledActionId: string) => Promise<ScheduledMessageExecutionLoadResult>;
   confirmCreation: (input: CreateScheduledMessage) => Promise<ScheduledMessageCreationConfirmation>;
-  claimExecution: (scheduledActionId: string) => Promise<ScheduledMessageExecutionClaimTransition>;
+  claimExecution: (
+    scheduledActionId: string,
+    expectedRevision: number | undefined,
+  ) => Promise<ScheduledMessageExecutionClaimTransition>;
   retryPreSendFailure: (
     input: RetryScheduledMessageExecution,
   ) => Promise<ScheduledMessageExecutionTransition>;
@@ -268,6 +328,18 @@ export type ScheduledMessageStore = {
     guildId: string,
     channelId: string,
   ) => Promise<ScheduledMessageStatusResult>;
+  listNonterminal: (
+    guildId: string,
+    channelId: string,
+    offset: number,
+  ) => Promise<ScheduledMessageListResult>;
+  findEditable: (
+    scheduledActionId: string,
+    guildId: string,
+    channelId: string,
+  ) => Promise<ScheduledMessageEditableLoadResult>;
+  edit: (input: EditScheduledMessage) => Promise<EditScheduledMessageResult>;
+  reschedule: (input: RescheduleScheduledMessage) => Promise<RescheduleScheduledMessageResult>;
   cancel: (input: CancelScheduledMessage) => Promise<CancelScheduledMessageResult>;
 };
 
@@ -323,6 +395,7 @@ function toDefinition(
     action,
     creatorUserId: state.creatorUserId,
     retryCount: state.retryCount,
+    revision: state.revision,
     payload: scheduledMessagePayloadFromColumns(state),
     resultMessageId: state.resultMessageId,
   };
@@ -371,6 +444,7 @@ export function matchesScheduledMessageCreation(
     action,
     creatorUserId: state.creatorUserId,
     retryCount: state.retryCount,
+    revision: state.revision,
     payload: scheduledMessagePayloadFromColumns(state),
     resultMessageId: state.resultMessageId,
   };
@@ -384,6 +458,7 @@ export function matchesScheduledMessageCreation(
     state.scheduledActionId === expected.scheduledActionId &&
     state.creatorUserId === expected.actorId &&
     state.retryCount === 0 &&
+    state.revision === 0 &&
     payloadColumnsMatch(state, expected.payload) &&
     state.resultMessageId === null &&
     matchesAudit(audit, {
@@ -417,6 +492,7 @@ function definitionMatches(
     actual.action.status === status &&
     actual.creatorUserId === expected.creatorUserId &&
     actual.retryCount === retryCount &&
+    actual.revision === expected.revision &&
     payloadColumnsMatch(scheduledMessagePayloadToColumns(actual.payload), expected.payload) &&
     actual.resultMessageId === resultMessageId
   );
@@ -439,6 +515,8 @@ function stateIsValid(state: ScheduledMessageState, status: ScheduledAction["sta
     Number.isInteger(state.retryCount) &&
     state.retryCount >= 0 &&
     state.retryCount <= 3 &&
+    Number.isInteger(state.revision) &&
+    state.revision >= 0 &&
     (status === "COMPLETED" ? state.resultMessageId !== null : state.resultMessageId === null)
   );
 }
@@ -669,6 +747,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
               and(
                 eq(scheduledMessageStates.scheduledActionId, input.definition.action.id),
                 eq(scheduledMessageStates.retryCount, input.definition.retryCount),
+                eq(scheduledMessageStates.revision, input.definition.revision),
                 sql`${scheduledMessageStates.retryCount} < 3`,
                 isNull(scheduledMessageStates.resultMessageId),
               ),
@@ -860,6 +939,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
         action: input.action,
         creatorUserId: source.actorId!,
         retryCount: 0,
+        revision: 0,
         payload: scheduledMessagePayloadFromColumns(source),
         resultMessageId: null,
       },
@@ -871,6 +951,39 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
       resultMessageId: null,
       occurredAt: input.occurredAt,
     });
+  };
+  type ExpectedModification<T extends "EDITED" | "RESCHEDULED"> = {
+    outcome: T;
+    audit: ExpectedAudit;
+    definition: ScheduledMessageDefinition;
+  };
+  const confirmModification = async <T extends "EDITED" | "RESCHEDULED">(
+    expected: ExpectedModification<T> | undefined,
+  ): Promise<Extract<ModifyScheduledMessageResult, { outcome: T }> | undefined> => {
+    if (expected === undefined) return undefined;
+    const audit = await findAudit(expected.audit.id);
+    return matchesAudit(audit, expected.audit)
+      ? ({ outcome: expected.outcome, definition: expected.definition } as Extract<
+          ModifyScheduledMessageResult,
+          { outcome: T }
+        >)
+      : undefined;
+  };
+  const modificationStatus = (
+    action: ScheduledAction,
+    state: ScheduledMessageState | null,
+    expectedRevision: number,
+  ):
+    | { outcome: "READY"; definition: ScheduledMessageDefinition }
+    | Exclude<
+        ModifyScheduledMessageResult,
+        { outcome: "EDITED" | "RESCHEDULED" | "UNCHANGED" }
+      > => {
+    if (state === null || !stateIsValid(state, action.status)) return { outcome: "CORRUPT" };
+    const definition = toDefinition(action, state);
+    if (action.status !== "ACTIVE") return { outcome: action.status };
+    if (definition.revision !== expectedRevision) return { outcome: "CONFLICT" };
+    return { outcome: "READY", definition };
   };
 
   return {
@@ -896,6 +1009,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
               scheduledActionId: input.scheduledActionId,
               creatorUserId: input.actorId,
               retryCount: 0,
+              revision: 0,
               ...scheduledMessagePayloadToColumns(input.payload),
               resultMessageId: null,
             })
@@ -929,24 +1043,66 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
     find,
     findForExecution,
     confirmCreation,
-    async claimExecution(scheduledActionId) {
-      const [transitioned] = await database
-        .update(scheduledActions)
-        .set({ status: "EXECUTING", updatedAt: new Date() })
-        .where(
-          and(
-            eq(scheduledActions.id, scheduledActionId),
-            eq(scheduledActions.actionType, "SEND_MESSAGE"),
-            eq(scheduledActions.status, "ACTIVE"),
-          ),
-        )
-        .returning();
-      if (transitioned === undefined)
-        return { outcome: "NOT_TRANSITIONED", current: await find(scheduledActionId) };
-      const current = await find(scheduledActionId);
-      if (current === undefined)
-        return { outcome: "COMMITTED_STATE_MISSING", action: transitioned };
-      return { outcome: "COMMITTED", definition: current };
+    async claimExecution(scheduledActionId, expectedRevision) {
+      return database.transaction(async (transaction) => {
+        const [action] = await transaction
+          .select()
+          .from(scheduledActions)
+          .where(eq(scheduledActions.id, scheduledActionId))
+          .limit(1)
+          .for("update");
+        if (
+          action === undefined ||
+          action.actionType !== "SEND_MESSAGE" ||
+          action.status !== "ACTIVE"
+        ) {
+          return {
+            outcome: "NOT_TRANSITIONED",
+            current:
+              action?.actionType === "SEND_MESSAGE"
+                ? await transaction
+                    .select()
+                    .from(scheduledMessageStates)
+                    .where(eq(scheduledMessageStates.scheduledActionId, scheduledActionId))
+                    .limit(1)
+                    .then((rows) =>
+                      rows[0] === undefined ? undefined : toDefinition(action, rows[0]),
+                    )
+                : undefined,
+          } as const;
+        }
+        const [state] = await transaction
+          .select()
+          .from(scheduledMessageStates)
+          .where(eq(scheduledMessageStates.scheduledActionId, scheduledActionId))
+          .limit(1);
+        if (
+          (state === undefined && expectedRevision !== undefined) ||
+          (state !== undefined &&
+            (!stateIsValid(state, action.status) || state.revision !== expectedRevision))
+        ) {
+          return {
+            outcome: "NOT_TRANSITIONED",
+            current: state === undefined ? undefined : toDefinition(action, state),
+          } as const;
+        }
+        const [transitioned] = await transaction
+          .update(scheduledActions)
+          .set({ status: "EXECUTING", updatedAt: new Date() })
+          .where(
+            and(
+              eq(scheduledActions.id, scheduledActionId),
+              eq(scheduledActions.actionType, "SEND_MESSAGE"),
+              eq(scheduledActions.status, "ACTIVE"),
+            ),
+          )
+          .returning();
+        if (transitioned === undefined)
+          return { outcome: "NOT_TRANSITIONED", current: undefined } as const;
+        if (state === undefined)
+          return { outcome: "COMMITTED_STATE_MISSING", action: transitioned } as const;
+        return { outcome: "COMMITTED", definition: toDefinition(transitioned, state) } as const;
+      });
     },
     retryPreSendFailure(input) {
       return applyFailureTransition(input, true);
@@ -1064,6 +1220,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
                 eq(scheduledMessageStates.scheduledActionId, input.definition.action.id),
                 eq(scheduledMessageStates.creatorUserId, input.definition.creatorUserId),
                 eq(scheduledMessageStates.retryCount, input.definition.retryCount),
+                eq(scheduledMessageStates.revision, input.definition.revision),
                 isNull(scheduledMessageStates.resultMessageId),
                 ...payloadConditions(input.definition.payload),
               ),
@@ -1110,16 +1267,62 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
         return { outcome: "UNAVAILABLE" };
       }
     },
-    async cancel(input) {
+    async listNonterminal(guildId, channelId, offset) {
+      try {
+        const rows = await database
+          .select({
+            scheduledActionId: scheduledActions.id,
+            status: scheduledActions.status,
+            executeAt: scheduledActions.executeAt,
+            creatorUserId: scheduledMessageStates.creatorUserId,
+          })
+          .from(scheduledActions)
+          .innerJoin(
+            scheduledMessageStates,
+            eq(scheduledMessageStates.scheduledActionId, scheduledActions.id),
+          )
+          .where(
+            and(
+              eq(scheduledActions.guildId, guildId),
+              eq(scheduledActions.targetId, channelId),
+              eq(scheduledActions.actionType, "SEND_MESSAGE"),
+              inArray(scheduledActions.status, ["ACTIVE", "EXECUTING"]),
+            ),
+          )
+          .orderBy(asc(scheduledActions.executeAt), asc(scheduledActions.id))
+          .limit(10)
+          .offset(offset);
+        return {
+          outcome: "FOUND",
+          schedules: rows.map((row) => ({
+            ...row,
+            status: row.status as ScheduledMessageListItem["status"],
+          })),
+        };
+      } catch {
+        return { outcome: "UNAVAILABLE" };
+      }
+    },
+    async findEditable(scheduledActionId, guildId, channelId) {
+      try {
+        const scoped = await findScoped(scheduledActionId, guildId, channelId);
+        if (scoped === undefined) return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" };
+        if (scoped.state === null || !stateIsValid(scoped.state, scoped.action.status)) {
+          return { outcome: "CORRUPT" };
+        }
+        if (scoped.action.status !== "ACTIVE") return { outcome: scoped.action.status };
+        return { outcome: "ACTIVE", definition: toDefinition(scoped.action, scoped.state) };
+      } catch {
+        return { outcome: "UNAVAILABLE" };
+      }
+    },
+    async edit(input) {
+      let expected: ExpectedModification<"EDITED"> | undefined;
       try {
         return await database.transaction(async (transaction) => {
           const [scoped] = await transaction
-            .select({ action: scheduledActions, state: scheduledMessageStates })
+            .select()
             .from(scheduledActions)
-            .leftJoin(
-              scheduledMessageStates,
-              eq(scheduledMessageStates.scheduledActionId, scheduledActions.id),
-            )
             .where(
               and(
                 eq(scheduledActions.id, input.scheduledActionId),
@@ -1128,11 +1331,194 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
                 eq(scheduledActions.actionType, "SEND_MESSAGE"),
               ),
             )
-            .limit(1);
+            .limit(1)
+            .for("update");
           if (scoped === undefined) return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" } as const;
-          if (scoped.state === null) return { outcome: "PERSISTENCE_UNCONFIRMED" } as const;
-          const definition = toDefinition(scoped.action, scoped.state);
-          if (!stateIsValid(scoped.state, scoped.action.status))
+          const [state] = await transaction
+            .select()
+            .from(scheduledMessageStates)
+            .where(eq(scheduledMessageStates.scheduledActionId, scoped.id))
+            .limit(1);
+          const readiness = modificationStatus(scoped, state ?? null, input.expectedRevision);
+          if (readiness.outcome !== "READY") return readiness;
+          if (managedMessagePayloadsEqual(readiness.definition.payload, input.payload)) {
+            return { outcome: "UNCHANGED", definition: readiness.definition } as const;
+          }
+
+          const nextRevision = readiness.definition.revision + 1;
+          const [updatedState] = await transaction
+            .update(scheduledMessageStates)
+            .set({ ...scheduledMessagePayloadToColumns(input.payload), revision: nextRevision })
+            .where(
+              and(
+                eq(scheduledMessageStates.scheduledActionId, scoped.id),
+                eq(scheduledMessageStates.revision, input.expectedRevision),
+                isNull(scheduledMessageStates.resultMessageId),
+              ),
+            )
+            .returning();
+          if (updatedState === undefined)
+            throw new Error("Scheduled message edit lost its revision transition");
+          const definition = toDefinition(scoped, updatedState);
+          expected = {
+            outcome: "EDITED",
+            definition,
+            audit: {
+              id: input.auditId,
+              definition,
+              event: "EDITED",
+              actorType: "USER",
+              actorId: input.actorId,
+              outcome: "SUCCESS",
+              failureCode: null,
+              resultMessageId: null,
+              occurredAt: input.occurredAt,
+            },
+          };
+          await transaction.insert(scheduledMessageAudits).values({
+            id: input.auditId,
+            scheduledActionId: scoped.id,
+            guildId: scoped.guildId,
+            channelId: scoped.targetId,
+            event: "EDITED",
+            actorType: "USER",
+            actorId: input.actorId,
+            executeAt: scoped.executeAt,
+            ...scheduledMessagePayloadToColumns(input.payload),
+            occurredAt: input.occurredAt,
+            outcome: "SUCCESS",
+            failureCode: null,
+            resultMessageId: null,
+          });
+          return { outcome: "EDITED", definition } as const;
+        });
+      } catch {
+        try {
+          return (await confirmModification(expected)) ?? { outcome: "PERSISTENCE_UNCONFIRMED" };
+        } catch {
+          return { outcome: "PERSISTENCE_UNCONFIRMED" };
+        }
+      }
+    },
+    async reschedule(input) {
+      let expected: ExpectedModification<"RESCHEDULED"> | undefined;
+      try {
+        return await database.transaction(async (transaction) => {
+          const [scoped] = await transaction
+            .select()
+            .from(scheduledActions)
+            .where(
+              and(
+                eq(scheduledActions.id, input.scheduledActionId),
+                eq(scheduledActions.guildId, input.guildId),
+                eq(scheduledActions.targetId, input.channelId),
+                eq(scheduledActions.actionType, "SEND_MESSAGE"),
+              ),
+            )
+            .limit(1)
+            .for("update");
+          if (scoped === undefined) return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" } as const;
+          const [state] = await transaction
+            .select()
+            .from(scheduledMessageStates)
+            .where(eq(scheduledMessageStates.scheduledActionId, scoped.id))
+            .limit(1);
+          const readiness = modificationStatus(scoped, state ?? null, input.expectedRevision);
+          if (readiness.outcome !== "READY") return readiness;
+
+          const nextRevision = readiness.definition.revision + 1;
+          const [updatedState] = await transaction
+            .update(scheduledMessageStates)
+            .set({ revision: nextRevision })
+            .where(
+              and(
+                eq(scheduledMessageStates.scheduledActionId, scoped.id),
+                eq(scheduledMessageStates.revision, input.expectedRevision),
+                isNull(scheduledMessageStates.resultMessageId),
+              ),
+            )
+            .returning();
+          if (updatedState === undefined)
+            throw new Error("Scheduled message reschedule lost its revision transition");
+          const [updatedAction] = await transaction
+            .update(scheduledActions)
+            .set({ executeAt: input.executeAt, updatedAt: new Date() })
+            .where(
+              and(
+                eq(scheduledActions.id, scoped.id),
+                eq(scheduledActions.actionType, "SEND_MESSAGE"),
+                eq(scheduledActions.status, "ACTIVE"),
+              ),
+            )
+            .returning();
+          if (updatedAction === undefined)
+            throw new Error("Scheduled message reschedule lost its action transition");
+          const definition = toDefinition(updatedAction, updatedState);
+          expected = {
+            outcome: "RESCHEDULED",
+            definition,
+            audit: {
+              id: input.auditId,
+              definition,
+              event: "RESCHEDULED",
+              actorType: "USER",
+              actorId: input.actorId,
+              outcome: "SUCCESS",
+              failureCode: null,
+              resultMessageId: null,
+              occurredAt: input.occurredAt,
+            },
+          };
+          await transaction.insert(scheduledMessageAudits).values({
+            id: input.auditId,
+            scheduledActionId: updatedAction.id,
+            guildId: updatedAction.guildId,
+            channelId: updatedAction.targetId,
+            event: "RESCHEDULED",
+            actorType: "USER",
+            actorId: input.actorId,
+            executeAt: updatedAction.executeAt,
+            ...scheduledMessagePayloadToColumns(readiness.definition.payload),
+            occurredAt: input.occurredAt,
+            outcome: "SUCCESS",
+            failureCode: null,
+            resultMessageId: null,
+          });
+          return { outcome: "RESCHEDULED", definition } as const;
+        });
+      } catch {
+        try {
+          return (await confirmModification(expected)) ?? { outcome: "PERSISTENCE_UNCONFIRMED" };
+        } catch {
+          return { outcome: "PERSISTENCE_UNCONFIRMED" };
+        }
+      }
+    },
+    async cancel(input) {
+      try {
+        return await database.transaction(async (transaction) => {
+          const [action] = await transaction
+            .select()
+            .from(scheduledActions)
+            .where(
+              and(
+                eq(scheduledActions.id, input.scheduledActionId),
+                eq(scheduledActions.guildId, input.guildId),
+                eq(scheduledActions.targetId, input.channelId),
+                eq(scheduledActions.actionType, "SEND_MESSAGE"),
+              ),
+            )
+            .limit(1)
+            .for("update");
+          if (action === undefined) return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" } as const;
+          const [state] = await transaction
+            .select()
+            .from(scheduledMessageStates)
+            .where(eq(scheduledMessageStates.scheduledActionId, action.id))
+            .limit(1);
+          if (state === undefined) return { outcome: "PERSISTENCE_UNCONFIRMED" } as const;
+          const definition = toDefinition(action, state);
+          if (!stateIsValid(state, action.status))
             return { outcome: "PERSISTENCE_UNCONFIRMED" } as const;
           if (definition.action.status === "CANCELLED") {
             const previousAudit = await transaction

@@ -82,6 +82,7 @@ describe("scheduled message exact creation confirmation", () => {
     scheduledActionId: expected.scheduledActionId,
     creatorUserId: expected.actorId,
     retryCount: 0,
+    revision: 0,
     ...scheduledMessagePayloadToColumns(expected.payload),
     resultMessageId: null,
   };
@@ -199,6 +200,7 @@ describe("scheduled message application operation", () => {
       },
       creatorUserId: "actor-id",
       retryCount: 0,
+      revision: 0,
       payload: { content: "", embed: { title: "title", color: 0 } },
       resultMessageId: null,
     } satisfies Awaited<ReturnType<ScheduledMessageStore["create"]>>;
