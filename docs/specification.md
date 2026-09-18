@@ -553,8 +553,30 @@ Recurring managed messages use structured, calendar-oriented input and IANA time
 Raw cron expressions are not accepted through the user-facing Discord interface. The exact
 Discord command fields for recurring schedules remain deferred.
 
-Phase 8B provides the one-time scheduled-message execution runtime for already persisted actions.
-No user-facing scheduled-message creation or administration command is available until Phase 8C.
+One-time scheduled messages expose these commands:
+
+```text
+/message schedule create after:<duration>
+/message schedule cancel id:<schedule-id>
+/message schedule status id:<schedule-id>
+```
+
+Creation accepts one relative duration from `1m` through `365d`, using a single `m`, `h`, or `d`
+unit. The delay begins only after modal submission and fresh authorization succeed. Creation
+revalidates the target, active thread state, actor membership and `ManageMessages`, and WEFT's
+view/send permissions; an explicit rich embed also requires `EmbedLinks`. Creation persists the
+active schedule and `CREATED` audit before enqueueing delivery and never sends the Discord message
+itself. A confirmed schedule remains active when initial delivery enqueueing cannot be confirmed;
+runtime reconciliation repairs missing delivery.
+
+Cancellation and status are scoped to the current guild and channel and require `ManageMessages`.
+They remain available in an archived supported thread and do not require WEFT's current send
+permission. Cancellation changes only `ACTIVE` to `CANCELLED`, atomically records a user-attributed
+`CANCELLED` audit, and never overwrites executing or terminal state. Delivery cleanup failure does
+not undo confirmed cancellation. Status is read-only and does not expose the scheduled payload.
+Completed status includes a canonical Discord message link when the result message ID is present.
+
+Listing, editing, and rescheduling one-time schedules are not implemented.
 
 Scheduled-message administration requires the Discord `ManageMessages` permission in the MVP.
 

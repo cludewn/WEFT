@@ -24,6 +24,7 @@ import { createManagedMessageService } from "./managed-message.js";
 import { createPgBossRuntime } from "./pg-boss.js";
 import { createScheduledActionStore } from "./scheduled-action-persistence.js";
 import { createScheduledMessageDiscord } from "./scheduled-message-discord.js";
+import { createScheduledMessageCommandService } from "./scheduled-message-command.js";
 import { createScheduledMessageExecutor } from "./scheduled-message-execution.js";
 import { createScheduledMessageStore } from "./scheduled-message-persistence.js";
 import {
@@ -86,7 +87,6 @@ async function main(): Promise<void> {
     discord: autoCloseDiscord,
     logger,
   });
-  registerManagedMessageModalHandler(discordRuntime.client, managedMessages, logger);
   const automaticCloseActivity = createAutomaticCloseActivityService({
     persistence: automaticCloses,
     logger,
@@ -135,9 +135,10 @@ async function main(): Promise<void> {
     threadLifecycle: discordRuntime.threadLifecycle,
     logger,
   });
+  const scheduledMessageDiscord = createScheduledMessageDiscord(discordRuntime.client);
   const scheduledMessageExecutor = createScheduledMessageExecutor({
     store: scheduledMessageStore,
-    discord: createScheduledMessageDiscord(discordRuntime.client),
+    discord: scheduledMessageDiscord,
   });
   const scheduledMessageWorkers = createScheduledMessageWorkerController({
     boss: pgBoss.client,
@@ -145,11 +146,24 @@ async function main(): Promise<void> {
     executor: scheduledMessageExecutor,
     logger,
   });
+  const scheduledMessages = createScheduledMessageCommandService({
+    discord: scheduledMessageDiscord,
+    store: scheduledMessageStore,
+    delivery: scheduledMessageWorkers,
+    logger,
+  });
+  registerManagedMessageModalHandler(
+    discordRuntime.client,
+    managedMessages,
+    scheduledMessages,
+    logger,
+  );
   registerDiscordCommandHandler(discordRuntime.client, {
     automaticCloseConfiguration,
     automaticCloseMaintenance,
     guildSettings,
     managedMessages,
+    scheduledMessages,
     scheduledThreadClose: scheduledThreadCloseCommand,
     threadLifecycle: discordRuntime.threadLifecycle,
     logger,

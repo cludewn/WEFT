@@ -160,4 +160,53 @@ describe("scheduled message pg-boss worker", () => {
     const f = fixture(result);
     await expect(f.run()).resolves.toBeUndefined();
   });
+
+  it("cancels only created, retry, and active delivery while preserving terminal history", async () => {
+    const f = fixture();
+    vi.mocked(f.boss.findJobs)
+      .mockResolvedValueOnce([
+        { id: "created-id", state: "created" },
+        { id: "retry-id", state: "retry" },
+        { id: "active-id", state: "active" },
+        { id: "completed-id", state: "completed" },
+        { id: "cancelled-id", state: "cancelled" },
+        { id: "failed-id", state: "failed" },
+      ] as never)
+      .mockResolvedValueOnce([
+        { id: "completed-id", state: "completed" },
+        { id: "cancelled-id", state: "cancelled" },
+        { id: "failed-id", state: "failed" },
+      ] as never);
+
+    await expect(f.controller.cancelScheduledMessageDeliveries("action-id")).resolves.toEqual({
+      outcome: "CONFIRMED",
+      matchedDeliveryCount: 3,
+    });
+    expect(f.boss.cancel).toHaveBeenCalledExactlyOnceWith(SCHEDULED_MESSAGE_QUEUE, [
+      "created-id",
+      "retry-id",
+      "active-id",
+    ]);
+  });
+
+  it("confirms cleanup by rereading even when cancel throws", async () => {
+    const f = fixture();
+    vi.mocked(f.boss.findJobs)
+      .mockResolvedValueOnce([{ id: "created-id", state: "created" }] as never)
+      .mockResolvedValueOnce([]);
+    vi.mocked(f.boss.cancel).mockRejectedValue(new Error("response lost"));
+    await expect(f.controller.cancelScheduledMessageDeliveries("action-id")).resolves.toEqual({
+      outcome: "CONFIRMED",
+      matchedDeliveryCount: 1,
+    });
+  });
+
+  it("reports cleanup unconfirmed while cancellable delivery remains", async () => {
+    const f = fixture();
+    vi.mocked(f.boss.findJobs).mockResolvedValue([{ id: "active-id", state: "active" }] as never);
+    await expect(f.controller.cancelScheduledMessageDeliveries("action-id")).resolves.toEqual({
+      outcome: "UNCONFIRMED",
+      matchedDeliveryCount: 1,
+    });
+  });
 });

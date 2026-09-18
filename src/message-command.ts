@@ -29,9 +29,19 @@ import {
   validateManagedMessagePayload,
   type ManagedMessagePayload,
 } from "./managed-message-payload.js";
+import {
+  isValidRelativeDurationMilliseconds,
+  InvalidRelativeDurationError,
+  parseRelativeDuration,
+} from "./relative-duration.js";
+import type {
+  CreateScheduledMessageCommandResult,
+  ScheduledMessageCommandService,
+} from "./scheduled-message-command.js";
 
 export const MANAGED_MESSAGE_SEND_MODAL_ID = "managed-message:send";
 export const MANAGED_MESSAGE_EDIT_MODAL_PREFIX = "managed-message:edit:";
+export const SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX = "scheduled-message:schedule-create:";
 export const MANAGED_MESSAGE_CONTENT_INPUT_ID = "managed-message:content";
 export const MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID = "managed-message:embed-title";
 export const MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID = "managed-message:embed-description";
@@ -44,6 +54,7 @@ const messageLinkRegex = new RegExp(
   `^https://discord\\.com/channels/(${SNOWFLAKE_PATTERN})/(${SNOWFLAKE_PATTERN})/(${SNOWFLAKE_PATTERN})$`,
 );
 const editModalRegex = new RegExp(`^managed-message:edit:(${SNOWFLAKE_PATTERN}):([1-9][0-9]*)$`);
+const scheduledCreateModalRegex = /^scheduled-message:schedule-create:([1-9][0-9]*)$/;
 const MAX_UNSIGNED_64 = (1n << 64n) - 1n;
 
 export type ManagedMessageReferenceResult =
@@ -96,6 +107,18 @@ export function parseManagedMessageEditModalId(
   return { messageId: match[1], expectedRevision: revision };
 }
 
+export function createScheduledMessageCreateModalId(durationMs: number): string {
+  if (!isValidRelativeDurationMilliseconds(durationMs)) throw new InvalidRelativeDurationError();
+  return `${SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX}${durationMs}`;
+}
+
+export function parseScheduledMessageCreateModalId(customId: string): number | undefined {
+  const match = scheduledCreateModalRegex.exec(customId);
+  if (match?.[1] === undefined) return undefined;
+  const durationMs = Number(match[1]);
+  return isValidRelativeDurationMilliseconds(durationMs) ? durationMs : undefined;
+}
+
 export const messageCommandDefinition = new SlashCommandBuilder()
   .setName("message")
   .setDescription("Manage messages sent by WEFT")
@@ -113,6 +136,38 @@ export const messageCommandDefinition = new SlashCommandBuilder()
           .setName("message")
           .setDescription("Discord message ID or canonical message link")
           .setRequired(true),
+      ),
+  )
+  .addSubcommandGroup((group) =>
+    group
+      .setName("schedule")
+      .setDescription("Manage one-time scheduled messages")
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("create")
+          .setDescription("Schedule a managed message in this channel")
+          .addStringOption((option) =>
+            option
+              .setName("after")
+              .setDescription("Delay such as 30m, 2h, or 7d")
+              .setRequired(true),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("cancel")
+          .setDescription("Cancel a scheduled message in this channel")
+          .addStringOption((option) =>
+            option.setName("id").setDescription("Schedule ID").setRequired(true),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("status")
+          .setDescription("Show a scheduled message status in this channel")
+          .addStringOption((option) =>
+            option.setName("id").setDescription("Schedule ID").setRequired(true),
+          ),
       ),
   );
 
@@ -210,6 +265,13 @@ export function createManagedMessageEditModal(
   );
 }
 
+export function createScheduledMessageCreateModal(durationMs: number): ModalBuilder {
+  return createPayloadModal(
+    createScheduledMessageCreateModalId(durationMs),
+    "Schedule managed message",
+  );
+}
+
 const ephemeralReply = (content: string): InteractionReplyOptions => ({
   content,
   flags: MessageFlags.Ephemeral,
@@ -232,17 +294,35 @@ function isActiveSupportedTarget(channel: ChatInputCommandInteraction["channel"]
   return true;
 }
 
+function isSupportedTarget(channel: ChatInputCommandInteraction["channel"]): boolean {
+  return channel !== null && isSupportedManagedMessageTargetType(channel.type);
+}
+
 export async function handleMessageCommand(
   interaction: ChatInputCommandInteraction,
   service: ManagedMessageService,
+  scheduledMessages?: ScheduledMessageCommandService,
 ): Promise<void> {
   const subcommand = interaction.options.getSubcommand();
-  if (subcommand !== "send" && subcommand !== "edit")
+  const group = interaction.options.getSubcommandGroup(false);
+  const scheduled = group === "schedule";
+  if (
+    (!scheduled && subcommand !== "send" && subcommand !== "edit") ||
+    (scheduled && subcommand !== "create" && subcommand !== "cancel" && subcommand !== "status")
+  ) {
     throw new Error("Unsupported message subcommand");
-  if (!interaction.inGuild() || !isActiveSupportedTarget(interaction.channel)) {
+  }
+  const supportedContext =
+    interaction.inGuild() &&
+    (scheduled && subcommand !== "create"
+      ? isSupportedTarget(interaction.channel)
+      : isActiveSupportedTarget(interaction.channel));
+  if (!supportedContext) {
     await interaction.reply(
       ephemeralReply(
-        "Managed messages are only supported in a guild text or active thread channel.",
+        scheduled && subcommand !== "create"
+          ? "Scheduled-message administration is only supported in a guild text or thread channel."
+          : "Managed messages are only supported in a guild text or active thread channel.",
       ),
     );
     return;
@@ -251,6 +331,44 @@ export async function handleMessageCommand(
     await interaction.reply(
       ephemeralReply("You need the Manage Messages permission to manage messages."),
     );
+    return;
+  }
+  if (scheduled) {
+    if (scheduledMessages === undefined)
+      throw new Error("Scheduled message command service is unavailable");
+    if (subcommand === "create") {
+      let durationMs: number;
+      try {
+        durationMs = parseRelativeDuration(interaction.options.getString("after", true));
+      } catch (error) {
+        if (!(error instanceof InvalidRelativeDurationError)) throw error;
+        await interaction.reply(
+          ephemeralReply("Enter one duration from 1m through 365d using m, h, or d."),
+        );
+        return;
+      }
+      await interaction.showModal(createScheduledMessageCreateModal(durationMs));
+      return;
+    }
+
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const scheduledActionId = interaction.options.getString("id", true);
+    if (subcommand === "cancel") {
+      const result = await scheduledMessages.cancel({
+        scheduledActionId,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        actorUserId: interaction.user.id,
+      });
+      await interaction.editReply(editReply(cancelScheduledMessageResultMessage(result)));
+      return;
+    }
+    const result = await scheduledMessages.status({
+      scheduledActionId,
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+    });
+    await interaction.editReply(editReply(scheduledMessageStatusMessage(result)));
     return;
   }
   if (subcommand === "send") {
@@ -291,6 +409,98 @@ export async function handleMessageCommand(
   await interaction.showModal(
     createManagedMessageEditModal(target.messageId, target.revision, target.payload),
   );
+}
+
+function createScheduledMessageResultMessage(result: CreateScheduledMessageCommandResult): string {
+  if (result.outcome === "SUCCESS") {
+    const when = Math.floor(result.definition.action.executeAt.getTime() / 1_000);
+    const base = `Scheduled message \`${result.definition.action.id}\` created. Target: <#${result.definition.action.targetId}>. Runs: <t:${when}:F> (<t:${when}:R>).`;
+    return result.deliveryPendingReconciliation
+      ? `${base} Delivery is pending reconciliation.`
+      : base;
+  }
+  switch (result.code) {
+    case "EMPTY_CONTENT":
+      return "Enter message content or a visible embed; non-empty content cannot be whitespace-only.";
+    case "CONTENT_TOO_LONG":
+      return "Message content must be 2000 characters or fewer.";
+    case "EMBED_TITLE_TOO_LONG":
+      return "The embed title must be 256 characters or fewer.";
+    case "EMBED_DESCRIPTION_TOO_LONG":
+      return "The embed description must be 4000 characters or fewer.";
+    case "EMBED_COLOR_INVALID":
+      return "Enter the embed color as RRGGBB or #RRGGBB.";
+    case "EMBED_COLOR_ONLY":
+      return "An embed color requires a title, description, or image URL.";
+    case "EMBED_IMAGE_URL_TOO_LONG":
+      return "The embed image URL must be 2048 characters or fewer.";
+    case "EMBED_IMAGE_URL_INVALID":
+      return "Enter an absolute HTTP or HTTPS embed image URL.";
+    case "INVALID_DURATION":
+      return "This scheduled-message form has an invalid or expired duration.";
+    case "UNSUPPORTED_TARGET":
+    case "TARGET_GUILD_MISMATCH":
+      return "Scheduled messages are only supported in the current guild text or active thread channel.";
+    case "ARCHIVED_THREAD":
+      return "Messages cannot be scheduled from an archived thread.";
+    case "ACTOR_PERMISSION_MISSING":
+      return "You no longer have the Manage Messages permission required to schedule messages.";
+    case "BOT_PERMISSION_MISSING":
+      return "WEFT cannot send messages in this channel with its current permissions.";
+    case "CURRENT_STATE_CHECK_REJECTED":
+    case "CURRENT_STATE_CHECK_FAILED":
+      return "WEFT could not verify the current channel or permissions. Please try again later.";
+    case "PERSISTENCE_UNCONFIRMED":
+      return "WEFT could not confirm that the schedule was saved. No delivery was enqueued.";
+  }
+}
+
+function cancelScheduledMessageResultMessage(
+  result: Awaited<ReturnType<ScheduledMessageCommandService["cancel"]>>,
+): string {
+  if (result.outcome === "CANCELLED" || result.outcome === "ALREADY_CANCELLED") {
+    const base =
+      result.outcome === "CANCELLED"
+        ? "Scheduled message cancelled."
+        : "That scheduled message was already cancelled.";
+    return result.deliveryCleanupPending
+      ? `${base} Delivery cleanup could not be confirmed, but the schedule remains cancelled.`
+      : base;
+  }
+  switch (result.outcome) {
+    case "EXECUTING":
+      return "That scheduled message is already executing and cannot be cancelled.";
+    case "COMPLETED":
+      return "That scheduled message has already completed.";
+    case "FAILED":
+      return "That scheduled message has already failed.";
+    case "NOT_FOUND_OR_WRONG_CONTEXT":
+      return "No scheduled message was found in this channel for that ID.";
+    case "PERSISTENCE_UNCONFIRMED":
+      return "WEFT could not confirm the cancellation. Please try again later.";
+  }
+}
+
+function scheduledMessageStatusMessage(
+  result: Awaited<ReturnType<ScheduledMessageCommandService["status"]>>,
+): string {
+  if (result.outcome === "FOUND") {
+    const schedule = result.schedule;
+    const when = Math.floor(schedule.executeAt.getTime() / 1_000);
+    const messageLink =
+      schedule.status === "COMPLETED" && schedule.resultMessageId !== null
+        ? ` Message: https://discord.com/channels/${schedule.guildId}/${schedule.channelId}/${schedule.resultMessageId}.`
+        : "";
+    return `Schedule \`${schedule.scheduledActionId}\` is **${schedule.status}**. Target: <#${schedule.channelId}>. Runs: <t:${when}:F> (<t:${when}:R>). Creator ID: \`${schedule.creatorUserId}\`. Retry count: ${schedule.retryCount}.${messageLink}`;
+  }
+  switch (result.outcome) {
+    case "NOT_FOUND_OR_WRONG_CONTEXT":
+      return "No scheduled message was found in this channel for that ID.";
+    case "CORRUPT":
+      return "WEFT found inconsistent scheduled-message state. Administrator inspection is required.";
+    case "UNAVAILABLE":
+      return "WEFT could not load the scheduled-message status. Please try again later.";
+  }
 }
 
 function sendResultMessage(result: ManagedMessageSendResult): string {
@@ -394,15 +604,28 @@ function editResultMessage(result: ManagedMessageEditResult): string {
 export async function handleManagedMessageModalSubmit(
   interaction: ModalSubmitInteraction,
   service: ManagedMessageService,
+  scheduledMessages?: ScheduledMessageCommandService,
 ): Promise<boolean> {
   const send = interaction.customId === MANAGED_MESSAGE_SEND_MODAL_ID;
   const ownedEdit = interaction.customId.startsWith(MANAGED_MESSAGE_EDIT_MODAL_PREFIX);
-  if (!send && !ownedEdit) return false;
+  const ownedScheduledCreate = interaction.customId.startsWith(
+    SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX,
+  );
+  if (!send && !ownedEdit && !ownedScheduledCreate) return false;
 
-  const editTarget = send ? undefined : parseManagedMessageEditModalId(interaction.customId);
-  if (!send && editTarget === undefined) {
+  const editTarget = ownedEdit ? parseManagedMessageEditModalId(interaction.customId) : undefined;
+  const scheduledDurationMs = ownedScheduledCreate
+    ? parseScheduledMessageCreateModalId(interaction.customId)
+    : undefined;
+  if (ownedEdit && editTarget === undefined) {
     await interaction.reply(
       ephemeralReply("This managed-message edit form is invalid or expired."),
+    );
+    return true;
+  }
+  if (ownedScheduledCreate && scheduledDurationMs === undefined) {
+    await interaction.reply(
+      ephemeralReply("This scheduled-message form has an invalid or expired duration."),
     );
     return true;
   }
@@ -418,7 +641,13 @@ export async function handleManagedMessageModalSubmit(
   if (!validation.ok) {
     const result = { outcome: "FAILURE", code: validation.code } as const;
     await interaction.reply(
-      ephemeralReply(send ? sendResultMessage(result) : editResultMessage(result)),
+      ephemeralReply(
+        ownedScheduledCreate
+          ? createScheduledMessageResultMessage(result)
+          : send
+            ? sendResultMessage(result)
+            : editResultMessage(result),
+      ),
     );
     return true;
   }
@@ -432,7 +661,20 @@ export async function handleManagedMessageModalSubmit(
   }
 
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  if (send) {
+  if (ownedScheduledCreate) {
+    if (scheduledDurationMs === undefined)
+      throw new Error("Validated schedule duration is missing");
+    if (scheduledMessages === undefined)
+      throw new Error("Scheduled message command service is unavailable");
+    const result = await scheduledMessages.create({
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      actorUserId: interaction.user.id,
+      durationMs: scheduledDurationMs,
+      payload: validation.payload,
+    });
+    await interaction.editReply(editReply(createScheduledMessageResultMessage(result)));
+  } else if (send) {
     const result = await service.send({
       guildId: interaction.guildId,
       channelId: interaction.channelId,

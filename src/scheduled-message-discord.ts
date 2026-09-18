@@ -63,6 +63,28 @@ export type ScheduledMessageCreateResult =
 
 export type ScheduledMessageDeleteResult = { outcome: "DELETED" } | { outcome: "UNCONFIRMED" };
 
+export type ScheduledMessageCreationAuthorizationFailureCode =
+  | "UNSUPPORTED_TARGET"
+  | "TARGET_GUILD_MISMATCH"
+  | "ARCHIVED_THREAD"
+  | "ACTOR_PERMISSION_MISSING"
+  | "BOT_PERMISSION_MISSING"
+  | "CURRENT_STATE_CHECK_REJECTED"
+  | "CURRENT_STATE_CHECK_FAILED";
+
+export type ScheduledMessageCreationAuthorizationResult =
+  | { outcome: "AUTHORIZED" }
+  | { outcome: "FAILURE"; code: ScheduledMessageCreationAuthorizationFailureCode };
+
+export type ScheduledMessageCreationDiscord = {
+  authorizeCreation: (input: {
+    guildId: string;
+    channelId: string;
+    actorUserId: string;
+    payload: ManagedMessagePayload;
+  }) => Promise<ScheduledMessageCreationAuthorizationResult>;
+};
+
 export type ScheduledMessageDiscord = {
   preflight: (input: {
     guildId: string;
@@ -172,6 +194,45 @@ function classifyBotMemberFetchFailure(error: unknown): ScheduledMessagePrefligh
   return transientPreflightFailure();
 }
 
+function creationFailure(
+  result: ScheduledMessagePreflightResult,
+): ScheduledMessageCreationAuthorizationResult {
+  return result.outcome === "READY"
+    ? { outcome: "AUTHORIZED" }
+    : { outcome: "FAILURE", code: result.code };
+}
+
+function classifyActorMemberFetchFailure(
+  error: unknown,
+): ScheduledMessageCreationAuthorizationResult {
+  if (error instanceof RateLimitError)
+    return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
+  if (error instanceof DiscordAPIError) {
+    if (error.code === RESTJSONErrorCodes.UnknownMember)
+      return { outcome: "FAILURE", code: "ACTOR_PERMISSION_MISSING" };
+    if (
+      error.code === RESTJSONErrorCodes.UnknownChannel ||
+      error.code === RESTJSONErrorCodes.UnknownGuild
+    ) {
+      return { outcome: "FAILURE", code: "UNSUPPORTED_TARGET" };
+    }
+    if (
+      error.code === RESTJSONErrorCodes.MissingAccess ||
+      error.code === RESTJSONErrorCodes.MissingPermissions
+    ) {
+      return { outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" };
+    }
+  }
+  if (error instanceof DiscordAPIError || error instanceof HTTPError) {
+    if (error.status === 404) return { outcome: "FAILURE", code: "ACTOR_PERMISSION_MISSING" };
+    if (error.status === 401 || error.status === 403)
+      return { outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" };
+    const classified = classifyOtherHttpFailure(error);
+    return creationFailure(classified);
+  }
+  return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
+}
+
 function isUnknownMessage(error: unknown): boolean {
   return error instanceof DiscordAPIError && error.code === UNKNOWN_MESSAGE_ERROR_CODE;
 }
@@ -188,8 +249,54 @@ function toReturnedMessage(message: Message): ReturnedScheduledMessage {
   };
 }
 
-export function createScheduledMessageDiscord(client: Client): ScheduledMessageDiscord {
+export function createScheduledMessageDiscord(
+  client: Client,
+): ScheduledMessageDiscord & ScheduledMessageCreationDiscord {
   return {
+    async authorizeCreation(input) {
+      let channel: Channel | null;
+      try {
+        channel = await client.channels.fetch(input.channelId, { force: true });
+      } catch (error) {
+        return creationFailure(classifyChannelFetchFailure(error));
+      }
+      if (!isSupportedTarget(channel)) return { outcome: "FAILURE", code: "UNSUPPORTED_TARGET" };
+      if (channel.guildId !== input.guildId)
+        return { outcome: "FAILURE", code: "TARGET_GUILD_MISMATCH" };
+      if (isThreadTarget(channel) && channel.archived !== false)
+        return { outcome: "FAILURE", code: "ARCHIVED_THREAD" };
+      if (client.user === null) return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
+
+      let actor;
+      try {
+        actor = await channel.guild.members.fetch({ user: input.actorUserId, force: true });
+      } catch (error) {
+        return classifyActorMemberFetchFailure(error);
+      }
+      const actorPermissions = channel.permissionsFor(actor);
+      if (!actorPermissions.has(PermissionFlagsBits.ManageMessages))
+        return { outcome: "FAILURE", code: "ACTOR_PERMISSION_MISSING" };
+
+      try {
+        const bot = await channel.guild.members.fetch({ user: client.user.id, force: true });
+        const permissions = channel.permissionsFor(bot);
+        const canSend = isThreadTarget(channel)
+          ? permissions.has([
+              PermissionFlagsBits.ViewChannel,
+              PermissionFlagsBits.SendMessagesInThreads,
+            ]) && channel.sendable
+          : permissions.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages]);
+        if (
+          !canSend ||
+          (input.payload.embed !== null && !permissions.has(PermissionFlagsBits.EmbedLinks))
+        ) {
+          return { outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" };
+        }
+      } catch (error) {
+        return creationFailure(classifyBotMemberFetchFailure(error));
+      }
+      return { outcome: "AUTHORIZED" };
+    },
     async preflight(input) {
       let channel: Channel | null;
       try {

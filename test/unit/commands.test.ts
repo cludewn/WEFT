@@ -15,6 +15,11 @@ const dependencies = {
   scheduledThreadClose: {
     schedule: vi.fn(),
   },
+  scheduledMessages: {
+    create: vi.fn(),
+    cancel: vi.fn(),
+    status: vi.fn(),
+  },
   threadLifecycle: {
     close: vi.fn(),
     open: vi.fn(),
@@ -34,7 +39,7 @@ describe("Discord commands", () => {
     const showModal = vi.fn(() => Promise.resolve());
     const interaction = {
       commandName: "message",
-      options: { getSubcommand: () => "send" },
+      options: { getSubcommand: () => "send", getSubcommandGroup: () => null },
       inGuild: () => true,
       channel: { type: 0, isThread: () => false },
       memberPermissions: { has: () => true },

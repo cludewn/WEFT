@@ -371,8 +371,13 @@ describe("managed message modal routing", () => {
         } as const),
       ),
     } satisfies ManagedMessageService;
+    const scheduledMessages = {
+      create: vi.fn(),
+      cancel: vi.fn(),
+      status: vi.fn(),
+    };
     const client = createDiscordClient(logger, discordDependencies);
-    registerManagedMessageModalHandler(client, service, logger);
+    registerManagedMessageModalHandler(client, service, scheduledMessages, logger);
     const unrelated = createModal("other:modal");
     const managed = createModal("managed-message:send");
     const edit = createModal("managed-message:edit:900000000000000001:1");
@@ -397,8 +402,13 @@ describe("managed message modal routing", () => {
       findForEdit: vi.fn(),
       edit: vi.fn(),
     } satisfies ManagedMessageService;
+    const scheduledMessages = {
+      create: vi.fn(),
+      cancel: vi.fn(),
+      status: vi.fn(),
+    };
     const client = createDiscordClient(logger, discordDependencies);
-    registerManagedMessageModalHandler(client, service, logger);
+    registerManagedMessageModalHandler(client, service, scheduledMessages, logger);
 
     client.emit(
       Events.InteractionCreate,
@@ -666,6 +676,11 @@ function registerTestCommandHandler(
       send: vi.fn(),
       findForEdit: vi.fn(),
       edit: vi.fn(),
+    },
+    scheduledMessages: {
+      create: vi.fn(),
+      cancel: vi.fn(),
+      status: vi.fn(),
     },
     scheduledThreadClose: { schedule: vi.fn(), cancel: vi.fn(), closeManually: vi.fn() },
     threadLifecycle: lifecycle,

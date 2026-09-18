@@ -251,6 +251,159 @@ describe("scheduled message persistence", () => {
     }
   });
 
+  it("upgrades representative actual 0013 state through 0014 without changing history", async () => {
+    const testConfig = loadTestDatabaseConfig();
+    const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
+    const schemaName = `weft_sm_14_${suffix}`;
+    const migrationsSchema = `weft_smg_14_${suffix}`;
+    const actionId = `upgrade-0014-${suffix}`;
+    const migrationDirectory = await createMigrationSubset(13);
+    let isolatedPool: Pool | undefined;
+
+    try {
+      await database.client.execute(sql`create schema ${sql.identifier(schemaName)}`);
+      isolatedPool = new Pool({
+        host: testConfig.host,
+        port: testConfig.port,
+        database: testConfig.name,
+        user: testConfig.user,
+        password: testConfig.password,
+        ssl: testConfig.ssl ? { rejectUnauthorized: true } : false,
+        application_name: "weft-scheduled-message-0014-upgrade-test",
+        options: `-c search_path=${schemaName}`,
+      });
+      const isolatedDatabase = drizzle(isolatedPool);
+      await migrate(isolatedDatabase, { migrationsFolder: migrationDirectory, migrationsSchema });
+
+      // The unchanged 0012 SQL schema-qualifies this FK with public.
+      await database.client.insert(scheduledActions).values({
+        id: actionId,
+        guildId: "upgrade-shadow-guild",
+        actionType: "SEND_MESSAGE",
+        targetId: "upgrade-shadow-channel",
+        status: "ACTIVE",
+        executeAt,
+      });
+      await isolatedDatabase.execute(sql`
+        insert into scheduled_actions
+          (id, guild_id, action_type, target_id, status, execute_at, created_at, updated_at)
+        values
+          (${actionId}, 'upgrade-guild', 'SEND_MESSAGE', 'upgrade-channel', 'COMPLETED',
+           ${executeAt}, ${occurredAt}, ${occurredAt})
+      `);
+      await isolatedDatabase.execute(sql`
+        insert into scheduled_message_states
+          (scheduled_action_id, creator_user_id, retry_count, content, embed_title,
+           embed_description, embed_color, embed_image_url, result_message_id)
+        values
+          (${actionId}, 'upgrade-creator', 1, 'historical content', 'historical title',
+           'historical description', 0, 'https://example.invalid/historical.png',
+           'historical-message')
+      `);
+      await isolatedDatabase.execute(sql`
+        insert into scheduled_message_audits
+          (id, scheduled_action_id, guild_id, channel_id, event, actor_type, actor_id,
+           execute_at, content, embed_title, embed_description, embed_color, embed_image_url,
+           occurred_at, outcome, failure_code, result_message_id)
+        values
+          ('history-created', ${actionId}, 'upgrade-guild', 'upgrade-channel', 'CREATED',
+           'USER', 'upgrade-creator', ${executeAt}, 'historical content', 'historical title',
+           'historical description', 0, 'https://example.invalid/historical.png', ${occurredAt},
+           'SUCCESS', null, null),
+          ('history-completed', ${actionId}, 'upgrade-guild', 'upgrade-channel',
+           'EXECUTION_COMPLETED', 'SYSTEM', null, ${executeAt}, 'historical content',
+           'historical title', 'historical description', 0,
+           'https://example.invalid/historical.png', ${occurredAt}, 'SUCCESS', null,
+           'historical-message'),
+          ('history-retry', ${actionId}, 'upgrade-guild', 'upgrade-channel', 'EXECUTION_RETRY',
+           'SYSTEM', null, ${executeAt}, 'historical content', 'historical title',
+           'historical description', 0, 'https://example.invalid/historical.png', ${occurredAt},
+           'FAILURE', 'CURRENT_STATE_CHECK_FAILED', null),
+          ('history-failed', ${actionId}, 'upgrade-guild', 'upgrade-channel', 'EXECUTION_FAILED',
+           'SYSTEM', null, ${executeAt}, 'historical content', 'historical title',
+           'historical description', 0, 'https://example.invalid/historical.png', ${occurredAt},
+           'FAILURE', 'SEND_REJECTED', null)
+      `);
+
+      const readHistoricalRows = () =>
+        Promise.all([
+          isolatedDatabase.execute(sql`select * from scheduled_actions order by id`),
+          isolatedDatabase.execute(
+            sql`select * from scheduled_message_states order by scheduled_action_id`,
+          ),
+          isolatedDatabase.execute(sql`
+            select id, scheduled_action_id, guild_id, channel_id, event, actor_type, actor_id,
+                   execute_at, content, embed_title, embed_description, embed_color, embed_image_url,
+                   occurred_at, outcome, failure_code, result_message_id
+            from scheduled_message_audits order by id
+          `),
+        ]).then((results) => results.map((result) => result.rows));
+      const before = await readHistoricalRows();
+      await migrate(isolatedDatabase, { migrationsFolder: "drizzle", migrationsSchema });
+      const after = await readHistoricalRows();
+      expect(after).toEqual(before);
+
+      await expect(
+        isolatedDatabase.execute(sql`
+          insert into scheduled_message_audits
+            (id, scheduled_action_id, guild_id, channel_id, event, actor_type, actor_id,
+             execute_at, content, embed_title, embed_description, embed_color, embed_image_url,
+             occurred_at, outcome, failure_code, result_message_id)
+          values
+            ('valid-cancelled', ${actionId}, 'upgrade-guild', 'upgrade-channel', 'CANCELLED',
+             'USER', 'cancelling-user', ${executeAt}, 'historical content', 'historical title',
+             'historical description', 0, 'https://example.invalid/historical.png',
+             ${occurredAt}, 'SUCCESS', null, null)
+        `),
+      ).resolves.toBeDefined();
+
+      const invalidShapes = [
+        ["invalid-system", "SYSTEM", "system-actor", "SUCCESS", null, null],
+        ["invalid-null-actor", "USER", null, "SUCCESS", null, null],
+        [
+          "invalid-failure-outcome",
+          "USER",
+          "cancelling-user",
+          "FAILURE",
+          "CURRENT_STATE_CHECK_FAILED",
+          null,
+        ],
+        [
+          "invalid-failure-code",
+          "USER",
+          "cancelling-user",
+          "SUCCESS",
+          "CURRENT_STATE_CHECK_FAILED",
+          null,
+        ],
+        ["invalid-result-message", "USER", "cancelling-user", "SUCCESS", null, "message-id"],
+      ] as const;
+      for (const [id, actorType, actorId, outcome, failureCode, resultMessageId] of invalidShapes) {
+        await expect(
+          isolatedDatabase.execute(sql`
+            insert into scheduled_message_audits
+              (id, scheduled_action_id, guild_id, channel_id, event, actor_type, actor_id,
+               execute_at, content, occurred_at, outcome, failure_code, result_message_id)
+            values
+              (${id}, ${actionId}, 'upgrade-guild', 'upgrade-channel', 'CANCELLED',
+               ${actorType}, ${actorId}, ${executeAt}, 'historical content', ${occurredAt},
+               ${outcome}, ${failureCode}, ${resultMessageId})
+          `),
+        ).rejects.toThrow();
+      }
+    } finally {
+      await isolatedPool?.end();
+      await database.client.execute(
+        sql`drop schema if exists ${sql.identifier(schemaName)} cascade`,
+      );
+      await database.client.execute(
+        sql`drop schema if exists ${sql.identifier(migrationsSchema)} cascade`,
+      );
+      await database.client.delete(scheduledActions).where(eq(scheduledActions.id, actionId));
+      await rm(migrationDirectory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["missing", "duplicate", "mismatched"] as const)(
     "rejects a %s Phase 8A creator source while applying actual 0013",
     async (mode) => {
@@ -982,6 +1135,375 @@ describe("scheduled message persistence", () => {
       insertAction("unique-send-two", "SEND_MESSAGE", "shared-target"),
     ).resolves.toBeDefined();
   });
+
+  it("reads status only in the exact SEND_MESSAGE guild and channel context", async () => {
+    const input = creation("scoped-status", { content: "private payload", embed: null });
+    await store.create(input);
+    await expect(
+      store.findStatus(input.scheduledActionId, guildId, channelId),
+    ).resolves.toMatchObject({
+      outcome: "FOUND",
+      schedule: {
+        scheduledActionId: input.scheduledActionId,
+        status: "ACTIVE",
+        guildId,
+        channelId,
+        creatorUserId: actorId,
+        retryCount: 0,
+        resultMessageId: null,
+      },
+    });
+    await expect(
+      store.findStatus(input.scheduledActionId, "wrong-guild", channelId),
+    ).resolves.toEqual({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" });
+    await expect(
+      store.findStatus(input.scheduledActionId, guildId, "wrong-channel"),
+    ).resolves.toEqual({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" });
+
+    await insertAction("wrong-type-status", "CLOSE_THREAD", channelId);
+    await expect(store.findStatus("wrong-type-status", guildId, channelId)).resolves.toEqual({
+      outcome: "NOT_FOUND_OR_WRONG_CONTEXT",
+    });
+    await insertAction("missing-state-status", "SEND_MESSAGE", channelId);
+    await expect(store.findStatus("missing-state-status", guildId, channelId)).resolves.toEqual({
+      outcome: "CORRUPT",
+    });
+  });
+
+  it("atomically cancels ACTIVE state with an exact user audit and is idempotent", async () => {
+    const input = creation("cancel-active", {
+      content: "cancel payload",
+      embed: { title: "cancel title", color: 0 },
+    });
+    await store.create(input);
+    const cancellation = {
+      scheduledActionId: input.scheduledActionId,
+      guildId,
+      channelId,
+      actorId: "cancelling-actor",
+      auditId: "cancel-audit",
+      occurredAt: new Date("2026-09-17T01:02:03.456Z"),
+    };
+    await expect(store.cancel(cancellation)).resolves.toMatchObject({ outcome: "CANCELLED" });
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(eq(scheduledMessageAudits.id, cancellation.auditId)),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        scheduledActionId: input.scheduledActionId,
+        guildId,
+        channelId,
+        event: "CANCELLED",
+        actorType: "USER",
+        actorId: "cancelling-actor",
+        executeAt,
+        content: "cancel payload",
+        embedTitle: "cancel title",
+        embedColor: 0,
+        occurredAt: cancellation.occurredAt,
+        outcome: "SUCCESS",
+        failureCode: null,
+        resultMessageId: null,
+      }),
+    ]);
+    await expect(
+      store.cancel({
+        ...cancellation,
+        auditId: "second-cancel-audit",
+        occurredAt: new Date("2026-09-17T01:03:03.456Z"),
+      }),
+    ).resolves.toMatchObject({ outcome: "ALREADY_CANCELLED" });
+  });
+
+  it.each([
+    ["guild", "wrong-guild", channelId],
+    ["channel", guildId, "wrong-channel"],
+  ] as const)(
+    "does not reveal or mutate a scheduled message when the cancellation %s is wrong",
+    async (scope, requestedGuildId, requestedChannelId) => {
+      const input = creation(`cancel-wrong-${scope}`, {
+        content: `private ${scope} payload`,
+        embed: null,
+      });
+      const before = await store.create(input);
+
+      await expect(
+        store.cancel({
+          scheduledActionId: input.scheduledActionId,
+          guildId: requestedGuildId,
+          channelId: requestedChannelId,
+          actorId: "unauthorized-canceller",
+          auditId: `cancel-wrong-${scope}-audit`,
+          occurredAt,
+        }),
+      ).resolves.toEqual({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" });
+
+      await expect(store.find(input.scheduledActionId)).resolves.toEqual(before);
+      await expect(
+        database.client
+          .select()
+          .from(scheduledMessageAudits)
+          .where(
+            and(
+              eq(scheduledMessageAudits.scheduledActionId, input.scheduledActionId),
+              eq(scheduledMessageAudits.event, "CANCELLED"),
+            ),
+          ),
+      ).resolves.toHaveLength(0);
+    },
+  );
+
+  it("does not reveal or mutate a non-SEND_MESSAGE action during cancellation", async () => {
+    const scheduledActionId = "cancel-wrong-action-type";
+    await insertAction(scheduledActionId, "CLOSE_THREAD", channelId);
+    const actions = createScheduledActionStore(database.client);
+    const before = await actions.findById(scheduledActionId);
+
+    await expect(
+      store.cancel({
+        scheduledActionId,
+        guildId,
+        channelId,
+        actorId: "cancelling-actor",
+        auditId: "cancel-wrong-action-type-audit",
+        occurredAt,
+      }),
+    ).resolves.toEqual({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" });
+
+    await expect(actions.findById(scheduledActionId)).resolves.toEqual(before);
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(
+          and(
+            eq(scheduledMessageAudits.scheduledActionId, scheduledActionId),
+            eq(scheduledMessageAudits.event, "CANCELLED"),
+          ),
+        ),
+    ).resolves.toHaveLength(0);
+  });
+
+  it("rolls back cancellation when its audit insert fails", async () => {
+    const input = creation("cancel-audit-rollback", { content: "rollback", embed: null });
+    await store.create(input);
+    await expect(
+      store.cancel({
+        scheduledActionId: input.scheduledActionId,
+        guildId,
+        channelId,
+        actorId,
+        auditId: input.auditId,
+        occurredAt,
+      }),
+    ).resolves.toEqual({ outcome: "PERSISTENCE_UNCONFIRMED" });
+    await expect(
+      store.findStatus(input.scheduledActionId, guildId, channelId),
+    ).resolves.toMatchObject({ outcome: "FOUND", schedule: { status: "ACTIVE" } });
+  });
+
+  it("confirms an exact committed cancellation after transaction response loss", async () => {
+    const input = creation("cancel-response-loss", { content: "response loss", embed: null });
+    await store.create(input);
+    const responseLossStore = createScheduledMessageStore(
+      transactionResponseLossDatabase(new Error("transaction response lost")),
+    );
+    await expect(
+      responseLossStore.cancel({
+        scheduledActionId: input.scheduledActionId,
+        guildId,
+        channelId,
+        actorId,
+        auditId: "cancel-response-loss-audit",
+        occurredAt,
+      }),
+    ).resolves.toMatchObject({ outcome: "CANCELLED" });
+  });
+
+  it("rejects cancellation confirmation when an exact payload field does not match", async () => {
+    const input = creation("cancel-response-mismatch", {
+      content: "expected payload",
+      embed: null,
+    });
+    await store.create(input);
+    const auditId = "cancel-response-mismatch-audit";
+    const responseLossStore = createScheduledMessageStore(
+      finalizationResponseLossDatabase(new Error("transaction response lost"), async () => {
+        await database.client
+          .update(scheduledMessageAudits)
+          .set({ content: "different payload" })
+          .where(eq(scheduledMessageAudits.id, auditId));
+      }),
+    );
+    await expect(
+      responseLossStore.cancel({
+        scheduledActionId: input.scheduledActionId,
+        guildId,
+        channelId,
+        actorId,
+        auditId,
+        occurredAt,
+      }),
+    ).resolves.toEqual({ outcome: "PERSISTENCE_UNCONFIRMED" });
+  });
+
+  it("linearizes concurrent cancellations as one cancellation and one idempotent result", async () => {
+    const input = creation("concurrent-cancellations", { content: "concurrent", embed: null });
+    await store.create(input);
+    const results = await Promise.all([
+      store.cancel({
+        scheduledActionId: input.scheduledActionId,
+        guildId,
+        channelId,
+        actorId: "first-canceller",
+        auditId: "first-cancel-audit",
+        occurredAt,
+      }),
+      store.cancel({
+        scheduledActionId: input.scheduledActionId,
+        guildId,
+        channelId,
+        actorId: "second-canceller",
+        auditId: "second-cancel-audit",
+        occurredAt: new Date(occurredAt.getTime() + 1),
+      }),
+    ]);
+    expect(results.map((result) => result.outcome).sort()).toEqual([
+      "ALREADY_CANCELLED",
+      "CANCELLED",
+    ]);
+  });
+
+  it("deterministically keeps cancellation authoritative when cancellation wins before claim", async () => {
+    const input = creation("cancel-before-claim", {
+      content: "cancel wins payload",
+      embed: { title: "cancel wins title", color: 0 },
+    });
+    await store.create(input);
+    const cancellationAt = new Date("2026-09-17T02:03:04.567Z");
+    const actions = createScheduledActionStore(database.client);
+
+    await expect(
+      store.cancel({
+        scheduledActionId: input.scheduledActionId,
+        guildId,
+        channelId,
+        actorId: "cancel-winner",
+        auditId: "cancel-before-claim-audit",
+        occurredAt: cancellationAt,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "CANCELLED",
+      definition: { action: { status: "CANCELLED" } },
+    });
+    await expect(actions.claimExecution(input.scheduledActionId)).resolves.toMatchObject({
+      transitioned: false,
+      current: { status: "CANCELLED" },
+    });
+    await expect(store.find(input.scheduledActionId)).resolves.toMatchObject({
+      action: { status: "CANCELLED" },
+      retryCount: 0,
+      payload: input.payload,
+      resultMessageId: null,
+    });
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(
+          and(
+            eq(scheduledMessageAudits.scheduledActionId, input.scheduledActionId),
+            eq(scheduledMessageAudits.event, "CANCELLED"),
+          ),
+        ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        id: "cancel-before-claim-audit",
+        guildId,
+        channelId,
+        actorType: "USER",
+        actorId: "cancel-winner",
+        executeAt,
+        content: "cancel wins payload",
+        embedTitle: "cancel wins title",
+        embedDescription: null,
+        embedColor: 0,
+        embedImageUrl: null,
+        occurredAt: cancellationAt,
+        outcome: "SUCCESS",
+        failureCode: null,
+        resultMessageId: null,
+      }),
+    ]);
+  });
+
+  it("deterministically refuses cancellation when execution claim wins first", async () => {
+    const input = creation("claim-before-cancel", {
+      content: "claim wins payload",
+      embed: null,
+    });
+    await store.create(input);
+
+    await expect(store.claimExecution(input.scheduledActionId)).resolves.toMatchObject({
+      outcome: "COMMITTED",
+      definition: { action: { status: "EXECUTING" } },
+    });
+    await expect(
+      store.cancel({
+        scheduledActionId: input.scheduledActionId,
+        guildId,
+        channelId,
+        actorId: "late-canceller",
+        auditId: "claim-before-cancel-audit",
+        occurredAt,
+      }),
+    ).resolves.toEqual({ outcome: "EXECUTING" });
+    await expect(store.find(input.scheduledActionId)).resolves.toMatchObject({
+      action: { status: "EXECUTING" },
+      retryCount: 0,
+      payload: input.payload,
+      resultMessageId: null,
+    });
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(
+          and(
+            eq(scheduledMessageAudits.scheduledActionId, input.scheduledActionId),
+            eq(scheduledMessageAudits.event, "CANCELLED"),
+          ),
+        ),
+    ).resolves.toHaveLength(0);
+  });
+
+  it("linearizes cancellation against execution claim", async () => {
+    const actions = createScheduledActionStore(database.client);
+    for (const suffix of ["one", "two", "three", "four"]) {
+      const input = creation(`cancel-claim-race-${suffix}`, { content: suffix, embed: null });
+      await store.create(input);
+      const [cancellation, claim] = await Promise.all([
+        store.cancel({
+          scheduledActionId: input.scheduledActionId,
+          guildId,
+          channelId,
+          actorId,
+          auditId: `cancel-claim-audit-${suffix}`,
+          occurredAt,
+        }),
+        actions.claimExecution(input.scheduledActionId),
+      ]);
+      if (cancellation.outcome === "CANCELLED") {
+        expect(claim.transitioned).toBe(false);
+        expect(claim.current?.status).toBe("CANCELLED");
+      } else {
+        expect(cancellation).toEqual({ outcome: "EXECUTING" });
+        expect(claim).toMatchObject({ transitioned: true, current: { status: "EXECUTING" } });
+      }
+    }
+  });
 });
 
 function creation(
@@ -1129,13 +1651,17 @@ async function cleanup(): Promise<void> {
 }
 
 async function createMigrationSubsetThrough0012(): Promise<string> {
+  return createMigrationSubset(12);
+}
+
+async function createMigrationSubset(maximumIndex: number): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "weft-scheduled-message-migrations-"));
   const metaDirectory = join(directory, "meta");
   await mkdir(metaDirectory);
   const journal = JSON.parse(
     await readFile("drizzle/meta/_journal.json", "utf8"),
   ) as MigrationJournal;
-  const entries = journal.entries.filter((entry) => entry.idx <= 12);
+  const entries = journal.entries.filter((entry) => entry.idx <= maximumIndex);
   await writeFile(
     join(metaDirectory, "_journal.json"),
     `${JSON.stringify({ ...journal, entries }, undefined, 2)}\n`,

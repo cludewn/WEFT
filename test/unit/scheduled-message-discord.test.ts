@@ -17,14 +17,17 @@ function fixture(
     archived?: boolean | null;
     botCanSend?: boolean;
     botCanEmbed?: boolean;
+    actorCanManage?: boolean;
   } = {},
 ) {
-  const fetchMember = vi.fn(() => Promise.resolve({ id: "bot-id" }));
+  const fetchMember = vi.fn((input: { user: string }) => Promise.resolve({ id: input.user }));
   const permissionChecks: bigint[] = [];
-  const permissionsFor = vi.fn(() => ({
+  const permissionsFor = vi.fn((member: { id: string }) => ({
     has: (permission: bigint | bigint[]) => {
       const values = Array.isArray(permission) ? permission : [permission];
       permissionChecks.push(...values);
+      if (values.includes(PermissionFlagsBits.ManageMessages))
+        return member.id === "actor-id" && (options.actorCanManage ?? true);
       if (values.includes(PermissionFlagsBits.EmbedLinks)) return options.botCanEmbed ?? true;
       return options.botCanSend ?? true;
     },
@@ -85,6 +88,54 @@ function httpError(status: number): HTTPError {
 }
 
 describe("scheduled message Discord boundary", () => {
+  it("freshly authorizes the actor and bot for creation without sending", async () => {
+    const f = fixture();
+    await expect(
+      createScheduledMessageDiscord(f.client).authorizeCreation({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        payload: { content: "text", embed: null },
+      }),
+    ).resolves.toEqual({ outcome: "AUTHORIZED" });
+    expect(f.fetchMember).toHaveBeenNthCalledWith(1, { user: "actor-id", force: true });
+    expect(f.fetchMember).toHaveBeenNthCalledWith(2, { user: "bot-id", force: true });
+    expect(f.send).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing actor permission and requires EmbedLinks only for explicit embeds", async () => {
+    const deniedActor = fixture({ actorCanManage: false });
+    await expect(
+      createScheduledMessageDiscord(deniedActor.client).authorizeCreation({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        payload: { content: "text", embed: null },
+      }),
+    ).resolves.toEqual({ outcome: "FAILURE", code: "ACTOR_PERMISSION_MISSING" });
+    expect(deniedActor.send).not.toHaveBeenCalled();
+
+    const text = fixture({ botCanEmbed: false });
+    await expect(
+      createScheduledMessageDiscord(text.client).authorizeCreation({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        payload: { content: "https://example.invalid", embed: null },
+      }),
+    ).resolves.toEqual({ outcome: "AUTHORIZED" });
+
+    const embed = fixture({ botCanEmbed: false });
+    await expect(
+      createScheduledMessageDiscord(embed.client).authorizeCreation({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        payload: { content: "", embed: { title: "title" } },
+      }),
+    ).resolves.toEqual({ outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" });
+  });
+
   it.each([
     ChannelType.GuildText,
     ChannelType.GuildAnnouncement,

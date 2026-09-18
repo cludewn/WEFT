@@ -1074,17 +1074,42 @@ retry count. Runtime reconciliation is ACTIVE-only, non-overlapping, begins afte
 waits 60 seconds after each completed sweep. The worker count is one; correctness remains based on
 the database claim rather than worker count.
 
-Phase 8B still exposes no `/message schedule` command. Phase 8C owns one-time creation and schedule
-administration. Future recurrence uses structured calendar-oriented input with IANA timezone
-semantics rather than raw user-facing cron; exact Discord command fields remain deferred.
+Phase 8C-1 adds `/message schedule create`, `cancel`, and `status` without changing the existing
+`send` and `edit` subcommands. Create stores only the validated relative delay in its modal custom
+ID and reuses the managed-message payload fields and validator. After modal submission, a dedicated
+Discord boundary freshly checks the target, active thread state, actor `ManageMessages`, and bot
+view/send permissions, including `EmbedLinks` only for an explicit embed. It does not send, join a
+private thread, unarchive a thread, or hold a PostgreSQL transaction during Discord reads.
+
+After successful preflight, the application generates stable action and audit IDs, captures one
+establishment timestamp, derives `execute_at` from that timestamp, and uses the same timestamp for
+the `CREATED` audit. Existing exact creation confirmation remains authoritative. Initial pg-boss
+enqueue occurs only after confirmed persistence. An enqueue error is confirmed by a read-only
+effective-delivery check; otherwise the active schedule is reported as pending reconciliation and
+left for the existing startup/runtime repair path.
+
+Cancellation uses a focused transaction scoped by schedule ID, guild, channel, and `SEND_MESSAGE`.
+Only `ACTIVE -> CANCELLED` mutates state, and that transition commits with an exact user
+`CANCELLED` audit added by migration 0014. A conditional update linearizes cancellation against the
+execution claim. Ambiguous transaction responses are never retried and use read-only exact
+confirmation. Only after confirmed cancelled state does a focused pg-boss cleanup cancel
+`created`, `retry`, and `active` delivery; terminal job history is retained, and cleanup failure
+does not reactivate the application schedule.
+
+Status uses one scoped PostgreSQL read and returns lifecycle metadata without payload content. It
+performs no Discord or pg-boss call and no repair. Cancel and status require the interaction's
+`ManageMessages` permission but remain available in archived supported threads and do not require
+bot send permission.
+
+Future recurrence uses structured calendar-oriented input with IANA timezone semantics rather than
+raw user-facing cron; exact Discord command fields remain deferred. One-time list, edit, and
+reschedule commands are also deferred.
 
 Later Phase 8 work will:
 
-- expose one-time scheduled-message creation and administration,
 - implement recurring messages,
 - skip missed recurring occurrences after downtime,
-- implement cancellation,
-- add retry, race, and restart-recovery tests.
+- add remaining recurrence-specific retry, race, and restart-recovery tests.
 
 ### Phase 9: MVP hardening
 

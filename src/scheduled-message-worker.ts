@@ -40,6 +40,9 @@ export type ScheduledMessageWorkerController = {
     executeAt: Date,
   ) => Promise<"ENQUEUED" | "ALREADY_PRESENT">;
   cancelStaleActiveDeliveries: (scheduledActionId: string) => Promise<number>;
+  cancelScheduledMessageDeliveries: (
+    scheduledActionId: string,
+  ) => Promise<{ outcome: "CONFIRMED" | "UNCONFIRMED"; matchedDeliveryCount: number }>;
   hasCreatedOrRetryDelivery: (scheduledActionId: string) => Promise<boolean>;
   start: () => Promise<void>;
   stop: () => Promise<void>;
@@ -260,6 +263,41 @@ export function createScheduledMessageWorkerController({
       if (confirmed.some((job) => job.state === "active"))
         throw new Error("Scheduled message stale delivery cleanup could not be confirmed");
       return activeIds.length;
+    },
+    async cancelScheduledMessageDeliveries(scheduledActionId) {
+      let cancellableIds: string[];
+      try {
+        const jobs = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, { key: scheduledActionId });
+        cancellableIds = jobs
+          .filter(
+            (job) => job.state === "created" || job.state === "retry" || job.state === "active",
+          )
+          .map((job) => job.id);
+      } catch {
+        return { outcome: "UNCONFIRMED", matchedDeliveryCount: 0 };
+      }
+
+      if (cancellableIds.length > 0) {
+        try {
+          await boss.cancel(SCHEDULED_MESSAGE_QUEUE, cancellableIds);
+        } catch {
+          /* confirm below */
+        }
+      }
+      try {
+        const confirmed = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, {
+          key: scheduledActionId,
+        });
+        const remaining = confirmed.some(
+          (job) => job.state === "created" || job.state === "retry" || job.state === "active",
+        );
+        return {
+          outcome: remaining ? "UNCONFIRMED" : "CONFIRMED",
+          matchedDeliveryCount: cancellableIds.length,
+        };
+      } catch {
+        return { outcome: "UNCONFIRMED", matchedDeliveryCount: cancellableIds.length };
+      }
     },
     async hasCreatedOrRetryDelivery(scheduledActionId) {
       const jobs = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, { key: scheduledActionId });
