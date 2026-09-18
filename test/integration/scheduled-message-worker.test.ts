@@ -11,7 +11,11 @@ import {
   createScheduledActionStore,
   scheduledActions,
 } from "../../src/scheduled-action-persistence.js";
-import type { ScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
+import type {
+  ScheduledMessageCreationDiscord,
+  ScheduledMessageDiscord,
+} from "../../src/scheduled-message-discord.js";
+import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
 import { createScheduledMessageExecutor } from "../../src/scheduled-message-execution.js";
 import {
   createScheduledMessageStore,
@@ -63,6 +67,60 @@ afterAll(async () => {
 });
 
 describe("scheduled message pg-boss delivery", () => {
+  it("creates a future command schedule with effective delivery and cleans it after cancellation", async () => {
+    const controller = createController(createDiscord());
+    await controller.ensureQueue();
+    const establishedAt = new Date(Date.now() + 60_000);
+    const identifiers = ["command-created-action", "command-created-audit", "command-cancel-audit"];
+    const command = createScheduledMessageCommandService({
+      discord: {
+        authorizeCreation: vi.fn<ScheduledMessageCreationDiscord["authorizeCreation"]>(() =>
+          Promise.resolve({ outcome: "AUTHORIZED" }),
+        ),
+      },
+      store: messages,
+      delivery: controller,
+      logger: createLogger(),
+      generateId: () => identifiers.shift()!,
+      now: () => establishedAt,
+    });
+
+    await expect(
+      command.create({
+        guildId,
+        channelId: "channel-id",
+        actorUserId: "creator-id",
+        durationMs: 60_000,
+        payload: { content: "command-created content", embed: null },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "SUCCESS",
+      definition: { action: { id: "command-created-action", status: "ACTIVE" } },
+      deliveryPendingReconciliation: false,
+    });
+    await expect(messages.find("command-created-action")).resolves.toMatchObject({
+      action: { status: "ACTIVE", executeAt: new Date(establishedAt.getTime() + 60_000) },
+    });
+    await expect(findJobsForAction("command-created-action")).resolves.toEqual([
+      expect.objectContaining({ state: "created", singletonKey: "command-created-action" }),
+    ]);
+
+    await expect(
+      command.cancel({
+        scheduledActionId: "command-created-action",
+        guildId,
+        channelId: "channel-id",
+        actorUserId: "cancelling-user",
+      }),
+    ).resolves.toEqual({ outcome: "CANCELLED", deliveryCleanupPending: false });
+    await expect(messages.find("command-created-action")).resolves.toMatchObject({
+      action: { status: "CANCELLED" },
+    });
+    await expect(findJobsForAction("command-created-action")).resolves.toEqual([
+      expect.objectContaining({ state: "cancelled" }),
+    ]);
+  });
+
   it("creates the exact queue, singleton, and future startAfter", async () => {
     const discord = createDiscord();
     const controller = createController(discord);
@@ -229,6 +287,127 @@ describe("scheduled message pg-boss delivery", () => {
       .from(scheduledMessageAudits)
       .where(eq(scheduledMessageAudits.scheduledActionId, definition.action.id));
     expect(audits.map((audit) => audit.event)).toEqual(["CREATED"]);
+    expect(discord.preflight).not.toHaveBeenCalled();
+    expect(discord.createMessage).not.toHaveBeenCalled();
+  });
+
+  it("skips a retained real delivery after authoritative cancellation when cleanup is unconfirmed", async () => {
+    const scheduledActionId = "cancelled-unconfirmed-cleanup";
+    const definition = await createScheduledMessage(scheduledActionId);
+    const discord = createDiscord();
+    const realExecutor = createScheduledMessageExecutor({ store: messages, discord });
+    const execute = vi.fn(realExecutor.execute.bind(realExecutor));
+    const deliveryController = createScheduledMessageWorkerController({
+      boss: pgBoss.client,
+      scheduledActions: actions,
+      executor: { execute },
+      logger: createLogger(),
+    });
+    controllers.push(deliveryController);
+    await deliveryController.ensureQueue();
+    await expect(
+      deliveryController.enqueueScheduledMessage(scheduledActionId, definition.action.executeAt),
+    ).resolves.toBe("ENQUEUED");
+    await expect(findJob(scheduledActionId)).resolves.toMatchObject({ state: "created" });
+
+    const cancellationAt = new Date("2026-09-17T03:04:05.678Z");
+    const cancel = vi.fn(() => Promise.reject(new Error("injected pg-boss cancel failure")));
+    const cleanupFailureBoss = new Proxy(pgBoss.client, {
+      get(target, property): unknown {
+        if (property === "cancel") return cancel;
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const cleanupController = createScheduledMessageWorkerController({
+      boss: cleanupFailureBoss,
+      scheduledActions: actions,
+      executor: { execute },
+      logger: createLogger(),
+    });
+    controllers.push(cleanupController);
+    const command = createScheduledMessageCommandService({
+      discord: {
+        authorizeCreation: vi.fn<ScheduledMessageCreationDiscord["authorizeCreation"]>(() =>
+          Promise.resolve({ outcome: "AUTHORIZED" }),
+        ),
+      },
+      store: messages,
+      delivery: cleanupController,
+      logger: createLogger(),
+      generateId: () => "cancelled-unconfirmed-cleanup-audit",
+      now: () => cancellationAt,
+    });
+    await expect(
+      command.cancel({
+        scheduledActionId,
+        guildId,
+        channelId: "channel-id",
+        actorUserId: "cancelling-user",
+      }),
+    ).resolves.toEqual({ outcome: "CANCELLED", deliveryCleanupPending: true });
+    expect(cancel).toHaveBeenCalledOnce();
+    await expect(findJob(scheduledActionId)).resolves.toMatchObject({ state: "created" });
+    const cancelledDefinition = await messages.find(scheduledActionId);
+    expect(cancelledDefinition).toMatchObject({
+      action: { status: "CANCELLED" },
+      retryCount: 0,
+      payload: definition.payload,
+      resultMessageId: null,
+    });
+    const auditsAfterCancellation = await database.client
+      .select()
+      .from(scheduledMessageAudits)
+      .where(eq(scheduledMessageAudits.scheduledActionId, scheduledActionId))
+      .orderBy(scheduledMessageAudits.id);
+    expect(auditsAfterCancellation.map((audit) => audit.event).sort()).toEqual([
+      "CANCELLED",
+      "CREATED",
+    ]);
+    expect(auditsAfterCancellation.filter((audit) => audit.event === "CANCELLED")).toEqual([
+      expect.objectContaining({
+        id: "cancelled-unconfirmed-cleanup-audit",
+        scheduledActionId,
+        guildId,
+        channelId: "channel-id",
+        actorType: "USER",
+        actorId: "cancelling-user",
+        executeAt: definition.action.executeAt,
+        content: definition.payload.content,
+        embedTitle: null,
+        embedDescription: null,
+        embedColor: null,
+        embedImageUrl: null,
+        occurredAt: cancellationAt,
+        outcome: "SUCCESS",
+        failureCode: null,
+        resultMessageId: null,
+      }),
+    ]);
+
+    const workerController = createScheduledMessageWorkerController({
+      boss: pgBoss.client,
+      scheduledActions: actions,
+      executor: { execute },
+      logger: createLogger(),
+    });
+    controllers.push(workerController);
+    await workerController.start();
+    await waitFor(async () => (await findJob(scheduledActionId))?.state === "completed");
+
+    await expect(messages.find(scheduledActionId)).resolves.toEqual(cancelledDefinition);
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(eq(scheduledMessageAudits.scheduledActionId, scheduledActionId))
+        .orderBy(scheduledMessageAudits.id),
+    ).resolves.toEqual(auditsAfterCancellation);
+    await expect(findJob(scheduledActionId)).resolves.toMatchObject({
+      state: "completed",
+      retryCount: 0,
+    });
+    expect(execute).not.toHaveBeenCalled();
     expect(discord.preflight).not.toHaveBeenCalled();
     expect(discord.createMessage).not.toHaveBeenCalled();
   });
