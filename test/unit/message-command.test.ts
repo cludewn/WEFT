@@ -36,11 +36,19 @@ describe("message command", () => {
     expect(definition.default_member_permissions).toBe(
       PermissionFlagsBits.ManageMessages.toString(),
     );
-    expect(definition.options).toHaveLength(2);
+    expect(definition.options).toHaveLength(3);
     expect(definition.options?.[0]).toMatchObject({ name: "send", options: [] });
     expect(definition.options?.[1]).toMatchObject({
       name: "edit",
       options: [{ name: "message", required: true }],
+    });
+    expect(definition.options?.[2]).toMatchObject({
+      name: "schedule",
+      options: [
+        { name: "create", options: [{ name: "after", required: true }] },
+        { name: "cancel", options: [{ name: "id", required: true }] },
+        { name: "status", options: [{ name: "id", required: true }] },
+      ],
     });
   });
 
@@ -465,6 +473,7 @@ function createCommandInteraction(
   const interaction = {
     options: {
       getSubcommand: () => overrides.subcommand ?? "send",
+      getSubcommandGroup: () => null,
       getString: () => overrides.messageReference ?? "900000000000000001",
     },
     inGuild: () => overrides.inGuild ?? true,

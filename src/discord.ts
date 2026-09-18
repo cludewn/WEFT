@@ -8,8 +8,10 @@ import {
   handleManagedMessageModalSubmit,
   MANAGED_MESSAGE_EDIT_MODAL_PREFIX,
   MANAGED_MESSAGE_SEND_MODAL_ID,
+  SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX,
 } from "./message-command.js";
 import type { ManagedMessageService } from "./managed-message.js";
+import type { ScheduledMessageCommandService } from "./scheduled-message-command.js";
 import { createThreadLifecycleDiscord, isSupportedThreadType } from "./thread-discord.js";
 import { createThreadLifecycleService, type ThreadLifecycleDiscord } from "./thread-lifecycle.js";
 import type { GuildSettingsStore } from "./guild-settings.js";
@@ -188,28 +190,32 @@ export function registerDiscordCommandHandler(
 export function registerManagedMessageModalHandler(
   client: Client,
   service: ManagedMessageService,
+  scheduledMessages: ScheduledMessageCommandService,
   logger: Pick<Logger, "error">,
 ): void {
   client.on(Events.InteractionCreate, (interaction) => {
     if (
       !interaction.isModalSubmit() ||
       (interaction.customId !== MANAGED_MESSAGE_SEND_MODAL_ID &&
-        !interaction.customId.startsWith(MANAGED_MESSAGE_EDIT_MODAL_PREFIX))
+        !interaction.customId.startsWith(MANAGED_MESSAGE_EDIT_MODAL_PREFIX) &&
+        !interaction.customId.startsWith(SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX))
     ) {
       return;
     }
 
-    void handleManagedMessageModalSubmit(interaction, service).catch((error: unknown) => {
-      logger.error(
-        {
-          event: "managed_message_modal_failed",
-          guildId: interaction.guildId,
-          channelId: interaction.channelId,
-          errorName: error instanceof Error ? error.name : "UnknownError",
-        },
-        "Managed message modal handling failed",
-      );
-    });
+    void handleManagedMessageModalSubmit(interaction, service, scheduledMessages).catch(
+      (error: unknown) => {
+        logger.error(
+          {
+            event: "managed_message_modal_failed",
+            guildId: interaction.guildId,
+            channelId: interaction.channelId,
+            errorName: error instanceof Error ? error.name : "UnknownError",
+          },
+          "Managed message modal handling failed",
+        );
+      },
+    );
   });
 }
 
