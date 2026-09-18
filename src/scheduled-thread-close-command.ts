@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 
 import type { Logger } from "pino";
 
+import {
+  addRelativeDuration,
+  InvalidRelativeDurationError,
+  parseRelativeDuration,
+} from "./relative-duration.js";
 import type { ScheduledAction } from "./scheduled-action-persistence.js";
 import type {
   CancelScheduledThreadCloseResult,
@@ -14,15 +19,6 @@ import type {
   ThreadLifecycleResult,
   ThreadLifecycleService,
 } from "./thread-lifecycle.js";
-
-const MINIMUM_DURATION_MS = 60_000n;
-const MAXIMUM_DURATION_MS = 365n * 24n * 60n * 60n * 1_000n;
-
-const UNIT_MILLISECONDS = {
-  m: 60_000n,
-  h: 60n * 60n * 1_000n,
-  d: 24n * 60n * 60n * 1_000n,
-} as const;
 
 export class InvalidScheduledThreadCloseDurationError extends Error {
   constructor() {
@@ -40,37 +36,13 @@ export function parseScheduledThreadCloseDuration(
   input: string,
   now: Date,
 ): ParsedScheduledThreadCloseDuration {
-  const normalized = input.trim().toLowerCase();
-  const match = /^([1-9][0-9]*)(m|h|d)$/.exec(normalized);
-  const nowMs = now.getTime();
-  if (match === null || !Number.isSafeInteger(nowMs)) {
-    throw new InvalidScheduledThreadCloseDurationError();
-  }
-
-  const unit = match[2] as keyof typeof UNIT_MILLISECONDS;
-  let durationMs: bigint;
   try {
-    durationMs = BigInt(match[1]!) * UNIT_MILLISECONDS[unit];
-  } catch {
+    const durationMs = parseRelativeDuration(input);
+    return { durationMs, executeAt: addRelativeDuration(now, durationMs) };
+  } catch (error) {
+    if (!(error instanceof InvalidRelativeDurationError)) throw error;
     throw new InvalidScheduledThreadCloseDurationError();
   }
-  if (durationMs < MINIMUM_DURATION_MS || durationMs > MAXIMUM_DURATION_MS) {
-    throw new InvalidScheduledThreadCloseDurationError();
-  }
-
-  const executeAtMs = BigInt(nowMs) + durationMs;
-  if (
-    executeAtMs < BigInt(Number.MIN_SAFE_INTEGER) ||
-    executeAtMs > BigInt(Number.MAX_SAFE_INTEGER)
-  ) {
-    throw new InvalidScheduledThreadCloseDurationError();
-  }
-  const executeAt = new Date(Number(executeAtMs));
-  if (Number.isNaN(executeAt.getTime())) {
-    throw new InvalidScheduledThreadCloseDurationError();
-  }
-
-  return { durationMs: Number(durationMs), executeAt };
 }
 
 export type ScheduledThreadCloseCommandResult =
