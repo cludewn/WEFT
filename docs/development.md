@@ -1101,9 +1101,50 @@ performs no Discord or pg-boss call and no repair. Cancel and status require the
 `ManageMessages` permission but remain available in archived supported threads and do not require
 bot send permission.
 
+Phase 8C-2 adds one-time `list`, `edit`, and `reschedule`. List is a read-only, channel-scoped query
+over `ACTIVE` and `EXECUTING` `SEND_MESSAGE` actions, ordered by `(execute_at, id)` with fixed
+10-row pages. Its view contains schedule metadata only and cannot expose payload columns.
+
+The scheduled-message-specific state now owns a non-negative revision starting at zero. Edit and
+reschedule transactions lock the scoped scheduled-action row as their common serialization point,
+validate the complete action-specific state and expected revision, then commit the mutation and
+stable `EDITED` or `RESCHEDULED` user audit together. Exact edit no-ops neither increment revision
+nor audit. Ambiguous transactions use the exact stable audit for read-only confirmation; a later
+valid revision does not invalidate proof that the earlier transaction committed.
+
+Execution loads revision with the authoritative payload before Discord preflight. Its later claim
+locks the scheduled-action row and commits `ACTIVE -> EXECUTING` only when the action remains a
+`SEND_MESSAGE` and the scheduled-message revision still equals the loaded value. No transaction is
+held over Discord work. A committed edit or reschedule therefore defeats a stale claim, while a
+claim committed first makes the later administration request ineligible.
+
+Scheduled-message pg-boss payload is a backward-compatible union. New projection contains
+`scheduledActionId`, canonical `scheduledExecuteAt`, and `scheduleRevision`; old ID-only payloads
+remain readable. Projection metadata identifies delivery but never authorizes execution. Created
+delivery requires both projected time and effective start time to match. Retry and active delivery
+use projected time only because retry `startAfter` is its next wake time. Revision-only drift after
+a payload edit is current when projected time still matches.
+
+The scheduled-message delivery boundary uses public pg-boss 12.27.0 inspection, `upsert()`, and
+cancellation APIs. Created and retry jobs are updated in place, preserving job identity and retry
+metadata. Missing or terminal-only delivery uses the upsert insert path. Stale active delivery is
+cancelled and read-confirmed ineffective before current delivery is upserted; a current active job
+is not replaced. Ambiguous mutations receive read-only confirmation and otherwise remain pending
+for reconciliation. PostgreSQL reschedule state is never rolled back or restored because delivery
+repair failed.
+
+Startup and runtime scheduled-message reconciliation now load each authoritative active definition
+and classify delivery as current, stale, missing, or unconfirmed by execution time. Legacy created
+delivery is adopted only at the matching effective time. Legacy retry is upgraded with projection
+metadata without resetting its retry state or wake time. Legacy active delivery is cancelled and
+confirmed before replacement. Terminal history does not suppress repair, and unconfirmed state is
+logged safely for a later sweep. Worker handling still reloads PostgreSQL, rejects early stale
+wakeups while authoritative execution time remains in the future, and relies on the revision-aware
+database claim to prevent stale or duplicate Discord effects.
+
 Future recurrence uses structured calendar-oriented input with IANA timezone semantics rather than
 raw user-facing cron; exact Discord command fields remain deferred. One-time list, edit, and
-reschedule commands are also deferred.
+reschedule commands are implemented.
 
 Later Phase 8 work will:
 
