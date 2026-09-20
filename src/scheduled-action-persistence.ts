@@ -113,6 +113,10 @@ export class ActiveScheduledCloseConflictError extends Error {
 }
 
 export function createScheduledActionStore(database: DatabaseClient): ScheduledActionStore {
+  const isOneTimeScheduledMessage = sql`not exists (
+    select 1 from recurring_message_schedules recurring
+    where recurring.scheduled_action_id = ${scheduledActions.id}
+  )`;
   const findById = async (id: string): Promise<ScheduledAction | undefined> => {
     const [action] = await database
       .select()
@@ -203,6 +207,7 @@ export function createScheduledActionStore(database: DatabaseClient): ScheduledA
           and(
             eq(scheduledActions.actionType, "SEND_MESSAGE"),
             eq(scheduledActions.status, "ACTIVE"),
+            isOneTimeScheduledMessage,
             cursor === undefined
               ? undefined
               : or(
@@ -225,6 +230,7 @@ export function createScheduledActionStore(database: DatabaseClient): ScheduledA
           and(
             eq(scheduledActions.actionType, "SEND_MESSAGE"),
             eq(scheduledActions.status, "EXECUTING"),
+            isOneTimeScheduledMessage,
             afterId === undefined ? undefined : gt(scheduledActions.id, afterId),
           ),
         )

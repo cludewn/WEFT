@@ -1,0 +1,2146 @@
+{
+  "id": "02c90551-7497-439a-a69d-4591704bd3ad",
+  "prevId": "f7b92478-7124-4655-8eb9-ea1044940d1d",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.auto_close_parent_channels": {
+      "name": "auto_close_parent_channels",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "parent_channel_id": {
+          "name": "parent_channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "auto_close_parent_channels_guild_id_parent_channel_id_pk": {
+          "name": "auto_close_parent_channels_guild_id_parent_channel_id_pk",
+          "columns": [
+            "guild_id",
+            "parent_channel_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.auto_close_thread_activity": {
+      "name": "auto_close_thread_activity",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "parent_channel_id": {
+          "name": "parent_channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_activity_at": {
+          "name": "last_activity_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "auto_close_thread_activity_last_activity_guild_thread_idx": {
+          "name": "auto_close_thread_activity_last_activity_guild_thread_idx",
+          "columns": [
+            {
+              "expression": "last_activity_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "guild_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "auto_close_thread_activity_guild_id_thread_id_pk": {
+          "name": "auto_close_thread_activity_guild_id_thread_id_pk",
+          "columns": [
+            "guild_id",
+            "thread_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.auto_close_thread_exclusions": {
+      "name": "auto_close_thread_exclusions",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "auto_close_thread_exclusions_guild_id_thread_id_pk": {
+          "name": "auto_close_thread_exclusions_guild_id_thread_id_pk",
+          "columns": [
+            "guild_id",
+            "thread_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.auto_close_thread_retirements": {
+      "name": "auto_close_thread_retirements",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_activity_at": {
+          "name": "last_activity_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "auto_close_thread_retirements_guild_id_thread_id_pk": {
+          "name": "auto_close_thread_retirements_guild_id_thread_id_pk",
+          "columns": [
+            "guild_id",
+            "thread_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.guild_settings": {
+      "name": "guild_settings",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'UTC'"
+        },
+        "closed_prefix": {
+          "name": "closed_prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'[CLOSED]'"
+        },
+        "auto_close_inactivity_seconds": {
+          "name": "auto_close_inactivity_seconds",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 604800
+        },
+        "auto_close_bot_messages_count_as_activity": {
+          "name": "auto_close_bot_messages_count_as_activity",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "guild_settings_auto_close_inactivity_seconds_check": {
+          "name": "guild_settings_auto_close_inactivity_seconds_check",
+          "value": "\"guild_settings\".\"auto_close_inactivity_seconds\" between 300 and 31536000"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.managed_message_audits": {
+      "name": "managed_message_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel_id": {
+          "name": "channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event": {
+          "name": "event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_content": {
+          "name": "before_content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_content": {
+          "name": "after_content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "before_embed_title": {
+          "name": "before_embed_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_embed_title": {
+          "name": "after_embed_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_embed_description": {
+          "name": "before_embed_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_embed_description": {
+          "name": "after_embed_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_embed_color": {
+          "name": "before_embed_color",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_embed_color": {
+          "name": "after_embed_color",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_embed_image_url": {
+          "name": "before_embed_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_embed_image_url": {
+          "name": "after_embed_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_revision": {
+          "name": "before_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_revision": {
+          "name": "after_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "before_status": {
+          "name": "before_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_status": {
+          "name": "after_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "managed_message_audits_event_check": {
+          "name": "managed_message_audits_event_check",
+          "value": "\"managed_message_audits\".\"event\" in ('CREATED', 'EDITED', 'DELETION_DETECTED')"
+        },
+        "managed_message_audits_actor_type_check": {
+          "name": "managed_message_audits_actor_type_check",
+          "value": "\"managed_message_audits\".\"actor_type\" in ('USER', 'SYSTEM')"
+        },
+        "managed_message_audits_outcome_check": {
+          "name": "managed_message_audits_outcome_check",
+          "value": "\"managed_message_audits\".\"outcome\" = 'SUCCESS'"
+        },
+        "managed_message_audits_revision_check": {
+          "name": "managed_message_audits_revision_check",
+          "value": "\"managed_message_audits\".\"after_revision\" >= 1 and (\"managed_message_audits\".\"before_revision\" is null or \"managed_message_audits\".\"before_revision\" >= 1)"
+        },
+        "managed_message_audits_status_check": {
+          "name": "managed_message_audits_status_check",
+          "value": "\"managed_message_audits\".\"after_status\" in ('ACTIVE', 'DELETED') and (\"managed_message_audits\".\"before_status\" is null or \"managed_message_audits\".\"before_status\" in ('ACTIVE', 'DELETED'))"
+        },
+        "managed_message_audits_payload_check": {
+          "name": "managed_message_audits_payload_check",
+          "value": "char_length(\"managed_message_audits\".\"after_content\") between 0 and 2000\n        and (\"managed_message_audits\".\"before_content\" is null or char_length(\"managed_message_audits\".\"before_content\") between 0 and 2000)\n        and (\"managed_message_audits\".\"after_embed_title\" is null or char_length(\"managed_message_audits\".\"after_embed_title\") between 1 and 256)\n        and (\"managed_message_audits\".\"before_embed_title\" is null or char_length(\"managed_message_audits\".\"before_embed_title\") between 1 and 256)\n        and (\"managed_message_audits\".\"after_embed_description\" is null or char_length(\"managed_message_audits\".\"after_embed_description\") between 1 and 4000)\n        and (\"managed_message_audits\".\"before_embed_description\" is null or char_length(\"managed_message_audits\".\"before_embed_description\") between 1 and 4000)\n        and (\"managed_message_audits\".\"after_embed_color\" is null or \"managed_message_audits\".\"after_embed_color\" between 0 and 16777215)\n        and (\"managed_message_audits\".\"before_embed_color\" is null or \"managed_message_audits\".\"before_embed_color\" between 0 and 16777215)\n        and (\"managed_message_audits\".\"after_embed_image_url\" is null or char_length(\"managed_message_audits\".\"after_embed_image_url\") between 1 and 2048)\n        and (\"managed_message_audits\".\"before_embed_image_url\" is null or char_length(\"managed_message_audits\".\"before_embed_image_url\") between 1 and 2048)\n        and (\"managed_message_audits\".\"after_embed_color\" is null or \"managed_message_audits\".\"after_embed_title\" is not null or \"managed_message_audits\".\"after_embed_description\" is not null or \"managed_message_audits\".\"after_embed_image_url\" is not null)\n        and (char_length(\"managed_message_audits\".\"after_content\") > 0 or \"managed_message_audits\".\"after_embed_title\" is not null or \"managed_message_audits\".\"after_embed_description\" is not null or \"managed_message_audits\".\"after_embed_image_url\" is not null)\n        and (\"managed_message_audits\".\"before_content\" is null or (\n          (\"managed_message_audits\".\"before_embed_color\" is null or \"managed_message_audits\".\"before_embed_title\" is not null or \"managed_message_audits\".\"before_embed_description\" is not null or \"managed_message_audits\".\"before_embed_image_url\" is not null)\n          and (char_length(\"managed_message_audits\".\"before_content\") > 0 or \"managed_message_audits\".\"before_embed_title\" is not null or \"managed_message_audits\".\"before_embed_description\" is not null or \"managed_message_audits\".\"before_embed_image_url\" is not null)\n        ))"
+        },
+        "managed_message_audits_event_shape_check": {
+          "name": "managed_message_audits_event_shape_check",
+          "value": "(\n        \"managed_message_audits\".\"event\" = 'CREATED'\n        and \"managed_message_audits\".\"actor_type\" = 'USER' and \"managed_message_audits\".\"actor_id\" is not null\n        and \"managed_message_audits\".\"before_content\" is null and \"managed_message_audits\".\"before_embed_title\" is null\n        and \"managed_message_audits\".\"before_embed_description\" is null and \"managed_message_audits\".\"before_embed_color\" is null\n        and \"managed_message_audits\".\"before_embed_image_url\" is null and \"managed_message_audits\".\"before_revision\" is null\n        and \"managed_message_audits\".\"before_status\" is null\n        and \"managed_message_audits\".\"after_revision\" = 1 and \"managed_message_audits\".\"after_status\" = 'ACTIVE'\n      ) or (\n        \"managed_message_audits\".\"event\" = 'EDITED'\n        and \"managed_message_audits\".\"actor_type\" = 'USER' and \"managed_message_audits\".\"actor_id\" is not null\n        and \"managed_message_audits\".\"before_content\" is not null and \"managed_message_audits\".\"before_revision\" is not null\n        and \"managed_message_audits\".\"before_status\" = 'ACTIVE' and \"managed_message_audits\".\"after_status\" = 'ACTIVE'\n        and \"managed_message_audits\".\"after_revision\" = \"managed_message_audits\".\"before_revision\" + 1\n        and (\n          \"managed_message_audits\".\"after_content\" is distinct from \"managed_message_audits\".\"before_content\"\n          or \"managed_message_audits\".\"after_embed_title\" is distinct from \"managed_message_audits\".\"before_embed_title\"\n          or \"managed_message_audits\".\"after_embed_description\" is distinct from \"managed_message_audits\".\"before_embed_description\"\n          or \"managed_message_audits\".\"after_embed_color\" is distinct from \"managed_message_audits\".\"before_embed_color\"\n          or \"managed_message_audits\".\"after_embed_image_url\" is distinct from \"managed_message_audits\".\"before_embed_image_url\"\n        )\n      ) or (\n        \"managed_message_audits\".\"event\" = 'DELETION_DETECTED'\n        and \"managed_message_audits\".\"actor_type\" = 'SYSTEM' and \"managed_message_audits\".\"actor_id\" is null\n        and \"managed_message_audits\".\"before_content\" is not null and \"managed_message_audits\".\"before_revision\" is not null\n        and \"managed_message_audits\".\"before_status\" = 'ACTIVE' and \"managed_message_audits\".\"after_status\" = 'DELETED'\n        and \"managed_message_audits\".\"after_revision\" = \"managed_message_audits\".\"before_revision\"\n        and \"managed_message_audits\".\"after_content\" is not distinct from \"managed_message_audits\".\"before_content\"\n        and \"managed_message_audits\".\"after_embed_title\" is not distinct from \"managed_message_audits\".\"before_embed_title\"\n        and \"managed_message_audits\".\"after_embed_description\" is not distinct from \"managed_message_audits\".\"before_embed_description\"\n        and \"managed_message_audits\".\"after_embed_color\" is not distinct from \"managed_message_audits\".\"before_embed_color\"\n        and \"managed_message_audits\".\"after_embed_image_url\" is not distinct from \"managed_message_audits\".\"before_embed_image_url\"\n      )"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.managed_messages": {
+      "name": "managed_messages",
+      "schema": "",
+      "columns": {
+        "message_id": {
+          "name": "message_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel_id": {
+          "name": "channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "creator_user_id": {
+          "name": "creator_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "embed_title": {
+          "name": "embed_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embed_description": {
+          "name": "embed_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embed_color": {
+          "name": "embed_color",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embed_image_url": {
+          "name": "embed_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'ACTIVE'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "managed_messages_revision_check": {
+          "name": "managed_messages_revision_check",
+          "value": "\"managed_messages\".\"revision\" >= 1"
+        },
+        "managed_messages_status_check": {
+          "name": "managed_messages_status_check",
+          "value": "\"managed_messages\".\"status\" in ('ACTIVE', 'DELETED')"
+        },
+        "managed_messages_payload_check": {
+          "name": "managed_messages_payload_check",
+          "value": "char_length(\"managed_messages\".\"content\") between 0 and 2000\n        and (\"managed_messages\".\"embed_title\" is null or char_length(\"managed_messages\".\"embed_title\") between 1 and 256)\n        and (\"managed_messages\".\"embed_description\" is null or char_length(\"managed_messages\".\"embed_description\") between 1 and 4000)\n        and (\"managed_messages\".\"embed_color\" is null or \"managed_messages\".\"embed_color\" between 0 and 16777215)\n        and (\"managed_messages\".\"embed_image_url\" is null or char_length(\"managed_messages\".\"embed_image_url\") between 1 and 2048)\n        and (\"managed_messages\".\"embed_color\" is null or \"managed_messages\".\"embed_title\" is not null or \"managed_messages\".\"embed_description\" is not null or \"managed_messages\".\"embed_image_url\" is not null)\n        and (char_length(\"managed_messages\".\"content\") > 0 or \"managed_messages\".\"embed_title\" is not null or \"managed_messages\".\"embed_description\" is not null or \"managed_messages\".\"embed_image_url\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.recurring_message_audits": {
+      "name": "recurring_message_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "scheduled_action_id": {
+          "name": "scheduled_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurrence_id": {
+          "name": "occurrence_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel_id": {
+          "name": "channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event": {
+          "name": "event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_revision": {
+          "name": "before_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_revision": {
+          "name": "after_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_content": {
+          "name": "before_content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_content": {
+          "name": "after_content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_embed_title": {
+          "name": "before_embed_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_embed_title": {
+          "name": "after_embed_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_embed_description": {
+          "name": "before_embed_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_embed_description": {
+          "name": "after_embed_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_embed_color": {
+          "name": "before_embed_color",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_embed_color": {
+          "name": "after_embed_color",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_embed_image_url": {
+          "name": "before_embed_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_embed_image_url": {
+          "name": "after_embed_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_frequency": {
+          "name": "before_frequency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_frequency": {
+          "name": "after_frequency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_weekday_mask": {
+          "name": "before_weekday_mask",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_weekday_mask": {
+          "name": "after_weekday_mask",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_local_time": {
+          "name": "before_local_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_local_time": {
+          "name": "after_local_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_timezone": {
+          "name": "before_timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_timezone": {
+          "name": "after_timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_definition_revision": {
+          "name": "before_definition_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_definition_revision": {
+          "name": "after_definition_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "before_effective_at": {
+          "name": "before_effective_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "after_effective_at": {
+          "name": "after_effective_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "current_occurrence_id": {
+          "name": "current_occurrence_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deferred_materialization": {
+          "name": "deferred_materialization",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "selected_next_occurrence_id": {
+          "name": "selected_next_occurrence_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "selected_next_local_date": {
+          "name": "selected_next_local_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "selected_next_local_time": {
+          "name": "selected_next_local_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "selected_next_scheduled_for": {
+          "name": "selected_next_scheduled_for",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "intended_local_date": {
+          "name": "intended_local_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "intended_local_time": {
+          "name": "intended_local_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scheduled_for": {
+          "name": "scheduled_for",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_series_revision": {
+          "name": "claimed_series_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_definition_revision": {
+          "name": "claimed_definition_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "retry_count": {
+          "name": "retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result_message_id": {
+          "name": "result_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "occurrence_skip_reason": {
+          "name": "occurrence_skip_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_occurrence_id": {
+          "name": "next_occurrence_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_intended_local_date": {
+          "name": "next_intended_local_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_intended_local_time": {
+          "name": "next_intended_local_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "next_scheduled_for": {
+          "name": "next_scheduled_for",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "post_series_status": {
+          "name": "post_series_status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "range_start_occurrence_id": {
+          "name": "range_start_occurrence_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "skipped_from_local_date": {
+          "name": "skipped_from_local_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "skipped_from_local_time": {
+          "name": "skipped_from_local_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "skipped_through_local_date": {
+          "name": "skipped_through_local_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "skipped_through_local_time": {
+          "name": "skipped_through_local_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_skip_reason": {
+          "name": "audit_skip_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "recurring_message_audits_series_id_idx": {
+          "name": "recurring_message_audits_series_id_idx",
+          "columns": [
+            {
+              "expression": "scheduled_action_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "recurring_message_audits_occurrence_id_idx": {
+          "name": "recurring_message_audits_occurrence_id_idx",
+          "columns": [
+            {
+              "expression": "occurrence_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "recurring_message_audits_series_fk": {
+          "name": "recurring_message_audits_series_fk",
+          "tableFrom": "recurring_message_audits",
+          "tableTo": "recurring_message_schedules",
+          "columnsFrom": [
+            "scheduled_action_id"
+          ],
+          "columnsTo": [
+            "scheduled_action_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "recurring_message_audits_occurrence_fk": {
+          "name": "recurring_message_audits_occurrence_fk",
+          "tableFrom": "recurring_message_audits",
+          "tableTo": "recurring_message_occurrences",
+          "columnsFrom": [
+            "occurrence_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "recurring_message_audits_event_check": {
+          "name": "recurring_message_audits_event_check",
+          "value": "\"recurring_message_audits\".\"event\" in ('SERIES_CREATED', 'PAYLOAD_EDITED', 'RECURRENCE_EDITED',\n        'SERIES_CANCELLED', 'OCCURRENCE_RETRY', 'OCCURRENCE_COMPLETED', 'OCCURRENCE_FAILED',\n        'DST_GAP_SKIPPED', 'MISSED_RANGE_SKIPPED')"
+        },
+        "recurring_message_audits_common_check": {
+          "name": "recurring_message_audits_common_check",
+          "value": "\"recurring_message_audits\".\"actor_type\" in ('USER', 'SYSTEM')\n        and \"recurring_message_audits\".\"outcome\" in ('SUCCESS', 'FAILURE', 'SKIPPED')\n        and ((\"recurring_message_audits\".\"actor_type\" = 'USER' and \"recurring_message_audits\".\"actor_id\" is not null)\n          or (\"recurring_message_audits\".\"actor_type\" = 'SYSTEM' and \"recurring_message_audits\".\"actor_id\" is null))"
+        },
+        "recurring_message_audits_bounded_values_check": {
+          "name": "recurring_message_audits_bounded_values_check",
+          "value": "(\"recurring_message_audits\".\"failure_code\" is null or \"recurring_message_audits\".\"failure_code\" in (\n          'UNSUPPORTED_TARGET', 'TARGET_GUILD_MISMATCH', 'ARCHIVED_THREAD',\n          'BOT_PERMISSION_MISSING', 'CURRENT_STATE_CHECK_REJECTED', 'CURRENT_STATE_CHECK_FAILED',\n          'PERSISTED_PAYLOAD_INVALID', 'SEND_REJECTED', 'SEND_UNCONFIRMED',\n          'RETURNED_MESSAGE_MISMATCH', 'FINALIZATION_FAILED_COMPENSATED',\n          'FINALIZATION_FAILED_UNCOMPENSATED', 'EXECUTION_INTERRUPTED_UNCONFIRMED',\n          'PRE_SEND_RETRY_WINDOW_EXCEEDED'))\n        and (\"recurring_message_audits\".\"occurrence_skip_reason\" is null or \"recurring_message_audits\".\"occurrence_skip_reason\" in\n          ('RECURRENCE_EDITED', 'SERIES_CANCELLED', 'MISSED_GRACE_EXCEEDED'))\n        and (\"recurring_message_audits\".\"post_series_status\" is null or \"recurring_message_audits\".\"post_series_status\" in ('ACTIVE', 'CANCELLED'))\n        and (\"recurring_message_audits\".\"audit_skip_reason\" is null or \"recurring_message_audits\".\"audit_skip_reason\" in\n          ('DST_GAP', 'MISSED_GRACE_EXCEEDED'))\n        and (\"recurring_message_audits\".\"retry_count\" is null or \"recurring_message_audits\".\"retry_count\" between 0 and 3)\n        and (\"recurring_message_audits\".\"before_revision\" is null or \"recurring_message_audits\".\"before_revision\" >= 0)\n        and (\"recurring_message_audits\".\"after_revision\" is null or \"recurring_message_audits\".\"after_revision\" >= 0)\n        and (\"recurring_message_audits\".\"before_definition_revision\" is null or \"recurring_message_audits\".\"before_definition_revision\" >= 0)\n        and (\"recurring_message_audits\".\"after_definition_revision\" is null or \"recurring_message_audits\".\"after_definition_revision\" >= 0)"
+        },
+        "recurring_message_audits_local_times_check": {
+          "name": "recurring_message_audits_local_times_check",
+          "value": "(\"recurring_message_audits\".\"before_local_time\" is null or extract(second from \"recurring_message_audits\".\"before_local_time\") = 0)\n        and (\"recurring_message_audits\".\"after_local_time\" is null or extract(second from \"recurring_message_audits\".\"after_local_time\") = 0)\n        and (\"recurring_message_audits\".\"selected_next_local_time\" is null or extract(second from \"recurring_message_audits\".\"selected_next_local_time\") = 0)\n        and (\"recurring_message_audits\".\"intended_local_time\" is null or extract(second from \"recurring_message_audits\".\"intended_local_time\") = 0)\n        and (\"recurring_message_audits\".\"next_intended_local_time\" is null or extract(second from \"recurring_message_audits\".\"next_intended_local_time\") = 0)\n        and (\"recurring_message_audits\".\"skipped_from_local_time\" is null or extract(second from \"recurring_message_audits\".\"skipped_from_local_time\") = 0)\n        and (\"recurring_message_audits\".\"skipped_through_local_time\" is null or extract(second from \"recurring_message_audits\".\"skipped_through_local_time\") = 0)"
+        },
+        "recurring_message_audits_event_shape_check": {
+          "name": "recurring_message_audits_event_shape_check",
+          "value": "(\n        \"recurring_message_audits\".\"event\" = 'SERIES_CREATED' and \"recurring_message_audits\".\"actor_type\" = 'USER'\n        and \"recurring_message_audits\".\"outcome\" = 'SUCCESS' and \"recurring_message_audits\".\"after_revision\" is not null\n        and \"recurring_message_audits\".\"after_frequency\" is not null and \"recurring_message_audits\".\"after_weekday_mask\" is not null\n        and \"recurring_message_audits\".\"after_local_time\" is not null and \"recurring_message_audits\".\"after_timezone\" is not null\n        and \"recurring_message_audits\".\"after_definition_revision\" is not null and \"recurring_message_audits\".\"after_effective_at\" is not null\n        and \"recurring_message_audits\".\"after_content\" is not null\n        and \"recurring_message_audits\".\"selected_next_occurrence_id\" is not null and \"recurring_message_audits\".\"selected_next_local_date\" is not null\n        and \"recurring_message_audits\".\"selected_next_local_time\" is not null and \"recurring_message_audits\".\"selected_next_scheduled_for\" is not null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'PAYLOAD_EDITED' and \"recurring_message_audits\".\"actor_type\" = 'USER'\n        and \"recurring_message_audits\".\"outcome\" = 'SUCCESS' and \"recurring_message_audits\".\"before_revision\" is not null\n        and \"recurring_message_audits\".\"after_revision\" is not null and \"recurring_message_audits\".\"before_content\" is not null\n        and \"recurring_message_audits\".\"after_content\" is not null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'RECURRENCE_EDITED' and \"recurring_message_audits\".\"actor_type\" = 'USER'\n        and \"recurring_message_audits\".\"outcome\" = 'SUCCESS' and \"recurring_message_audits\".\"before_revision\" is not null\n        and \"recurring_message_audits\".\"after_revision\" is not null and \"recurring_message_audits\".\"before_frequency\" is not null\n        and \"recurring_message_audits\".\"after_frequency\" is not null and \"recurring_message_audits\".\"before_timezone\" is not null\n        and \"recurring_message_audits\".\"after_timezone\" is not null and \"recurring_message_audits\".\"before_weekday_mask\" is not null\n        and \"recurring_message_audits\".\"after_weekday_mask\" is not null and \"recurring_message_audits\".\"before_local_time\" is not null\n        and \"recurring_message_audits\".\"after_local_time\" is not null and \"recurring_message_audits\".\"before_definition_revision\" is not null\n        and \"recurring_message_audits\".\"after_definition_revision\" is not null and \"recurring_message_audits\".\"before_effective_at\" is not null\n        and \"recurring_message_audits\".\"after_effective_at\" is not null and \"recurring_message_audits\".\"current_occurrence_id\" is not null\n        and \"recurring_message_audits\".\"deferred_materialization\" is not null\n        and ((\"recurring_message_audits\".\"deferred_materialization\" and \"recurring_message_audits\".\"selected_next_occurrence_id\" is null\n          and \"recurring_message_audits\".\"selected_next_local_date\" is null and \"recurring_message_audits\".\"selected_next_local_time\" is null\n          and \"recurring_message_audits\".\"selected_next_scheduled_for\" is null)\n          or (not \"recurring_message_audits\".\"deferred_materialization\" and \"recurring_message_audits\".\"selected_next_occurrence_id\" is not null\n          and \"recurring_message_audits\".\"selected_next_local_date\" is not null and \"recurring_message_audits\".\"selected_next_local_time\" is not null\n          and \"recurring_message_audits\".\"selected_next_scheduled_for\" is not null))\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'SERIES_CANCELLED' and \"recurring_message_audits\".\"actor_type\" = 'USER'\n        and \"recurring_message_audits\".\"outcome\" = 'SUCCESS' and \"recurring_message_audits\".\"before_revision\" is not null\n        and \"recurring_message_audits\".\"after_revision\" is not null and \"recurring_message_audits\".\"post_series_status\" = 'CANCELLED'\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'OCCURRENCE_RETRY' and \"recurring_message_audits\".\"actor_type\" = 'SYSTEM'\n        and \"recurring_message_audits\".\"outcome\" = 'FAILURE' and \"recurring_message_audits\".\"occurrence_id\" is not null\n        and \"recurring_message_audits\".\"intended_local_date\" is not null and \"recurring_message_audits\".\"intended_local_time\" is not null\n        and \"recurring_message_audits\".\"scheduled_for\" is not null and \"recurring_message_audits\".\"claimed_series_revision\" is not null\n        and \"recurring_message_audits\".\"claimed_definition_revision\" is not null\n        and \"recurring_message_audits\".\"failure_code\" is not null and \"recurring_message_audits\".\"retry_count\" between 1 and 3\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'OCCURRENCE_COMPLETED' and \"recurring_message_audits\".\"actor_type\" = 'SYSTEM'\n        and \"recurring_message_audits\".\"outcome\" = 'SUCCESS' and \"recurring_message_audits\".\"occurrence_id\" is not null\n        and \"recurring_message_audits\".\"intended_local_date\" is not null and \"recurring_message_audits\".\"intended_local_time\" is not null\n        and \"recurring_message_audits\".\"scheduled_for\" is not null and \"recurring_message_audits\".\"claimed_series_revision\" is not null\n        and \"recurring_message_audits\".\"claimed_definition_revision\" is not null and \"recurring_message_audits\".\"retry_count\" is not null\n        and \"recurring_message_audits\".\"result_message_id\" is not null and \"recurring_message_audits\".\"failure_code\" is null\n        and \"recurring_message_audits\".\"post_series_status\" in ('ACTIVE', 'CANCELLED')\n        and ((\"recurring_message_audits\".\"post_series_status\" = 'ACTIVE' and \"recurring_message_audits\".\"next_occurrence_id\" is not null\n          and \"recurring_message_audits\".\"next_intended_local_date\" is not null and \"recurring_message_audits\".\"next_intended_local_time\" is not null\n          and \"recurring_message_audits\".\"next_scheduled_for\" is not null)\n          or (\"recurring_message_audits\".\"post_series_status\" = 'CANCELLED' and \"recurring_message_audits\".\"next_occurrence_id\" is null\n          and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null\n          and \"recurring_message_audits\".\"next_scheduled_for\" is null))\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'OCCURRENCE_FAILED' and \"recurring_message_audits\".\"actor_type\" = 'SYSTEM'\n        and \"recurring_message_audits\".\"outcome\" = 'FAILURE' and \"recurring_message_audits\".\"occurrence_id\" is not null\n        and \"recurring_message_audits\".\"intended_local_date\" is not null and \"recurring_message_audits\".\"intended_local_time\" is not null\n        and \"recurring_message_audits\".\"scheduled_for\" is not null and \"recurring_message_audits\".\"claimed_series_revision\" is not null\n        and \"recurring_message_audits\".\"claimed_definition_revision\" is not null and \"recurring_message_audits\".\"retry_count\" is not null\n        and \"recurring_message_audits\".\"failure_code\" is not null\n        and (\"recurring_message_audits\".\"result_message_id\" is null or \"recurring_message_audits\".\"failure_code\" in\n          ('RETURNED_MESSAGE_MISMATCH', 'FINALIZATION_FAILED_UNCOMPENSATED'))\n        and \"recurring_message_audits\".\"post_series_status\" in ('ACTIVE', 'CANCELLED')\n        and ((\"recurring_message_audits\".\"post_series_status\" = 'ACTIVE' and \"recurring_message_audits\".\"next_occurrence_id\" is not null\n          and \"recurring_message_audits\".\"next_intended_local_date\" is not null and \"recurring_message_audits\".\"next_intended_local_time\" is not null\n          and \"recurring_message_audits\".\"next_scheduled_for\" is not null)\n          or (\"recurring_message_audits\".\"post_series_status\" = 'CANCELLED' and \"recurring_message_audits\".\"next_occurrence_id\" is null\n          and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null\n          and \"recurring_message_audits\".\"next_scheduled_for\" is null))\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'DST_GAP_SKIPPED' and \"recurring_message_audits\".\"outcome\" = 'SKIPPED'\n        and \"recurring_message_audits\".\"intended_local_date\" is not null and \"recurring_message_audits\".\"intended_local_time\" is not null\n        and \"recurring_message_audits\".\"after_timezone\" is not null and \"recurring_message_audits\".\"after_definition_revision\" is not null\n        and \"recurring_message_audits\".\"audit_skip_reason\" = 'DST_GAP' and \"recurring_message_audits\".\"occurrence_id\" is null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'MISSED_RANGE_SKIPPED' and \"recurring_message_audits\".\"actor_type\" = 'SYSTEM'\n        and \"recurring_message_audits\".\"outcome\" = 'SKIPPED' and \"recurring_message_audits\".\"after_timezone\" is not null\n        and \"recurring_message_audits\".\"skipped_from_local_date\" is not null and \"recurring_message_audits\".\"skipped_from_local_time\" is not null\n        and \"recurring_message_audits\".\"skipped_through_local_date\" is not null and \"recurring_message_audits\".\"skipped_through_local_time\" is not null\n        and \"recurring_message_audits\".\"selected_next_local_date\" is not null and \"recurring_message_audits\".\"selected_next_local_time\" is not null\n        and \"recurring_message_audits\".\"selected_next_scheduled_for\" is not null\n        and \"recurring_message_audits\".\"audit_skip_reason\" = 'MISSED_GRACE_EXCEEDED'\n      )"
+        },
+        "recurring_message_audits_event_exclusivity_check": {
+          "name": "recurring_message_audits_event_exclusivity_check",
+          "value": "coalesce((\n        \"recurring_message_audits\".\"event\" = 'SERIES_CREATED'\n        and \"recurring_message_audits\".\"actor_type\" = 'USER' and \"recurring_message_audits\".\"outcome\" = 'SUCCESS'\n        and \"recurring_message_audits\".\"after_revision\" is not null and \"recurring_message_audits\".\"after_content\" is not null\n        and \"recurring_message_audits\".\"after_frequency\" is not null and \"recurring_message_audits\".\"after_weekday_mask\" is not null\n        and \"recurring_message_audits\".\"after_local_time\" is not null and \"recurring_message_audits\".\"after_timezone\" is not null\n        and \"recurring_message_audits\".\"after_definition_revision\" is not null and \"recurring_message_audits\".\"after_effective_at\" is not null\n        and \"recurring_message_audits\".\"selected_next_occurrence_id\" is not null\n        and \"recurring_message_audits\".\"selected_next_local_date\" is not null and \"recurring_message_audits\".\"selected_next_local_time\" is not null\n        and \"recurring_message_audits\".\"selected_next_scheduled_for\" is not null and \"recurring_message_audits\".\"post_series_status\" = 'ACTIVE'\n        and \"recurring_message_audits\".\"occurrence_id\" is null and \"recurring_message_audits\".\"before_revision\" is null and \"recurring_message_audits\".\"before_content\" is null and \"recurring_message_audits\".\"before_embed_title\" is null and \"recurring_message_audits\".\"before_embed_description\" is null and \"recurring_message_audits\".\"before_embed_color\" is null and \"recurring_message_audits\".\"before_embed_image_url\" is null and \"recurring_message_audits\".\"before_frequency\" is null and \"recurring_message_audits\".\"before_weekday_mask\" is null and \"recurring_message_audits\".\"before_local_time\" is null and \"recurring_message_audits\".\"before_timezone\" is null and \"recurring_message_audits\".\"before_definition_revision\" is null and \"recurring_message_audits\".\"before_effective_at\" is null and \"recurring_message_audits\".\"current_occurrence_id\" is null and \"recurring_message_audits\".\"deferred_materialization\" is null and \"recurring_message_audits\".\"intended_local_date\" is null and \"recurring_message_audits\".\"intended_local_time\" is null and \"recurring_message_audits\".\"scheduled_for\" is null and \"recurring_message_audits\".\"claimed_series_revision\" is null and \"recurring_message_audits\".\"claimed_definition_revision\" is null and \"recurring_message_audits\".\"retry_count\" is null and \"recurring_message_audits\".\"result_message_id\" is null and \"recurring_message_audits\".\"failure_code\" is null and \"recurring_message_audits\".\"occurrence_skip_reason\" is null and \"recurring_message_audits\".\"next_occurrence_id\" is null and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null and \"recurring_message_audits\".\"next_scheduled_for\" is null and \"recurring_message_audits\".\"range_start_occurrence_id\" is null and \"recurring_message_audits\".\"skipped_from_local_date\" is null and \"recurring_message_audits\".\"skipped_from_local_time\" is null and \"recurring_message_audits\".\"skipped_through_local_date\" is null and \"recurring_message_audits\".\"skipped_through_local_time\" is null and \"recurring_message_audits\".\"audit_skip_reason\" is null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'PAYLOAD_EDITED'\n        and \"recurring_message_audits\".\"actor_type\" = 'USER' and \"recurring_message_audits\".\"outcome\" = 'SUCCESS'\n        and \"recurring_message_audits\".\"before_revision\" is not null and \"recurring_message_audits\".\"after_revision\" is not null\n        and \"recurring_message_audits\".\"before_content\" is not null and \"recurring_message_audits\".\"after_content\" is not null\n        and \"recurring_message_audits\".\"post_series_status\" = 'ACTIVE'\n        and \"recurring_message_audits\".\"occurrence_id\" is null and \"recurring_message_audits\".\"before_frequency\" is null and \"recurring_message_audits\".\"after_frequency\" is null and \"recurring_message_audits\".\"before_weekday_mask\" is null and \"recurring_message_audits\".\"after_weekday_mask\" is null and \"recurring_message_audits\".\"before_local_time\" is null and \"recurring_message_audits\".\"after_local_time\" is null and \"recurring_message_audits\".\"before_timezone\" is null and \"recurring_message_audits\".\"after_timezone\" is null and \"recurring_message_audits\".\"before_definition_revision\" is null and \"recurring_message_audits\".\"after_definition_revision\" is null and \"recurring_message_audits\".\"before_effective_at\" is null and \"recurring_message_audits\".\"after_effective_at\" is null and \"recurring_message_audits\".\"current_occurrence_id\" is null and \"recurring_message_audits\".\"deferred_materialization\" is null and \"recurring_message_audits\".\"selected_next_occurrence_id\" is null and \"recurring_message_audits\".\"selected_next_local_date\" is null and \"recurring_message_audits\".\"selected_next_local_time\" is null and \"recurring_message_audits\".\"selected_next_scheduled_for\" is null and \"recurring_message_audits\".\"intended_local_date\" is null and \"recurring_message_audits\".\"intended_local_time\" is null and \"recurring_message_audits\".\"scheduled_for\" is null and \"recurring_message_audits\".\"claimed_series_revision\" is null and \"recurring_message_audits\".\"claimed_definition_revision\" is null and \"recurring_message_audits\".\"retry_count\" is null and \"recurring_message_audits\".\"result_message_id\" is null and \"recurring_message_audits\".\"failure_code\" is null and \"recurring_message_audits\".\"occurrence_skip_reason\" is null and \"recurring_message_audits\".\"next_occurrence_id\" is null and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null and \"recurring_message_audits\".\"next_scheduled_for\" is null and \"recurring_message_audits\".\"range_start_occurrence_id\" is null and \"recurring_message_audits\".\"skipped_from_local_date\" is null and \"recurring_message_audits\".\"skipped_from_local_time\" is null and \"recurring_message_audits\".\"skipped_through_local_date\" is null and \"recurring_message_audits\".\"skipped_through_local_time\" is null and \"recurring_message_audits\".\"audit_skip_reason\" is null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'RECURRENCE_EDITED'\n        and \"recurring_message_audits\".\"actor_type\" = 'USER' and \"recurring_message_audits\".\"outcome\" = 'SUCCESS'\n        and \"recurring_message_audits\".\"before_revision\" is not null and \"recurring_message_audits\".\"after_revision\" is not null\n        and \"recurring_message_audits\".\"before_frequency\" is not null and \"recurring_message_audits\".\"after_frequency\" is not null\n        and \"recurring_message_audits\".\"before_weekday_mask\" is not null and \"recurring_message_audits\".\"after_weekday_mask\" is not null\n        and \"recurring_message_audits\".\"before_local_time\" is not null and \"recurring_message_audits\".\"after_local_time\" is not null\n        and \"recurring_message_audits\".\"before_timezone\" is not null and \"recurring_message_audits\".\"after_timezone\" is not null\n        and \"recurring_message_audits\".\"before_definition_revision\" is not null\n        and \"recurring_message_audits\".\"after_definition_revision\" is not null\n        and \"recurring_message_audits\".\"before_effective_at\" is not null and \"recurring_message_audits\".\"after_effective_at\" is not null\n        and \"recurring_message_audits\".\"current_occurrence_id\" is not null\n        and \"recurring_message_audits\".\"deferred_materialization\" is not null and \"recurring_message_audits\".\"post_series_status\" = 'ACTIVE'\n        and ((\"recurring_message_audits\".\"deferred_materialization\" and \"recurring_message_audits\".\"selected_next_occurrence_id\" is null\n          and \"recurring_message_audits\".\"selected_next_local_date\" is null and \"recurring_message_audits\".\"selected_next_local_time\" is null\n          and \"recurring_message_audits\".\"selected_next_scheduled_for\" is null)\n          or (not \"recurring_message_audits\".\"deferred_materialization\" and \"recurring_message_audits\".\"selected_next_occurrence_id\" is not null\n          and \"recurring_message_audits\".\"selected_next_local_date\" is not null and \"recurring_message_audits\".\"selected_next_local_time\" is not null\n          and \"recurring_message_audits\".\"selected_next_scheduled_for\" is not null))\n        and \"recurring_message_audits\".\"occurrence_id\" is null and \"recurring_message_audits\".\"before_content\" is null and \"recurring_message_audits\".\"after_content\" is null and \"recurring_message_audits\".\"before_embed_title\" is null and \"recurring_message_audits\".\"after_embed_title\" is null and \"recurring_message_audits\".\"before_embed_description\" is null and \"recurring_message_audits\".\"after_embed_description\" is null and \"recurring_message_audits\".\"before_embed_color\" is null and \"recurring_message_audits\".\"after_embed_color\" is null and \"recurring_message_audits\".\"before_embed_image_url\" is null and \"recurring_message_audits\".\"after_embed_image_url\" is null and \"recurring_message_audits\".\"intended_local_date\" is null and \"recurring_message_audits\".\"intended_local_time\" is null and \"recurring_message_audits\".\"scheduled_for\" is null and \"recurring_message_audits\".\"claimed_series_revision\" is null and \"recurring_message_audits\".\"claimed_definition_revision\" is null and \"recurring_message_audits\".\"retry_count\" is null and \"recurring_message_audits\".\"result_message_id\" is null and \"recurring_message_audits\".\"failure_code\" is null and \"recurring_message_audits\".\"occurrence_skip_reason\" is null and \"recurring_message_audits\".\"next_occurrence_id\" is null and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null and \"recurring_message_audits\".\"next_scheduled_for\" is null and \"recurring_message_audits\".\"range_start_occurrence_id\" is null and \"recurring_message_audits\".\"skipped_from_local_date\" is null and \"recurring_message_audits\".\"skipped_from_local_time\" is null and \"recurring_message_audits\".\"skipped_through_local_date\" is null and \"recurring_message_audits\".\"skipped_through_local_time\" is null and \"recurring_message_audits\".\"audit_skip_reason\" is null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'SERIES_CANCELLED'\n        and \"recurring_message_audits\".\"actor_type\" = 'USER' and \"recurring_message_audits\".\"outcome\" = 'SUCCESS'\n        and \"recurring_message_audits\".\"before_revision\" is not null and \"recurring_message_audits\".\"after_revision\" is not null\n        and \"recurring_message_audits\".\"post_series_status\" = 'CANCELLED'\n        and ((\"recurring_message_audits\".\"occurrence_id\" is null and \"recurring_message_audits\".\"current_occurrence_id\" is null\n          and \"recurring_message_audits\".\"occurrence_skip_reason\" is null)\n          or (\"recurring_message_audits\".\"occurrence_id\" is not null\n          and \"recurring_message_audits\".\"current_occurrence_id\" = \"recurring_message_audits\".\"occurrence_id\"\n          and (\"recurring_message_audits\".\"occurrence_skip_reason\" is null\n            or \"recurring_message_audits\".\"occurrence_skip_reason\" = 'SERIES_CANCELLED')))\n        and \"recurring_message_audits\".\"before_content\" is null and \"recurring_message_audits\".\"after_content\" is null and \"recurring_message_audits\".\"before_embed_title\" is null and \"recurring_message_audits\".\"after_embed_title\" is null and \"recurring_message_audits\".\"before_embed_description\" is null and \"recurring_message_audits\".\"after_embed_description\" is null and \"recurring_message_audits\".\"before_embed_color\" is null and \"recurring_message_audits\".\"after_embed_color\" is null and \"recurring_message_audits\".\"before_embed_image_url\" is null and \"recurring_message_audits\".\"after_embed_image_url\" is null and \"recurring_message_audits\".\"before_frequency\" is null and \"recurring_message_audits\".\"after_frequency\" is null and \"recurring_message_audits\".\"before_weekday_mask\" is null and \"recurring_message_audits\".\"after_weekday_mask\" is null and \"recurring_message_audits\".\"before_local_time\" is null and \"recurring_message_audits\".\"after_local_time\" is null and \"recurring_message_audits\".\"before_timezone\" is null and \"recurring_message_audits\".\"after_timezone\" is null and \"recurring_message_audits\".\"before_definition_revision\" is null and \"recurring_message_audits\".\"after_definition_revision\" is null and \"recurring_message_audits\".\"before_effective_at\" is null and \"recurring_message_audits\".\"after_effective_at\" is null and \"recurring_message_audits\".\"deferred_materialization\" is null and \"recurring_message_audits\".\"selected_next_occurrence_id\" is null and \"recurring_message_audits\".\"selected_next_local_date\" is null and \"recurring_message_audits\".\"selected_next_local_time\" is null and \"recurring_message_audits\".\"selected_next_scheduled_for\" is null and \"recurring_message_audits\".\"intended_local_date\" is null and \"recurring_message_audits\".\"intended_local_time\" is null and \"recurring_message_audits\".\"scheduled_for\" is null and \"recurring_message_audits\".\"claimed_series_revision\" is null and \"recurring_message_audits\".\"claimed_definition_revision\" is null and \"recurring_message_audits\".\"retry_count\" is null and \"recurring_message_audits\".\"result_message_id\" is null and \"recurring_message_audits\".\"failure_code\" is null and \"recurring_message_audits\".\"next_occurrence_id\" is null and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null and \"recurring_message_audits\".\"next_scheduled_for\" is null and \"recurring_message_audits\".\"range_start_occurrence_id\" is null and \"recurring_message_audits\".\"skipped_from_local_date\" is null and \"recurring_message_audits\".\"skipped_from_local_time\" is null and \"recurring_message_audits\".\"skipped_through_local_date\" is null and \"recurring_message_audits\".\"skipped_through_local_time\" is null and \"recurring_message_audits\".\"audit_skip_reason\" is null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'OCCURRENCE_RETRY'\n        and \"recurring_message_audits\".\"actor_type\" = 'SYSTEM' and \"recurring_message_audits\".\"outcome\" = 'FAILURE'\n        and \"recurring_message_audits\".\"occurrence_id\" is not null and \"recurring_message_audits\".\"intended_local_date\" is not null\n        and \"recurring_message_audits\".\"intended_local_time\" is not null and \"recurring_message_audits\".\"scheduled_for\" is not null\n        and \"recurring_message_audits\".\"claimed_series_revision\" is not null\n        and \"recurring_message_audits\".\"claimed_definition_revision\" is not null\n        and \"recurring_message_audits\".\"retry_count\" between 1 and 3 and \"recurring_message_audits\".\"failure_code\" is not null\n        and \"recurring_message_audits\".\"before_revision\" is null and \"recurring_message_audits\".\"after_revision\" is null and \"recurring_message_audits\".\"before_content\" is null and \"recurring_message_audits\".\"after_content\" is null and \"recurring_message_audits\".\"before_embed_title\" is null and \"recurring_message_audits\".\"after_embed_title\" is null and \"recurring_message_audits\".\"before_embed_description\" is null and \"recurring_message_audits\".\"after_embed_description\" is null and \"recurring_message_audits\".\"before_embed_color\" is null and \"recurring_message_audits\".\"after_embed_color\" is null and \"recurring_message_audits\".\"before_embed_image_url\" is null and \"recurring_message_audits\".\"after_embed_image_url\" is null and \"recurring_message_audits\".\"before_frequency\" is null and \"recurring_message_audits\".\"after_frequency\" is null and \"recurring_message_audits\".\"before_weekday_mask\" is null and \"recurring_message_audits\".\"after_weekday_mask\" is null and \"recurring_message_audits\".\"before_local_time\" is null and \"recurring_message_audits\".\"after_local_time\" is null and \"recurring_message_audits\".\"before_timezone\" is null and \"recurring_message_audits\".\"after_timezone\" is null and \"recurring_message_audits\".\"before_definition_revision\" is null and \"recurring_message_audits\".\"after_definition_revision\" is null and \"recurring_message_audits\".\"before_effective_at\" is null and \"recurring_message_audits\".\"after_effective_at\" is null and \"recurring_message_audits\".\"current_occurrence_id\" is null and \"recurring_message_audits\".\"deferred_materialization\" is null and \"recurring_message_audits\".\"selected_next_occurrence_id\" is null and \"recurring_message_audits\".\"selected_next_local_date\" is null and \"recurring_message_audits\".\"selected_next_local_time\" is null and \"recurring_message_audits\".\"selected_next_scheduled_for\" is null and \"recurring_message_audits\".\"result_message_id\" is null and \"recurring_message_audits\".\"occurrence_skip_reason\" is null and \"recurring_message_audits\".\"next_occurrence_id\" is null and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null and \"recurring_message_audits\".\"next_scheduled_for\" is null and \"recurring_message_audits\".\"post_series_status\" is null and \"recurring_message_audits\".\"range_start_occurrence_id\" is null and \"recurring_message_audits\".\"skipped_from_local_date\" is null and \"recurring_message_audits\".\"skipped_from_local_time\" is null and \"recurring_message_audits\".\"skipped_through_local_date\" is null and \"recurring_message_audits\".\"skipped_through_local_time\" is null and \"recurring_message_audits\".\"audit_skip_reason\" is null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'OCCURRENCE_COMPLETED'\n        and \"recurring_message_audits\".\"actor_type\" = 'SYSTEM' and \"recurring_message_audits\".\"outcome\" = 'SUCCESS'\n        and \"recurring_message_audits\".\"occurrence_id\" is not null and \"recurring_message_audits\".\"intended_local_date\" is not null\n        and \"recurring_message_audits\".\"intended_local_time\" is not null and \"recurring_message_audits\".\"scheduled_for\" is not null\n        and \"recurring_message_audits\".\"claimed_series_revision\" is not null\n        and \"recurring_message_audits\".\"claimed_definition_revision\" is not null and \"recurring_message_audits\".\"retry_count\" is not null\n        and \"recurring_message_audits\".\"result_message_id\" is not null and \"recurring_message_audits\".\"post_series_status\" in ('ACTIVE', 'CANCELLED')\n        and ((\"recurring_message_audits\".\"post_series_status\" = 'ACTIVE' and \"recurring_message_audits\".\"next_occurrence_id\" is not null\n          and \"recurring_message_audits\".\"next_intended_local_date\" is not null and \"recurring_message_audits\".\"next_intended_local_time\" is not null\n          and \"recurring_message_audits\".\"next_scheduled_for\" is not null)\n          or (\"recurring_message_audits\".\"post_series_status\" = 'CANCELLED' and \"recurring_message_audits\".\"next_occurrence_id\" is null\n          and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null\n          and \"recurring_message_audits\".\"next_scheduled_for\" is null))\n        and \"recurring_message_audits\".\"before_revision\" is null and \"recurring_message_audits\".\"after_revision\" is null and \"recurring_message_audits\".\"before_content\" is null and \"recurring_message_audits\".\"after_content\" is null and \"recurring_message_audits\".\"before_embed_title\" is null and \"recurring_message_audits\".\"after_embed_title\" is null and \"recurring_message_audits\".\"before_embed_description\" is null and \"recurring_message_audits\".\"after_embed_description\" is null and \"recurring_message_audits\".\"before_embed_color\" is null and \"recurring_message_audits\".\"after_embed_color\" is null and \"recurring_message_audits\".\"before_embed_image_url\" is null and \"recurring_message_audits\".\"after_embed_image_url\" is null and \"recurring_message_audits\".\"before_frequency\" is null and \"recurring_message_audits\".\"after_frequency\" is null and \"recurring_message_audits\".\"before_weekday_mask\" is null and \"recurring_message_audits\".\"after_weekday_mask\" is null and \"recurring_message_audits\".\"before_local_time\" is null and \"recurring_message_audits\".\"after_local_time\" is null and \"recurring_message_audits\".\"before_timezone\" is null and \"recurring_message_audits\".\"after_timezone\" is null and \"recurring_message_audits\".\"before_definition_revision\" is null and \"recurring_message_audits\".\"after_definition_revision\" is null and \"recurring_message_audits\".\"before_effective_at\" is null and \"recurring_message_audits\".\"after_effective_at\" is null and \"recurring_message_audits\".\"current_occurrence_id\" is null and \"recurring_message_audits\".\"deferred_materialization\" is null and \"recurring_message_audits\".\"selected_next_occurrence_id\" is null and \"recurring_message_audits\".\"selected_next_local_date\" is null and \"recurring_message_audits\".\"selected_next_local_time\" is null and \"recurring_message_audits\".\"selected_next_scheduled_for\" is null and \"recurring_message_audits\".\"failure_code\" is null and \"recurring_message_audits\".\"occurrence_skip_reason\" is null and \"recurring_message_audits\".\"range_start_occurrence_id\" is null and \"recurring_message_audits\".\"skipped_from_local_date\" is null and \"recurring_message_audits\".\"skipped_from_local_time\" is null and \"recurring_message_audits\".\"skipped_through_local_date\" is null and \"recurring_message_audits\".\"skipped_through_local_time\" is null and \"recurring_message_audits\".\"audit_skip_reason\" is null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'OCCURRENCE_FAILED'\n        and \"recurring_message_audits\".\"actor_type\" = 'SYSTEM' and \"recurring_message_audits\".\"outcome\" = 'FAILURE'\n        and \"recurring_message_audits\".\"occurrence_id\" is not null and \"recurring_message_audits\".\"intended_local_date\" is not null\n        and \"recurring_message_audits\".\"intended_local_time\" is not null and \"recurring_message_audits\".\"scheduled_for\" is not null\n        and \"recurring_message_audits\".\"claimed_series_revision\" is not null\n        and \"recurring_message_audits\".\"claimed_definition_revision\" is not null and \"recurring_message_audits\".\"retry_count\" is not null\n        and \"recurring_message_audits\".\"failure_code\" is not null\n        and (\"recurring_message_audits\".\"result_message_id\" is null or \"recurring_message_audits\".\"failure_code\" in\n          ('RETURNED_MESSAGE_MISMATCH', 'FINALIZATION_FAILED_UNCOMPENSATED'))\n        and \"recurring_message_audits\".\"post_series_status\" in ('ACTIVE', 'CANCELLED')\n        and ((\"recurring_message_audits\".\"post_series_status\" = 'ACTIVE' and \"recurring_message_audits\".\"next_occurrence_id\" is not null\n          and \"recurring_message_audits\".\"next_intended_local_date\" is not null and \"recurring_message_audits\".\"next_intended_local_time\" is not null\n          and \"recurring_message_audits\".\"next_scheduled_for\" is not null)\n          or (\"recurring_message_audits\".\"post_series_status\" = 'CANCELLED' and \"recurring_message_audits\".\"next_occurrence_id\" is null\n          and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null\n          and \"recurring_message_audits\".\"next_scheduled_for\" is null))\n        and \"recurring_message_audits\".\"before_revision\" is null and \"recurring_message_audits\".\"after_revision\" is null and \"recurring_message_audits\".\"before_content\" is null and \"recurring_message_audits\".\"after_content\" is null and \"recurring_message_audits\".\"before_embed_title\" is null and \"recurring_message_audits\".\"after_embed_title\" is null and \"recurring_message_audits\".\"before_embed_description\" is null and \"recurring_message_audits\".\"after_embed_description\" is null and \"recurring_message_audits\".\"before_embed_color\" is null and \"recurring_message_audits\".\"after_embed_color\" is null and \"recurring_message_audits\".\"before_embed_image_url\" is null and \"recurring_message_audits\".\"after_embed_image_url\" is null and \"recurring_message_audits\".\"before_frequency\" is null and \"recurring_message_audits\".\"after_frequency\" is null and \"recurring_message_audits\".\"before_weekday_mask\" is null and \"recurring_message_audits\".\"after_weekday_mask\" is null and \"recurring_message_audits\".\"before_local_time\" is null and \"recurring_message_audits\".\"after_local_time\" is null and \"recurring_message_audits\".\"before_timezone\" is null and \"recurring_message_audits\".\"after_timezone\" is null and \"recurring_message_audits\".\"before_definition_revision\" is null and \"recurring_message_audits\".\"after_definition_revision\" is null and \"recurring_message_audits\".\"before_effective_at\" is null and \"recurring_message_audits\".\"after_effective_at\" is null and \"recurring_message_audits\".\"current_occurrence_id\" is null and \"recurring_message_audits\".\"deferred_materialization\" is null and \"recurring_message_audits\".\"selected_next_occurrence_id\" is null and \"recurring_message_audits\".\"selected_next_local_date\" is null and \"recurring_message_audits\".\"selected_next_local_time\" is null and \"recurring_message_audits\".\"selected_next_scheduled_for\" is null and \"recurring_message_audits\".\"occurrence_skip_reason\" is null and \"recurring_message_audits\".\"range_start_occurrence_id\" is null and \"recurring_message_audits\".\"skipped_from_local_date\" is null and \"recurring_message_audits\".\"skipped_from_local_time\" is null and \"recurring_message_audits\".\"skipped_through_local_date\" is null and \"recurring_message_audits\".\"skipped_through_local_time\" is null and \"recurring_message_audits\".\"audit_skip_reason\" is null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'DST_GAP_SKIPPED' and \"recurring_message_audits\".\"outcome\" = 'SKIPPED'\n        and \"recurring_message_audits\".\"occurrence_id\" is null and \"recurring_message_audits\".\"intended_local_date\" is not null\n        and \"recurring_message_audits\".\"intended_local_time\" is not null and \"recurring_message_audits\".\"after_timezone\" is not null\n        and \"recurring_message_audits\".\"after_definition_revision\" is not null and \"recurring_message_audits\".\"audit_skip_reason\" = 'DST_GAP'\n        and \"recurring_message_audits\".\"before_revision\" is null and \"recurring_message_audits\".\"after_revision\" is null and \"recurring_message_audits\".\"before_content\" is null and \"recurring_message_audits\".\"after_content\" is null and \"recurring_message_audits\".\"before_embed_title\" is null and \"recurring_message_audits\".\"after_embed_title\" is null and \"recurring_message_audits\".\"before_embed_description\" is null and \"recurring_message_audits\".\"after_embed_description\" is null and \"recurring_message_audits\".\"before_embed_color\" is null and \"recurring_message_audits\".\"after_embed_color\" is null and \"recurring_message_audits\".\"before_embed_image_url\" is null and \"recurring_message_audits\".\"after_embed_image_url\" is null and \"recurring_message_audits\".\"before_frequency\" is null and \"recurring_message_audits\".\"after_frequency\" is null and \"recurring_message_audits\".\"before_weekday_mask\" is null and \"recurring_message_audits\".\"after_weekday_mask\" is null and \"recurring_message_audits\".\"before_local_time\" is null and \"recurring_message_audits\".\"after_local_time\" is null and \"recurring_message_audits\".\"before_timezone\" is null and \"recurring_message_audits\".\"before_definition_revision\" is null and \"recurring_message_audits\".\"before_effective_at\" is null and \"recurring_message_audits\".\"after_effective_at\" is null and \"recurring_message_audits\".\"current_occurrence_id\" is null and \"recurring_message_audits\".\"deferred_materialization\" is null and \"recurring_message_audits\".\"selected_next_occurrence_id\" is null and \"recurring_message_audits\".\"selected_next_local_date\" is null and \"recurring_message_audits\".\"selected_next_local_time\" is null and \"recurring_message_audits\".\"selected_next_scheduled_for\" is null and \"recurring_message_audits\".\"scheduled_for\" is null and \"recurring_message_audits\".\"claimed_series_revision\" is null and \"recurring_message_audits\".\"claimed_definition_revision\" is null and \"recurring_message_audits\".\"retry_count\" is null and \"recurring_message_audits\".\"result_message_id\" is null and \"recurring_message_audits\".\"failure_code\" is null and \"recurring_message_audits\".\"occurrence_skip_reason\" is null and \"recurring_message_audits\".\"next_occurrence_id\" is null and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null and \"recurring_message_audits\".\"next_scheduled_for\" is null and \"recurring_message_audits\".\"post_series_status\" is null and \"recurring_message_audits\".\"range_start_occurrence_id\" is null and \"recurring_message_audits\".\"skipped_from_local_date\" is null and \"recurring_message_audits\".\"skipped_from_local_time\" is null and \"recurring_message_audits\".\"skipped_through_local_date\" is null and \"recurring_message_audits\".\"skipped_through_local_time\" is null\n      ) or (\n        \"recurring_message_audits\".\"event\" = 'MISSED_RANGE_SKIPPED'\n        and \"recurring_message_audits\".\"actor_type\" = 'SYSTEM' and \"recurring_message_audits\".\"outcome\" = 'SKIPPED'\n        and \"recurring_message_audits\".\"after_timezone\" is not null and \"recurring_message_audits\".\"after_definition_revision\" is not null\n        and \"recurring_message_audits\".\"skipped_from_local_date\" is not null and \"recurring_message_audits\".\"skipped_from_local_time\" is not null\n        and \"recurring_message_audits\".\"skipped_through_local_date\" is not null\n        and \"recurring_message_audits\".\"skipped_through_local_time\" is not null\n        and \"recurring_message_audits\".\"selected_next_local_date\" is not null and \"recurring_message_audits\".\"selected_next_local_time\" is not null\n        and \"recurring_message_audits\".\"selected_next_scheduled_for\" is not null\n        and \"recurring_message_audits\".\"audit_skip_reason\" = 'MISSED_GRACE_EXCEEDED'\n        and \"recurring_message_audits\".\"occurrence_id\" is null and \"recurring_message_audits\".\"before_revision\" is null and \"recurring_message_audits\".\"after_revision\" is null and \"recurring_message_audits\".\"before_content\" is null and \"recurring_message_audits\".\"after_content\" is null and \"recurring_message_audits\".\"before_embed_title\" is null and \"recurring_message_audits\".\"after_embed_title\" is null and \"recurring_message_audits\".\"before_embed_description\" is null and \"recurring_message_audits\".\"after_embed_description\" is null and \"recurring_message_audits\".\"before_embed_color\" is null and \"recurring_message_audits\".\"after_embed_color\" is null and \"recurring_message_audits\".\"before_embed_image_url\" is null and \"recurring_message_audits\".\"after_embed_image_url\" is null and \"recurring_message_audits\".\"before_frequency\" is null and \"recurring_message_audits\".\"after_frequency\" is null and \"recurring_message_audits\".\"before_weekday_mask\" is null and \"recurring_message_audits\".\"after_weekday_mask\" is null and \"recurring_message_audits\".\"before_local_time\" is null and \"recurring_message_audits\".\"after_local_time\" is null and \"recurring_message_audits\".\"before_timezone\" is null and \"recurring_message_audits\".\"before_definition_revision\" is null and \"recurring_message_audits\".\"before_effective_at\" is null and \"recurring_message_audits\".\"after_effective_at\" is null and \"recurring_message_audits\".\"current_occurrence_id\" is null and \"recurring_message_audits\".\"deferred_materialization\" is null and \"recurring_message_audits\".\"selected_next_occurrence_id\" is null and \"recurring_message_audits\".\"intended_local_date\" is null and \"recurring_message_audits\".\"intended_local_time\" is null and \"recurring_message_audits\".\"scheduled_for\" is null and \"recurring_message_audits\".\"claimed_series_revision\" is null and \"recurring_message_audits\".\"claimed_definition_revision\" is null and \"recurring_message_audits\".\"retry_count\" is null and \"recurring_message_audits\".\"result_message_id\" is null and \"recurring_message_audits\".\"failure_code\" is null and \"recurring_message_audits\".\"occurrence_skip_reason\" is null and \"recurring_message_audits\".\"next_occurrence_id\" is null and \"recurring_message_audits\".\"next_intended_local_date\" is null and \"recurring_message_audits\".\"next_intended_local_time\" is null and \"recurring_message_audits\".\"next_scheduled_for\" is null and \"recurring_message_audits\".\"post_series_status\" is null\n      ), false)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.recurring_message_occurrences": {
+      "name": "recurring_message_occurrences",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "scheduled_action_id": {
+          "name": "scheduled_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "materialized_definition_revision": {
+          "name": "materialized_definition_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "intended_local_date": {
+          "name": "intended_local_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "intended_local_time": {
+          "name": "intended_local_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scheduled_for": {
+          "name": "scheduled_for",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "retry_count": {
+          "name": "retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "first_attempted_at": {
+          "name": "first_attempted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_at": {
+          "name": "claimed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_series_revision": {
+          "name": "claimed_series_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claimed_definition_revision": {
+          "name": "claimed_definition_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claim_content": {
+          "name": "claim_content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claim_embed_title": {
+          "name": "claim_embed_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claim_embed_description": {
+          "name": "claim_embed_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claim_embed_color": {
+          "name": "claim_embed_color",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "claim_embed_image_url": {
+          "name": "claim_embed_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result_message_id": {
+          "name": "result_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "skip_reason": {
+          "name": "skip_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "terminal_at": {
+          "name": "terminal_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "recurring_message_occurrences_nonterminal_unique": {
+          "name": "recurring_message_occurrences_nonterminal_unique",
+          "columns": [
+            {
+              "expression": "scheduled_action_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"recurring_message_occurrences\".\"status\" in ('PENDING', 'EXECUTING', 'RETRY_PENDING')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "recurring_message_occurrences_materialization_unique": {
+          "name": "recurring_message_occurrences_materialization_unique",
+          "columns": [
+            {
+              "expression": "scheduled_action_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "materialized_definition_revision",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "intended_local_date",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "intended_local_time",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "recurring_message_occurrences_series_status_idx": {
+          "name": "recurring_message_occurrences_series_status_idx",
+          "columns": [
+            {
+              "expression": "scheduled_action_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "recurring_message_occurrences_series_fk": {
+          "name": "recurring_message_occurrences_series_fk",
+          "tableFrom": "recurring_message_occurrences",
+          "tableTo": "recurring_message_schedules",
+          "columnsFrom": [
+            "scheduled_action_id"
+          ],
+          "columnsTo": [
+            "scheduled_action_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "recurring_message_occurrences_status_check": {
+          "name": "recurring_message_occurrences_status_check",
+          "value": "\"recurring_message_occurrences\".\"status\" in ('PENDING', 'EXECUTING', 'RETRY_PENDING', 'COMPLETED', 'FAILED', 'SKIPPED')"
+        },
+        "recurring_message_occurrences_retry_count_check": {
+          "name": "recurring_message_occurrences_retry_count_check",
+          "value": "\"recurring_message_occurrences\".\"retry_count\" between 0 and 3"
+        },
+        "recurring_message_occurrences_local_time_check": {
+          "name": "recurring_message_occurrences_local_time_check",
+          "value": "extract(second from \"recurring_message_occurrences\".\"intended_local_time\") = 0"
+        },
+        "recurring_message_occurrences_failure_code_check": {
+          "name": "recurring_message_occurrences_failure_code_check",
+          "value": "\"recurring_message_occurrences\".\"failure_code\" is null or \"recurring_message_occurrences\".\"failure_code\" in (\n        'UNSUPPORTED_TARGET', 'TARGET_GUILD_MISMATCH', 'ARCHIVED_THREAD',\n        'BOT_PERMISSION_MISSING', 'CURRENT_STATE_CHECK_REJECTED', 'CURRENT_STATE_CHECK_FAILED',\n        'PERSISTED_PAYLOAD_INVALID', 'SEND_REJECTED', 'SEND_UNCONFIRMED',\n        'RETURNED_MESSAGE_MISMATCH', 'FINALIZATION_FAILED_COMPENSATED',\n        'FINALIZATION_FAILED_UNCOMPENSATED', 'EXECUTION_INTERRUPTED_UNCONFIRMED',\n        'PRE_SEND_RETRY_WINDOW_EXCEEDED')"
+        },
+        "recurring_message_occurrences_skip_reason_check": {
+          "name": "recurring_message_occurrences_skip_reason_check",
+          "value": "\"recurring_message_occurrences\".\"skip_reason\" is null or \"recurring_message_occurrences\".\"skip_reason\" in\n        ('RECURRENCE_EDITED', 'SERIES_CANCELLED', 'MISSED_GRACE_EXCEEDED')"
+        },
+        "recurring_message_occurrences_claim_payload_check": {
+          "name": "recurring_message_occurrences_claim_payload_check",
+          "value": "\"recurring_message_occurrences\".\"claim_content\" is null or (\n        char_length(\"recurring_message_occurrences\".\"claim_content\") between 0 and 2000\n        and (\"recurring_message_occurrences\".\"claim_embed_title\" is null or char_length(\"recurring_message_occurrences\".\"claim_embed_title\") between 1 and 256)\n        and (\"recurring_message_occurrences\".\"claim_embed_description\" is null or char_length(\"recurring_message_occurrences\".\"claim_embed_description\") between 1 and 4000)\n        and (\"recurring_message_occurrences\".\"claim_embed_color\" is null or \"recurring_message_occurrences\".\"claim_embed_color\" between 0 and 16777215)\n        and (\"recurring_message_occurrences\".\"claim_embed_image_url\" is null or char_length(\"recurring_message_occurrences\".\"claim_embed_image_url\") between 1 and 2048)\n        and (\"recurring_message_occurrences\".\"claim_embed_color\" is null or \"recurring_message_occurrences\".\"claim_embed_title\" is not null\n          or \"recurring_message_occurrences\".\"claim_embed_description\" is not null or \"recurring_message_occurrences\".\"claim_embed_image_url\" is not null)\n        and (char_length(\"recurring_message_occurrences\".\"claim_content\") > 0 or \"recurring_message_occurrences\".\"claim_embed_title\" is not null\n          or \"recurring_message_occurrences\".\"claim_embed_description\" is not null or \"recurring_message_occurrences\".\"claim_embed_image_url\" is not null))"
+        },
+        "recurring_message_occurrences_claim_revision_check": {
+          "name": "recurring_message_occurrences_claim_revision_check",
+          "value": "\"recurring_message_occurrences\".\"claimed_definition_revision\" is null\n        or \"recurring_message_occurrences\".\"claimed_definition_revision\" = \"recurring_message_occurrences\".\"materialized_definition_revision\""
+        },
+        "recurring_message_occurrences_lifecycle_shape_check": {
+          "name": "recurring_message_occurrences_lifecycle_shape_check",
+          "value": "(\n        \"recurring_message_occurrences\".\"status\" = 'PENDING' and \"recurring_message_occurrences\".\"retry_count\" = 0\n        and \"recurring_message_occurrences\".\"first_attempted_at\" is null and \"recurring_message_occurrences\".\"claimed_at\" is null\n        and \"recurring_message_occurrences\".\"claimed_series_revision\" is null and \"recurring_message_occurrences\".\"claimed_definition_revision\" is null\n        and \"recurring_message_occurrences\".\"claim_content\" is null and \"recurring_message_occurrences\".\"claim_embed_title\" is null\n        and \"recurring_message_occurrences\".\"claim_embed_description\" is null and \"recurring_message_occurrences\".\"claim_embed_color\" is null\n        and \"recurring_message_occurrences\".\"claim_embed_image_url\" is null and \"recurring_message_occurrences\".\"result_message_id\" is null\n        and \"recurring_message_occurrences\".\"failure_code\" is null and \"recurring_message_occurrences\".\"skip_reason\" is null and \"recurring_message_occurrences\".\"terminal_at\" is null\n      ) or (\n        \"recurring_message_occurrences\".\"status\" in ('EXECUTING', 'RETRY_PENDING', 'COMPLETED', 'FAILED')\n        and \"recurring_message_occurrences\".\"first_attempted_at\" is not null and \"recurring_message_occurrences\".\"claimed_at\" is not null\n        and \"recurring_message_occurrences\".\"claimed_series_revision\" is not null and \"recurring_message_occurrences\".\"claimed_definition_revision\" is not null\n        and \"recurring_message_occurrences\".\"claim_content\" is not null\n        and (\"recurring_message_occurrences\".\"status\" <> 'EXECUTING' or (\"recurring_message_occurrences\".\"result_message_id\" is null\n          and \"recurring_message_occurrences\".\"failure_code\" is null and \"recurring_message_occurrences\".\"skip_reason\" is null and \"recurring_message_occurrences\".\"terminal_at\" is null))\n        and (\"recurring_message_occurrences\".\"status\" <> 'RETRY_PENDING' or (\"recurring_message_occurrences\".\"retry_count\" between 1 and 3\n          and \"recurring_message_occurrences\".\"result_message_id\" is null and \"recurring_message_occurrences\".\"failure_code\" is null\n          and \"recurring_message_occurrences\".\"skip_reason\" is null and \"recurring_message_occurrences\".\"terminal_at\" is null))\n        and (\"recurring_message_occurrences\".\"status\" <> 'COMPLETED' or (\"recurring_message_occurrences\".\"result_message_id\" is not null\n          and \"recurring_message_occurrences\".\"failure_code\" is null and \"recurring_message_occurrences\".\"skip_reason\" is null and \"recurring_message_occurrences\".\"terminal_at\" is not null))\n        and (\"recurring_message_occurrences\".\"status\" <> 'FAILED' or (\"recurring_message_occurrences\".\"failure_code\" is not null\n          and \"recurring_message_occurrences\".\"skip_reason\" is null and \"recurring_message_occurrences\".\"terminal_at\" is not null\n          and (\"recurring_message_occurrences\".\"result_message_id\" is null or \"recurring_message_occurrences\".\"failure_code\" in\n            ('RETURNED_MESSAGE_MISMATCH', 'FINALIZATION_FAILED_UNCOMPENSATED'))))\n      ) or (\n        \"recurring_message_occurrences\".\"status\" = 'SKIPPED' and \"recurring_message_occurrences\".\"failure_code\" is null\n        and \"recurring_message_occurrences\".\"result_message_id\" is null and \"recurring_message_occurrences\".\"skip_reason\" is not null\n        and \"recurring_message_occurrences\".\"terminal_at\" is not null\n        and ((\n          \"recurring_message_occurrences\".\"first_attempted_at\" is null and \"recurring_message_occurrences\".\"claimed_at\" is null\n          and \"recurring_message_occurrences\".\"claimed_series_revision\" is null and \"recurring_message_occurrences\".\"claimed_definition_revision\" is null\n          and \"recurring_message_occurrences\".\"claim_content\" is null and \"recurring_message_occurrences\".\"claim_embed_title\" is null\n          and \"recurring_message_occurrences\".\"claim_embed_description\" is null and \"recurring_message_occurrences\".\"claim_embed_color\" is null\n          and \"recurring_message_occurrences\".\"claim_embed_image_url\" is null and \"recurring_message_occurrences\".\"retry_count\" = 0\n        ) or (\n          \"recurring_message_occurrences\".\"first_attempted_at\" is not null and \"recurring_message_occurrences\".\"claimed_at\" is not null\n          and \"recurring_message_occurrences\".\"claimed_series_revision\" is not null and \"recurring_message_occurrences\".\"claimed_definition_revision\" is not null\n          and \"recurring_message_occurrences\".\"claim_content\" is not null and \"recurring_message_occurrences\".\"retry_count\" between 1 and 3\n          and \"recurring_message_occurrences\".\"skip_reason\" = 'SERIES_CANCELLED'\n        ))\n      )"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.recurring_message_schedules": {
+      "name": "recurring_message_schedules",
+      "schema": "",
+      "columns": {
+        "scheduled_action_id": {
+          "name": "scheduled_action_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "timezone": {
+          "name": "timezone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "frequency": {
+          "name": "frequency",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "weekday_mask": {
+          "name": "weekday_mask",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "local_time": {
+          "name": "local_time",
+          "type": "time",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "definition_revision": {
+          "name": "definition_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "effective_at": {
+          "name": "effective_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "recurring_message_schedules_scheduled_action_id_scheduled_actions_id_fk": {
+          "name": "recurring_message_schedules_scheduled_action_id_scheduled_actions_id_fk",
+          "tableFrom": "recurring_message_schedules",
+          "tableTo": "scheduled_actions",
+          "columnsFrom": [
+            "scheduled_action_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "recurring_message_schedules_recurrence_check": {
+          "name": "recurring_message_schedules_recurrence_check",
+          "value": "(\"recurring_message_schedules\".\"frequency\" = 'DAILY' and \"recurring_message_schedules\".\"weekday_mask\" = 127)\n        or (\"recurring_message_schedules\".\"frequency\" = 'WEEKLY' and \"recurring_message_schedules\".\"weekday_mask\" between 1 and 127)"
+        },
+        "recurring_message_schedules_timezone_check": {
+          "name": "recurring_message_schedules_timezone_check",
+          "value": "char_length(\"recurring_message_schedules\".\"timezone\") > 0 and left(\"recurring_message_schedules\".\"timezone\", 1) not in ('+', '-')"
+        },
+        "recurring_message_schedules_definition_revision_check": {
+          "name": "recurring_message_schedules_definition_revision_check",
+          "value": "\"recurring_message_schedules\".\"definition_revision\" >= 0"
+        },
+        "recurring_message_schedules_local_time_check": {
+          "name": "recurring_message_schedules_local_time_check",
+          "value": "extract(second from \"recurring_message_schedules\".\"local_time\") = 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.scheduled_actions": {
+      "name": "scheduled_actions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action_type": {
+          "name": "action_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "target_id": {
+          "name": "target_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "execute_at": {
+          "name": "execute_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "scheduled_actions_active_close_unique": {
+          "name": "scheduled_actions_active_close_unique",
+          "columns": [
+            {
+              "expression": "guild_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "target_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"scheduled_actions\".\"action_type\" = 'CLOSE_THREAD' and \"scheduled_actions\".\"status\" in ('ACTIVE', 'EXECUTING')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "scheduled_actions_active_execute_at_idx": {
+          "name": "scheduled_actions_active_execute_at_idx",
+          "columns": [
+            {
+              "expression": "execute_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"scheduled_actions\".\"status\" = 'ACTIVE'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "scheduled_actions_active_close_execute_at_id_idx": {
+          "name": "scheduled_actions_active_close_execute_at_id_idx",
+          "columns": [
+            {
+              "expression": "execute_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"scheduled_actions\".\"action_type\" = 'CLOSE_THREAD' and \"scheduled_actions\".\"status\" = 'ACTIVE'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "scheduled_actions_active_send_execute_at_id_idx": {
+          "name": "scheduled_actions_active_send_execute_at_id_idx",
+          "columns": [
+            {
+              "expression": "execute_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"scheduled_actions\".\"action_type\" = 'SEND_MESSAGE' and \"scheduled_actions\".\"status\" = 'ACTIVE'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "scheduled_actions_action_type_check": {
+          "name": "scheduled_actions_action_type_check",
+          "value": "\"scheduled_actions\".\"action_type\" in ('CLOSE_THREAD', 'SEND_MESSAGE')"
+        },
+        "scheduled_actions_status_check": {
+          "name": "scheduled_actions_status_check",
+          "value": "\"scheduled_actions\".\"status\" in ('ACTIVE', 'EXECUTING', 'CANCELLED', 'COMPLETED', 'FAILED')"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.scheduled_message_audits": {
+      "name": "scheduled_message_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "scheduled_action_id": {
+          "name": "scheduled_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel_id": {
+          "name": "channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event": {
+          "name": "event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execute_at": {
+          "name": "execute_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "embed_title": {
+          "name": "embed_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embed_description": {
+          "name": "embed_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embed_color": {
+          "name": "embed_color",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embed_image_url": {
+          "name": "embed_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result_message_id": {
+          "name": "result_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "scheduled_message_audits_action_id_idx": {
+          "name": "scheduled_message_audits_action_id_idx",
+          "columns": [
+            {
+              "expression": "scheduled_action_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "scheduled_message_audits_event_check": {
+          "name": "scheduled_message_audits_event_check",
+          "value": "\"scheduled_message_audits\".\"event\" in ('CREATED', 'CANCELLED', 'EDITED', 'RESCHEDULED', 'EXECUTION_COMPLETED', 'EXECUTION_RETRY', 'EXECUTION_FAILED')"
+        },
+        "scheduled_message_audits_actor_type_check": {
+          "name": "scheduled_message_audits_actor_type_check",
+          "value": "\"scheduled_message_audits\".\"actor_type\" in ('USER', 'SYSTEM')"
+        },
+        "scheduled_message_audits_outcome_check": {
+          "name": "scheduled_message_audits_outcome_check",
+          "value": "\"scheduled_message_audits\".\"outcome\" in ('SUCCESS', 'FAILURE')"
+        },
+        "scheduled_message_audits_shape_check": {
+          "name": "scheduled_message_audits_shape_check",
+          "value": "(\n        \"scheduled_message_audits\".\"event\" = 'CREATED'\n        and \"scheduled_message_audits\".\"actor_type\" = 'USER' and \"scheduled_message_audits\".\"actor_id\" is not null\n        and \"scheduled_message_audits\".\"outcome\" = 'SUCCESS' and \"scheduled_message_audits\".\"failure_code\" is null\n        and \"scheduled_message_audits\".\"result_message_id\" is null\n      ) or (\n        \"scheduled_message_audits\".\"event\" = 'CANCELLED'\n        and \"scheduled_message_audits\".\"actor_type\" = 'USER' and \"scheduled_message_audits\".\"actor_id\" is not null\n        and \"scheduled_message_audits\".\"outcome\" = 'SUCCESS' and \"scheduled_message_audits\".\"failure_code\" is null\n        and \"scheduled_message_audits\".\"result_message_id\" is null\n      ) or (\n        \"scheduled_message_audits\".\"event\" in ('EDITED', 'RESCHEDULED')\n        and \"scheduled_message_audits\".\"actor_type\" = 'USER' and \"scheduled_message_audits\".\"actor_id\" is not null\n        and \"scheduled_message_audits\".\"outcome\" = 'SUCCESS' and \"scheduled_message_audits\".\"failure_code\" is null\n        and \"scheduled_message_audits\".\"result_message_id\" is null\n      ) or (\n        \"scheduled_message_audits\".\"event\" = 'EXECUTION_COMPLETED'\n        and \"scheduled_message_audits\".\"actor_type\" = 'SYSTEM' and \"scheduled_message_audits\".\"actor_id\" is null\n        and \"scheduled_message_audits\".\"outcome\" = 'SUCCESS' and \"scheduled_message_audits\".\"failure_code\" is null\n        and \"scheduled_message_audits\".\"result_message_id\" is not null\n      ) or (\n        \"scheduled_message_audits\".\"event\" = 'EXECUTION_RETRY'\n        and \"scheduled_message_audits\".\"actor_type\" = 'SYSTEM' and \"scheduled_message_audits\".\"actor_id\" is null\n        and \"scheduled_message_audits\".\"outcome\" = 'FAILURE' and \"scheduled_message_audits\".\"failure_code\" is not null\n        and \"scheduled_message_audits\".\"result_message_id\" is null\n      ) or (\n        \"scheduled_message_audits\".\"event\" = 'EXECUTION_FAILED'\n        and \"scheduled_message_audits\".\"actor_type\" = 'SYSTEM' and \"scheduled_message_audits\".\"actor_id\" is null\n        and \"scheduled_message_audits\".\"outcome\" = 'FAILURE' and \"scheduled_message_audits\".\"failure_code\" is not null\n        and (\n          \"scheduled_message_audits\".\"result_message_id\" is null\n          or \"scheduled_message_audits\".\"failure_code\" in ('RETURNED_MESSAGE_MISMATCH', 'FINALIZATION_FAILED_UNCOMPENSATED')\n        )\n      )"
+        },
+        "scheduled_message_audits_payload_check": {
+          "name": "scheduled_message_audits_payload_check",
+          "value": "char_length(\"scheduled_message_audits\".\"content\") between 0 and 2000\n        and (\"scheduled_message_audits\".\"embed_title\" is null or char_length(\"scheduled_message_audits\".\"embed_title\") between 1 and 256)\n        and (\"scheduled_message_audits\".\"embed_description\" is null or char_length(\"scheduled_message_audits\".\"embed_description\") between 1 and 4000)\n        and (\"scheduled_message_audits\".\"embed_color\" is null or \"scheduled_message_audits\".\"embed_color\" between 0 and 16777215)\n        and (\"scheduled_message_audits\".\"embed_image_url\" is null or char_length(\"scheduled_message_audits\".\"embed_image_url\") between 1 and 2048)\n        and (\"scheduled_message_audits\".\"embed_color\" is null or \"scheduled_message_audits\".\"embed_title\" is not null or \"scheduled_message_audits\".\"embed_description\" is not null or \"scheduled_message_audits\".\"embed_image_url\" is not null)\n        and (char_length(\"scheduled_message_audits\".\"content\") > 0 or \"scheduled_message_audits\".\"embed_title\" is not null or \"scheduled_message_audits\".\"embed_description\" is not null or \"scheduled_message_audits\".\"embed_image_url\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.scheduled_message_states": {
+      "name": "scheduled_message_states",
+      "schema": "",
+      "columns": {
+        "scheduled_action_id": {
+          "name": "scheduled_action_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "creator_user_id": {
+          "name": "creator_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "retry_count": {
+          "name": "retry_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "content": {
+          "name": "content",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "embed_title": {
+          "name": "embed_title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embed_description": {
+          "name": "embed_description",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embed_color": {
+          "name": "embed_color",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "embed_image_url": {
+          "name": "embed_image_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "result_message_id": {
+          "name": "result_message_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "scheduled_message_states_scheduled_action_id_scheduled_actions_id_fk": {
+          "name": "scheduled_message_states_scheduled_action_id_scheduled_actions_id_fk",
+          "tableFrom": "scheduled_message_states",
+          "tableTo": "scheduled_actions",
+          "columnsFrom": [
+            "scheduled_action_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "scheduled_message_states_retry_count_check": {
+          "name": "scheduled_message_states_retry_count_check",
+          "value": "\"scheduled_message_states\".\"retry_count\" between 0 and 3"
+        },
+        "scheduled_message_states_revision_check": {
+          "name": "scheduled_message_states_revision_check",
+          "value": "\"scheduled_message_states\".\"revision\" >= 0"
+        },
+        "scheduled_message_states_payload_check": {
+          "name": "scheduled_message_states_payload_check",
+          "value": "char_length(\"scheduled_message_states\".\"content\") between 0 and 2000\n        and (\"scheduled_message_states\".\"embed_title\" is null or char_length(\"scheduled_message_states\".\"embed_title\") between 1 and 256)\n        and (\"scheduled_message_states\".\"embed_description\" is null or char_length(\"scheduled_message_states\".\"embed_description\") between 1 and 4000)\n        and (\"scheduled_message_states\".\"embed_color\" is null or \"scheduled_message_states\".\"embed_color\" between 0 and 16777215)\n        and (\"scheduled_message_states\".\"embed_image_url\" is null or char_length(\"scheduled_message_states\".\"embed_image_url\") between 1 and 2048)\n        and (\"scheduled_message_states\".\"embed_color\" is null or \"scheduled_message_states\".\"embed_title\" is not null or \"scheduled_message_states\".\"embed_description\" is not null or \"scheduled_message_states\".\"embed_image_url\" is not null)\n        and (char_length(\"scheduled_message_states\".\"content\") > 0 or \"scheduled_message_states\".\"embed_title\" is not null or \"scheduled_message_states\".\"embed_description\" is not null or \"scheduled_message_states\".\"embed_image_url\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.scheduled_thread_close_audits": {
+      "name": "scheduled_thread_close_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "scheduled_action_id": {
+          "name": "scheduled_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event": {
+          "name": "event",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "previous_scheduled_action_id": {
+          "name": "previous_scheduled_action_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "previous_execute_at": {
+          "name": "previous_execute_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "execute_at": {
+          "name": "execute_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "scheduled_thread_close_audits_action_id_idx": {
+          "name": "scheduled_thread_close_audits_action_id_idx",
+          "columns": [
+            {
+              "expression": "scheduled_action_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "scheduled_thread_close_audits_guild_thread_created_at_idx": {
+          "name": "scheduled_thread_close_audits_guild_thread_created_at_idx",
+          "columns": [
+            {
+              "expression": "guild_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "thread_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "scheduled_thread_close_audits_event_check": {
+          "name": "scheduled_thread_close_audits_event_check",
+          "value": "\"scheduled_thread_close_audits\".\"event\" in ('CREATED', 'REPLACED', 'CANCELLED', 'EXECUTION_COMPLETED', 'EXECUTION_RETRY', 'EXECUTION_FAILED')"
+        },
+        "scheduled_thread_close_audits_actor_type_check": {
+          "name": "scheduled_thread_close_audits_actor_type_check",
+          "value": "\"scheduled_thread_close_audits\".\"actor_type\" in ('USER', 'SYSTEM')"
+        },
+        "scheduled_thread_close_audits_outcome_check": {
+          "name": "scheduled_thread_close_audits_outcome_check",
+          "value": "\"scheduled_thread_close_audits\".\"outcome\" in ('SUCCESS', 'FAILURE')"
+        },
+        "scheduled_thread_close_audits_actor_check": {
+          "name": "scheduled_thread_close_audits_actor_check",
+          "value": "(\"scheduled_thread_close_audits\".\"actor_type\" = 'USER' and \"scheduled_thread_close_audits\".\"actor_id\" is not null) or (\"scheduled_thread_close_audits\".\"actor_type\" = 'SYSTEM' and \"scheduled_thread_close_audits\".\"actor_id\" is null)"
+        },
+        "scheduled_thread_close_audits_failure_check": {
+          "name": "scheduled_thread_close_audits_failure_check",
+          "value": "(\"scheduled_thread_close_audits\".\"outcome\" = 'SUCCESS' and \"scheduled_thread_close_audits\".\"failure_code\" is null) or (\"scheduled_thread_close_audits\".\"outcome\" = 'FAILURE' and \"scheduled_thread_close_audits\".\"failure_code\" is not null)"
+        },
+        "scheduled_thread_close_audits_replacement_check": {
+          "name": "scheduled_thread_close_audits_replacement_check",
+          "value": "(\"scheduled_thread_close_audits\".\"event\" = 'REPLACED' and \"scheduled_thread_close_audits\".\"previous_scheduled_action_id\" is not null and \"scheduled_thread_close_audits\".\"previous_execute_at\" is not null) or (\"scheduled_thread_close_audits\".\"event\" <> 'REPLACED' and \"scheduled_thread_close_audits\".\"previous_scheduled_action_id\" is null and \"scheduled_thread_close_audits\".\"previous_execute_at\" is null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.managed_threads": {
+      "name": "managed_threads",
+      "schema": "",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "applied_prefix": {
+          "name": "applied_prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "lifecycle_state": {
+          "name": "lifecycle_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "managed_threads_guild_id_thread_id_pk": {
+          "name": "managed_threads_guild_id_thread_id_pk",
+          "columns": [
+            "guild_id",
+            "thread_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "managed_threads_lifecycle_state_check": {
+          "name": "managed_threads_lifecycle_state_check",
+          "value": "\"managed_threads\".\"lifecycle_state\" in ('OPEN', 'CLOSED')"
+        },
+        "managed_threads_applied_prefix_check": {
+          "name": "managed_threads_applied_prefix_check",
+          "value": "length(\"managed_threads\".\"applied_prefix\") > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.thread_audits": {
+      "name": "thread_audits",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "action": {
+          "name": "action",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_type": {
+          "name": "actor_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_id": {
+          "name": "actor_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "failure_code": {
+          "name": "failure_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "thread_audits_action_check": {
+          "name": "thread_audits_action_check",
+          "value": "\"thread_audits\".\"action\" in ('CLOSE', 'OPEN', 'AUTO_OPEN', 'AUTO_CLOSE')"
+        },
+        "thread_audits_actor_type_check": {
+          "name": "thread_audits_actor_type_check",
+          "value": "\"thread_audits\".\"actor_type\" in ('USER', 'SYSTEM')"
+        },
+        "thread_audits_outcome_check": {
+          "name": "thread_audits_outcome_check",
+          "value": "\"thread_audits\".\"outcome\" in ('SUCCESS', 'FAILURE')"
+        },
+        "thread_audits_actor_check": {
+          "name": "thread_audits_actor_check",
+          "value": "(\"thread_audits\".\"actor_type\" = 'USER' and \"thread_audits\".\"actor_id\" is not null) or (\"thread_audits\".\"actor_type\" = 'SYSTEM' and \"thread_audits\".\"actor_id\" is null)"
+        },
+        "thread_audits_failure_check": {
+          "name": "thread_audits_failure_check",
+          "value": "(\"thread_audits\".\"outcome\" = 'SUCCESS' and \"thread_audits\".\"failure_code\" is null) or (\"thread_audits\".\"outcome\" = 'FAILURE' and \"thread_audits\".\"failure_code\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}
