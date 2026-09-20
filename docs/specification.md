@@ -524,7 +524,7 @@ An overdue one-time scheduled message may execute once through the inclusive 60-
 boundary: it is eligible while `now <= execute_at + 60 minutes` and is outside the grace period
 when `now > execute_at + 60 minutes`.
 
-The `SEND_MESSAGE` delivery queue uses a retry limit of 3, a retry delay of 30 seconds,
+The one-time `SEND_MESSAGE` delivery queue uses a retry limit of 3, a retry delay of 30 seconds,
 exponential backoff, and a maximum retry delay of 900 seconds. These values are specific to
 scheduled-message delivery rather than shared scheduler defaults. Its delivery expiration is 900
 seconds.
@@ -603,9 +603,43 @@ stable occurrence ID and immutable occurrence fields as historical evidence when
 response is lost; while it remains pending, confirmation also checks its initial lifecycle shape
 and the updated execution time.
 
-The recurring persistence and calendar foundation does not itself execute Discord Create Message,
-project recurring delivery to pg-boss, run recurring reconciliation, or expose recurring Discord
-commands. Those runtime and administration behaviors are later Phase 8D work.
+Recurring occurrence execution uses the dedicated `weft-recurring-message-occurrence` pg-boss
+queue with exclusive policy, no built-in retry, and 900-second expiration. Delivery is a timed
+projection. PostgreSQL occurrence state and `OCCURRENCE_RETRY` audit time determine eligibility and
+retry wake time. Delivery generations use retry counts zero through three and a singleton key
+formed from the occurrence ID and generation. Queue state never authorizes execution.
+
+Initial execution validates authoritative state and payload, performs fresh Discord preflight,
+then claims `PENDING -> EXECUTING`. Only the claim winner may send or record a preflight failure.
+Retry continuation preserves the original claim payload and requires a winning
+`RETRY_PENDING -> EXECUTING` transition. Pre-send `CURRENT_STATE_CHECK_FAILED` may create the next
+retry only if the failure was observed within 15 minutes of the first attempt, the retry budget is
+not exhausted, and the 30-second wake remains within that inclusive deadline. These checks occur
+in that order; only an allowed retry increments the count and inserts one retry audit.
+
+Discord Create Message uses mention suppression, an occurrence-derived nonce, and at most one
+immediate same-nonce replay after ambiguity. A definite initial rejection is terminal
+`SEND_REJECTED`; ambiguity unresolved after replay is terminal `SEND_UNCONFIRMED`. A returned
+message must match the guild, channel, bot author, payload, and non-null nonce. No possible
+post-send effect returns to pre-send retry.
+
+Concrete success atomically records occurrence completion, resulting managed message and creation
+audit, occurrence audit, and the next occurrence. Terminal failure atomically records its failure
+audit and next occurrence. Active series advance from the latest recurrence definition; cancelled
+series record explicit no-next history. Finalization response loss uses read-only exact confirmation.
+Compensation deletes a known Discord message only when PostgreSQL finalization is proven absent;
+an unknown result causes neither deletion nor resend.
+
+Startup reconciliation recovers pending and retry-pending delivery and terminalizes orphaned
+executing occurrences as `EXECUTION_INTERRUPTED_UNCONFIRMED` without resending. Runtime
+reconciliation runs non-overlapping 60-second sweeps over bounded pages and repairs missing
+projections and missed pending work. Active series without a nonterminal row use the current
+definition and terminal history to derive a safe candidate; an unreadable basis is left unresolved.
+Runtime reconciliation does not fail a live executing occurrence based on queue
+absence. Retry expiry uses a separate PostgreSQL transition that requires the occurrence still be
+`RETRY_PENDING` at the expected retry count after locking the series and occurrence. A concurrent
+resume to `EXECUTING` wins over stale expiry reads, and expiry never terminalizes that live send.
+Phase 8D-3 recurring administration commands remain deferred.
 
 One-time scheduled messages expose these commands:
 

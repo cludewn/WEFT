@@ -22,6 +22,11 @@ import { createManagedMessageDiscord } from "./managed-message-discord.js";
 import { createManagedMessageStore } from "./managed-message-persistence.js";
 import { createManagedMessageService } from "./managed-message.js";
 import { createPgBossRuntime } from "./pg-boss.js";
+import { createRecurringMessageExecutor } from "./recurring-message-execution.js";
+import { createRecurringMessageStore } from "./recurring-message-persistence.js";
+import { createRecurringMessageReconciler } from "./recurring-message-reconciler.js";
+import { createRecurringRuntimeStore } from "./recurring-message-runtime-persistence.js";
+import { createRecurringMessageWorker } from "./recurring-message-worker.js";
 import { createScheduledActionStore } from "./scheduled-action-persistence.js";
 import { createScheduledMessageDiscord } from "./scheduled-message-discord.js";
 import { createScheduledMessageCommandService } from "./scheduled-message-command.js";
@@ -69,6 +74,8 @@ async function main(): Promise<void> {
   const scheduledActions = createScheduledActionStore(database.client);
   const scheduledThreadCloses = createScheduledThreadCloseStore(database.client);
   const scheduledMessageStore = createScheduledMessageStore(database.client);
+  const recurringMessageStore = createRecurringMessageStore(database.client);
+  const recurringRuntimeStore = createRecurringRuntimeStore(database.client);
   const automaticCloses = createAutomaticClosePersistenceStore(database.client);
   const managedMessageStore = createManagedMessageStore(database.client);
   const discordRuntime = createDiscordRuntime(logger, { guildSettings, managedThreads, audits });
@@ -146,6 +153,23 @@ async function main(): Promise<void> {
     executor: scheduledMessageExecutor,
     logger,
   });
+  const recurringExecutor = createRecurringMessageExecutor({
+    claims: recurringMessageStore,
+    store: recurringRuntimeStore,
+    discord: scheduledMessageDiscord,
+  });
+  const recurringWorker = createRecurringMessageWorker({
+    boss: pgBoss.client,
+    executor: recurringExecutor,
+    recurring: recurringMessageStore,
+    store: recurringRuntimeStore,
+    logger,
+  });
+  const recurringReconciler = createRecurringMessageReconciler({
+    store: recurringRuntimeStore,
+    worker: recurringWorker,
+    logger,
+  });
   const scheduledMessages = createScheduledMessageCommandService({
     discord: scheduledMessageDiscord,
     store: scheduledMessageStore,
@@ -207,6 +231,8 @@ async function main(): Promise<void> {
       },
       { name: "scheduled-thread-close-workers", close: () => scheduledThreadCloseWorkers.stop() },
       { name: "scheduled-message-workers", close: () => scheduledMessageWorkers.stop() },
+      { name: "recurring-message-runtime-reconciler", close: () => recurringReconciler.stop() },
+      { name: "recurring-message-worker", close: () => recurringWorker.stop() },
       { name: "pg-boss", close: () => pgBoss.stop() },
       { name: "discord", close: () => discordRuntime.client.destroy() },
       { name: "database", close: () => database.close() },
@@ -230,9 +256,11 @@ async function main(): Promise<void> {
       startPgBoss: () => pgBoss.start(),
       ensureScheduledThreadCloseQueue: () => scheduledThreadCloseWorkers.ensureQueue(),
       ensureScheduledMessageQueue: () => scheduledMessageWorkers.ensureQueue(),
+      ensureRecurringMessageQueue: () => recurringWorker.ensureQueue(),
       recoverScheduledThreadCloseDeliveries: () =>
         scheduledThreadCloseReconciler.recoverAtStartup(),
       recoverScheduledMessageDeliveries: () => scheduledMessageStartupReconciler.recoverAtStartup(),
+      recoverRecurringMessageDeliveries: () => recurringReconciler.recoverAtStartup(),
       startDiscord: () =>
         startDiscordClient(
           discordRuntime.client,
@@ -241,9 +269,11 @@ async function main(): Promise<void> {
         ),
       startScheduledThreadCloseWorkers: () => scheduledThreadCloseWorkers.start(),
       startScheduledMessageWorker: () => scheduledMessageWorkers.start(),
+      startRecurringMessageWorker: () => recurringWorker.start(),
       startScheduledThreadCloseRuntimeReconciliation: () =>
         scheduledThreadCloseRuntimeReconciler.start(),
       startScheduledMessageRuntimeReconciliation: () => scheduledMessageRuntimeReconciler.start(),
+      startRecurringMessageRuntimeReconciliation: () => recurringReconciler.start(),
       reconcileAutomaticCloseBaselines: () =>
         automaticCloseBaselineReconciler.reconcileMissingBaselines(),
       startAutomaticCloseRuntime: () => automaticCloseRuntime.start(),
