@@ -1205,11 +1205,46 @@ editable loads, edits, reschedules, and cancellation exclude rows with a recurri
 Consequently a stale one-time pg-boss delivery carrying a recurring series ID is rejected before a
 Discord Create Message request. Existing one-time rows retain their prior behavior.
 
-Phase 8D-2 will add recurring Discord execution, retry continuation, pg-boss delivery projection,
-startup and runtime reconciliation, ambiguity handling, terminalization, and managed-message
-finalization. Phase 8D-3 will add recurring creation and recurrence-edit commands and integrate
-recurring schedules into administration commands. Neither later slice is implemented by Phase
-8D-1.
+Phase 8D-2 adds `weft-recurring-message-occurrence` as an exclusive pg-boss queue with
+`retryLimit: 0` and `expireInSeconds: 900`. Its strict payload carries the series ID, occurrence
+ID, immutable scheduled instant, projected series revision, and delivery generation. The singleton
+key is `${occurrenceId}:${retryCount}`. A later generation can be projected while an older one
+remains active. Projection repair never changes authoritative PostgreSQL state.
+
+The executor loads the occurrence by ID, checks the series and immutable scheduled instant,
+validates the canonical payload, performs fresh Discord preflight, and then claims `PENDING ->
+EXECUTING`. A losing or ambiguous claim cannot send or record preflight failure. Retry continuation
+uses the immutable initial claim payload and requires a winning `RETRY_PENDING -> EXECUTING`
+transition. The current series revision in a job is projection metadata; it is not an execution
+veto. Both paths use the series-then-occurrence PostgreSQL lock order and release all locks before
+Discord or pg-boss calls.
+
+Only a known pre-send `CURRENT_STATE_CHECK_FAILED` can create an application retry. One stable
+retry-transition timestamp determines eligibility, the retry audit time, and the next 30-second
+wake. The decision order is observed-after-deadline, exhausted count, candidate-wake-after-deadline,
+then retry. The lifetime is 15 minutes from the first attempt, inclusive; the count increments
+only on entry to `RETRY_PENDING` and reaches at most three. The committed retry audit determines
+the wake, including after restart. pg-boss's own retry state is not application authority.
+
+The Discord boundary is shared with one-time execution. Recurring sends use a domain-separated
+occurrence nonce, mention suppression, and one immediate same-nonce replay after ambiguity. A
+definite initial rejection becomes `SEND_REJECTED`; replay rejection or ambiguity becomes
+`SEND_UNCONFIRMED`. Concrete success finalizes the occurrence, managed message, both audits, and
+next occurrence in one transaction. Active advancement uses the latest recurrence definition;
+cancelled series record no-next. Database response loss requires read-only exact confirmation;
+compensation is allowed only after confirmed non-commit, and an unknown result causes no delete or
+resend.
+
+Startup recovery scans bounded pages before recurring workers start, repairs pending and retry
+delivery, and fails orphaned `EXECUTING` occurrences conservatively without resend. Runtime
+reconciliation runs non-overlapping 60-second sweeps for pending and retry work, including missed
+grace and retry expiry. Retry expiry checks `RETRY_PENDING`, its expected retry generation, and
+the matching retry audit inside one series-then-occurrence-locked transaction before failing an
+occurrence; it cannot claim a live resumed `EXECUTING` occurrence. An active series with no nonterminal occurrence derives a safe candidate
+from its current definition effective boundary and latest terminal occurrence history. It never
+infers an interrupted execution from queue absence. Phase 8D-3
+will add recurring creation and recurrence-edit commands and integrate recurring schedules into
+administration commands; those commands are not implemented by Phase 8D-2.
 
 ### Phase 9: MVP hardening
 

@@ -242,6 +242,36 @@ export function isRecurringRetryWithinLifetime(firstAttemptedAt: Date, claimTime
   );
 }
 
+export const RECURRING_RETRY_DELAY_MS = 30_000;
+export const RECURRING_RETRY_LIFETIME_MS = RECURRING_RETRY_LIFETIME_MINUTES * 60_000;
+
+export type RecurringRetryDecision =
+  | { outcome: "RETRY"; retryCount: number; wakeAt: Date }
+  | {
+      outcome: "FAIL";
+      failureCode: "CURRENT_STATE_CHECK_FAILED" | "PRE_SEND_RETRY_WINDOW_EXCEEDED";
+    };
+
+export function decideRecurringRetry(
+  firstAttemptedAt: Date,
+  retryCount: number,
+  retryOccurredAt: Date,
+): RecurringRetryDecision {
+  const deadline = firstAttemptedAt.getTime() + RECURRING_RETRY_LIFETIME_MS;
+  const occurredAt = retryOccurredAt.getTime();
+  if (occurredAt > deadline) {
+    return { outcome: "FAIL", failureCode: "PRE_SEND_RETRY_WINDOW_EXCEEDED" };
+  }
+  if (retryCount === 3) {
+    return { outcome: "FAIL", failureCode: "CURRENT_STATE_CHECK_FAILED" };
+  }
+  const wakeAt = new Date(occurredAt + RECURRING_RETRY_DELAY_MS);
+  if (wakeAt.getTime() > deadline) {
+    return { outcome: "FAIL", failureCode: "PRE_SEND_RETRY_WINDOW_EXCEEDED" };
+  }
+  return { outcome: "RETRY", retryCount: retryCount + 1, wakeAt };
+}
+
 function findLatestOccurrenceAtOrBefore(
   definition: RecurrenceDefinition,
   definitionRevision: number,

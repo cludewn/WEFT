@@ -16,13 +16,17 @@ function createDependencies(): ApplicationStartupDependencies {
     startPgBoss: vi.fn(() => Promise.resolve()),
     ensureScheduledThreadCloseQueue: vi.fn(() => Promise.resolve()),
     ensureScheduledMessageQueue: vi.fn(() => Promise.resolve()),
+    ensureRecurringMessageQueue: vi.fn(() => Promise.resolve()),
     recoverScheduledThreadCloseDeliveries: vi.fn(() => Promise.resolve()),
     recoverScheduledMessageDeliveries: vi.fn(() => Promise.resolve()),
+    recoverRecurringMessageDeliveries: vi.fn(() => Promise.resolve()),
     startDiscord: vi.fn(() => Promise.resolve()),
     startScheduledThreadCloseWorkers: vi.fn(() => Promise.resolve()),
     startScheduledMessageWorker: vi.fn(() => Promise.resolve()),
+    startRecurringMessageWorker: vi.fn(() => Promise.resolve()),
     startScheduledThreadCloseRuntimeReconciliation: vi.fn(() => Promise.resolve()),
     startScheduledMessageRuntimeReconciliation: vi.fn(() => Promise.resolve()),
+    startRecurringMessageRuntimeReconciliation: vi.fn(() => Promise.resolve()),
     reconcileAutomaticCloseBaselines: vi.fn(() => Promise.resolve()),
     startAutomaticCloseRuntime: vi.fn(() => Promise.resolve()),
     shutdown: vi.fn(() => Promise.resolve()),
@@ -52,23 +56,33 @@ describe("application startup", () => {
     const pgBossStarted = createDeferred();
     const queueReady = createDeferred();
     const messageQueueReady = createDeferred();
+    const recurringQueueReady = createDeferred();
     const recoveryCompleted = createDeferred();
     const messageRecoveryCompleted = createDeferred();
+    const recurringRecoveryCompleted = createDeferred();
     const discordStarted = createDeferred();
     const workersStarted = createDeferred();
     const messageWorkerStarted = createDeferred();
+    const recurringWorkerStarted = createDeferred();
     const runtimeReconciliationStarted = createDeferred();
     const messageRuntimeReconciliationStarted = createDeferred();
+    const recurringRuntimeReconciliationStarted = createDeferred();
     const dependencies = createDependencies();
     vi.mocked(dependencies.verifyDatabaseConnection).mockReturnValue(databaseVerified.promise);
     vi.mocked(dependencies.startPgBoss).mockReturnValue(pgBossStarted.promise);
     vi.mocked(dependencies.ensureScheduledThreadCloseQueue).mockReturnValue(queueReady.promise);
     vi.mocked(dependencies.ensureScheduledMessageQueue).mockReturnValue(messageQueueReady.promise);
+    vi.mocked(dependencies.ensureRecurringMessageQueue).mockReturnValue(
+      recurringQueueReady.promise,
+    );
     vi.mocked(dependencies.recoverScheduledThreadCloseDeliveries).mockReturnValue(
       recoveryCompleted.promise,
     );
     vi.mocked(dependencies.recoverScheduledMessageDeliveries).mockReturnValue(
       messageRecoveryCompleted.promise,
+    );
+    vi.mocked(dependencies.recoverRecurringMessageDeliveries).mockReturnValue(
+      recurringRecoveryCompleted.promise,
     );
     vi.mocked(dependencies.startDiscord).mockReturnValue(discordStarted.promise);
     vi.mocked(dependencies.startScheduledThreadCloseWorkers).mockReturnValue(
@@ -77,11 +91,17 @@ describe("application startup", () => {
     vi.mocked(dependencies.startScheduledMessageWorker).mockReturnValue(
       messageWorkerStarted.promise,
     );
+    vi.mocked(dependencies.startRecurringMessageWorker).mockReturnValue(
+      recurringWorkerStarted.promise,
+    );
     vi.mocked(dependencies.startScheduledThreadCloseRuntimeReconciliation).mockReturnValue(
       runtimeReconciliationStarted.promise,
     );
     vi.mocked(dependencies.startScheduledMessageRuntimeReconciliation).mockReturnValue(
       messageRuntimeReconciliationStarted.promise,
+    );
+    vi.mocked(dependencies.startRecurringMessageRuntimeReconciliation).mockReturnValue(
+      recurringRuntimeReconciliationStarted.promise,
     );
 
     const startup = runApplicationStartup(dependencies, createLogger());
@@ -109,6 +129,11 @@ describe("application startup", () => {
 
     messageQueueReady.resolve();
     await Promise.resolve();
+    expect(dependencies.ensureRecurringMessageQueue).toHaveBeenCalledOnce();
+    expect(dependencies.recoverScheduledThreadCloseDeliveries).not.toHaveBeenCalled();
+
+    recurringQueueReady.resolve();
+    await Promise.resolve();
     expect(dependencies.recoverScheduledThreadCloseDeliveries).toHaveBeenCalledOnce();
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
 
@@ -118,6 +143,11 @@ describe("application startup", () => {
     expect(dependencies.startDiscord).not.toHaveBeenCalled();
 
     messageRecoveryCompleted.resolve();
+    await Promise.resolve();
+    expect(dependencies.recoverRecurringMessageDeliveries).toHaveBeenCalledOnce();
+    expect(dependencies.startDiscord).not.toHaveBeenCalled();
+
+    recurringRecoveryCompleted.resolve();
     await Promise.resolve();
     expect(dependencies.startDiscord).toHaveBeenCalledOnce();
     expect(dependencies.startScheduledThreadCloseWorkers).not.toHaveBeenCalled();
@@ -135,6 +165,11 @@ describe("application startup", () => {
 
     messageWorkerStarted.resolve();
     await Promise.resolve();
+    expect(dependencies.startRecurringMessageWorker).toHaveBeenCalledOnce();
+    expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).not.toHaveBeenCalled();
+
+    recurringWorkerStarted.resolve();
+    await Promise.resolve();
     expect(dependencies.startScheduledThreadCloseRuntimeReconciliation).toHaveBeenCalledOnce();
 
     runtimeReconciliationStarted.resolve();
@@ -142,6 +177,10 @@ describe("application startup", () => {
     expect(dependencies.startScheduledMessageRuntimeReconciliation).toHaveBeenCalledOnce();
 
     messageRuntimeReconciliationStarted.resolve();
+    await Promise.resolve();
+    expect(dependencies.startRecurringMessageRuntimeReconciliation).toHaveBeenCalledOnce();
+
+    recurringRuntimeReconciliationStarted.resolve();
     await startup;
     expect(dependencies.shutdown).not.toHaveBeenCalled();
   });

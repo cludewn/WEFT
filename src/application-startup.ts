@@ -8,13 +8,17 @@ export type ApplicationStartupDependencies = {
   startPgBoss: () => Promise<void>;
   ensureScheduledThreadCloseQueue: () => Promise<void>;
   ensureScheduledMessageQueue: () => Promise<void>;
+  ensureRecurringMessageQueue: () => Promise<void>;
   recoverScheduledThreadCloseDeliveries: () => Promise<void>;
   recoverScheduledMessageDeliveries: () => Promise<void>;
+  recoverRecurringMessageDeliveries: () => Promise<void>;
   startDiscord: () => Promise<void>;
   startScheduledThreadCloseWorkers: () => Promise<void>;
   startScheduledMessageWorker: () => Promise<void>;
+  startRecurringMessageWorker: () => Promise<void>;
   startScheduledThreadCloseRuntimeReconciliation: () => Promise<void>;
   startScheduledMessageRuntimeReconciliation: () => Promise<void>;
+  startRecurringMessageRuntimeReconciliation: () => Promise<void>;
   reconcileAutomaticCloseBaselines: () => Promise<void>;
   startAutomaticCloseRuntime: () => Promise<void>;
   shutdown: (reason: string) => Promise<void>;
@@ -31,14 +35,18 @@ export async function runApplicationStartup(
     await dependencies.startPgBoss();
     await dependencies.ensureScheduledThreadCloseQueue();
     await dependencies.ensureScheduledMessageQueue();
+    await dependencies.ensureRecurringMessageQueue();
     await dependencies.recoverScheduledThreadCloseDeliveries();
     await dependencies.recoverScheduledMessageDeliveries();
+    await dependencies.recoverRecurringMessageDeliveries();
     await dependencies.startDiscord();
     logger.info({ event: "discord_ready" }, "Discord client is ready");
     await dependencies.startScheduledThreadCloseWorkers();
     await dependencies.startScheduledMessageWorker();
+    await dependencies.startRecurringMessageWorker();
     await dependencies.startScheduledThreadCloseRuntimeReconciliation();
     await dependencies.startScheduledMessageRuntimeReconciliation();
+    await dependencies.startRecurringMessageRuntimeReconciliation();
     // Automatic-close baseline reconciliation is a best-effort repair. A failure is recorded once
     // here and never fails application startup, because ThreadCreate, MessageCreate, and a later
     // restart can all recover the missing baselines.
