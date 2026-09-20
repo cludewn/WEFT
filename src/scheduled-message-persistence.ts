@@ -554,6 +554,10 @@ function payloadConditions(payload: ManagedMessagePayload) {
 }
 
 export function createScheduledMessageStore(database: DatabaseClient): ScheduledMessageStore {
+  const isOneTimeScheduledMessage = sql`not exists (
+    select 1 from recurring_message_schedules recurring
+    where recurring.scheduled_action_id = ${scheduledActions.id}
+  )`;
   const findScoped = async (scheduledActionId: string, guildId: string, channelId: string) => {
     const [result] = await database
       .select({ action: scheduledActions, state: scheduledMessageStates })
@@ -568,6 +572,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
           eq(scheduledActions.guildId, guildId),
           eq(scheduledActions.targetId, channelId),
           eq(scheduledActions.actionType, "SEND_MESSAGE"),
+          isOneTimeScheduledMessage,
         ),
       )
       .limit(1);
@@ -583,7 +588,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
         scheduledMessageStates,
         eq(scheduledMessageStates.scheduledActionId, scheduledActions.id),
       )
-      .where(eq(scheduledActions.id, scheduledActionId))
+      .where(and(eq(scheduledActions.id, scheduledActionId), isOneTimeScheduledMessage))
       .limit(1);
     if (result === undefined) return { outcome: "MISSING_ACTION" };
     if (result.action.actionType !== "SEND_MESSAGE") return { outcome: "ACTION_TYPE_MISMATCH" };
@@ -734,6 +739,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
               eq(scheduledActions.id, input.definition.action.id),
               eq(scheduledActions.actionType, "SEND_MESSAGE"),
               eq(scheduledActions.status, "EXECUTING"),
+              isOneTimeScheduledMessage,
             ),
           )
           .returning();
@@ -852,7 +858,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
       .leftJoin(scheduledMessageAudits, eq(scheduledMessageAudits.id, input.executionAuditId))
       .leftJoin(managedMessages, eq(managedMessages.messageId, input.messageId))
       .leftJoin(managedMessageAudits, eq(managedMessageAudits.id, input.managedMessageAuditId))
-      .where(eq(scheduledActions.id, input.definition.action.id))
+      .where(and(eq(scheduledActions.id, input.definition.action.id), isOneTimeScheduledMessage))
       .limit(1);
     const definition =
       persisted === undefined ? undefined : toDefinition(persisted.action, persisted.state);
@@ -1048,7 +1054,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
         const [action] = await transaction
           .select()
           .from(scheduledActions)
-          .where(eq(scheduledActions.id, scheduledActionId))
+          .where(and(eq(scheduledActions.id, scheduledActionId), isOneTimeScheduledMessage))
           .limit(1)
           .for("update");
         if (
@@ -1094,6 +1100,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
               eq(scheduledActions.id, scheduledActionId),
               eq(scheduledActions.actionType, "SEND_MESSAGE"),
               eq(scheduledActions.status, "ACTIVE"),
+              isOneTimeScheduledMessage,
             ),
           )
           .returning();
@@ -1121,6 +1128,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
                 eq(scheduledActions.id, input.action.id),
                 eq(scheduledActions.actionType, "SEND_MESSAGE"),
                 eq(scheduledActions.status, "EXECUTING"),
+                isOneTimeScheduledMessage,
               ),
             )
             .returning();
@@ -1206,6 +1214,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
                 eq(scheduledActions.id, input.definition.action.id),
                 eq(scheduledActions.actionType, "SEND_MESSAGE"),
                 eq(scheduledActions.status, "EXECUTING"),
+                isOneTimeScheduledMessage,
               ),
             )
             .returning();
@@ -1287,6 +1296,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
               eq(scheduledActions.targetId, channelId),
               eq(scheduledActions.actionType, "SEND_MESSAGE"),
               inArray(scheduledActions.status, ["ACTIVE", "EXECUTING"]),
+              isOneTimeScheduledMessage,
             ),
           )
           .orderBy(asc(scheduledActions.executeAt), asc(scheduledActions.id))
@@ -1329,6 +1339,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
                 eq(scheduledActions.guildId, input.guildId),
                 eq(scheduledActions.targetId, input.channelId),
                 eq(scheduledActions.actionType, "SEND_MESSAGE"),
+                isOneTimeScheduledMessage,
               ),
             )
             .limit(1)
@@ -1413,6 +1424,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
                 eq(scheduledActions.guildId, input.guildId),
                 eq(scheduledActions.targetId, input.channelId),
                 eq(scheduledActions.actionType, "SEND_MESSAGE"),
+                isOneTimeScheduledMessage,
               ),
             )
             .limit(1)
@@ -1447,6 +1459,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
               and(
                 eq(scheduledActions.id, scoped.id),
                 eq(scheduledActions.actionType, "SEND_MESSAGE"),
+                isOneTimeScheduledMessage,
                 eq(scheduledActions.status, "ACTIVE"),
               ),
             )
@@ -1506,6 +1519,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
                 eq(scheduledActions.guildId, input.guildId),
                 eq(scheduledActions.targetId, input.channelId),
                 eq(scheduledActions.actionType, "SEND_MESSAGE"),
+                isOneTimeScheduledMessage,
               ),
             )
             .limit(1)
@@ -1548,6 +1562,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
                 eq(scheduledActions.targetId, input.channelId),
                 eq(scheduledActions.actionType, "SEND_MESSAGE"),
                 eq(scheduledActions.status, "ACTIVE"),
+                isOneTimeScheduledMessage,
               ),
             )
             .returning();
@@ -1561,6 +1576,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
                   eq(scheduledActions.guildId, input.guildId),
                   eq(scheduledActions.targetId, input.channelId),
                   eq(scheduledActions.actionType, "SEND_MESSAGE"),
+                  isOneTimeScheduledMessage,
                 ),
               )
               .limit(1);

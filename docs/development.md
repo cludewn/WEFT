@@ -1142,15 +1142,74 @@ logged safely for a later sweep. Worker handling still reloads PostgreSQL, rejec
 wakeups while authoritative execution time remains in the future, and relies on the revision-aware
 database claim to prevent stale or duplicate Discord effects.
 
-Future recurrence uses structured calendar-oriented input with IANA timezone semantics rather than
-raw user-facing cron; exact Discord command fields remain deferred. One-time list, edit, and
-reschedule commands are implemented.
+One-time list, edit, and reschedule commands are implemented.
 
-Later Phase 8 work will:
+#### Phase 8D: Recurring scheduled messages
 
-- implement recurring messages,
-- skip missed recurring occurrences after downtime,
-- add remaining recurrence-specific retry, race, and restart-recovery tests.
+Phase 8D is divided into three reviewable slices:
+
+- Phase 8D-1: recurring scheduling foundation,
+- Phase 8D-2: recurring occurrence execution and delivery,
+- Phase 8D-3: recurring message administration.
+
+Phase 8D-1 adds `@js-temporal/polyfill` as a direct runtime dependency and implements the calendar
+and persistence foundation without starting recurring runtime work. Daily and selected-weekday
+weekly rules use local calendar arithmetic, strict minute precision, normalized named IANA zones,
+and an all-weekday canonical mask for daily schedules. Numeric offsets are rejected. IANA link or
+alias identity is retained after preferred-case normalization.
+
+Local-time resolution evaluates Temporal `earlier` and `later` disambiguation and round-trips both
+results. An overlap materializes only the earlier instant. A gap materializes no occurrence and is
+an explicit audit effect. The algorithm makes no one-hour-transition assumption. Candidate
+selection is strictly after one stable establishment timestamp captured before creation or a
+recurrence edit. Materialized absolute instants are immutable.
+
+Migration 0016 adds `recurring_message_schedules`, `recurring_message_occurrences`, and
+`recurring_message_audits`. The recurrence row is the discriminator; no generic schedule-kind
+column or backfill is introduced. Occurrences have bounded lifecycle, failure, and skip states,
+claim-snapshot shape constraints, one-nonterminal-per-series uniqueness, and definition/date/time
+materialization uniqueness. The audit table uses explicit relational fields for mutation,
+execution, DST-gap, missed-range, and historical next-occurrence effects.
+
+The existing scheduled-message revision is the unified series revision. Payload edit increments
+it without changing the definition revision or current occurrence. Recurrence or timezone edit
+increments it once and establishes the new definition revision and effective boundary. A pending
+occurrence is skipped and replaced in the same transaction; executing and retry-pending
+occurrences retain their immutable snapshots and defer materialization. Cancellation uses the lock
+order series then occurrence, increments the unified revision, skips pending and retry-pending
+work, and leaves an executing occurrence in flight.
+
+Initial claim is a pure PostgreSQL transaction. It locks series then occurrence, verifies active
+series state, occurrence identity and pending state, and the caller's expected unified revision,
+then snapshots the canonical payload and claim revisions with one stable claim timestamp.
+Persistence mutations use caller-generated stable audit IDs and exact read-only audit confirmation
+instead of blind retry. Claim, payload edit, recurrence edit, and cancellation therefore serialize
+at the series row without depending on worker count or a process-local lock.
+
+Standalone occurrence materialization uses a stable occurrence ID and a unique definition/local
+date/local time identity. If its transaction response is lost, a read-only check confirms that ID,
+the immutable intended instant, the initial pending shape and execution-time update while still
+pending. A later valid lifecycle or recurrence change can replace those current-state effects;
+the immutable occurrence identity and materialization fields remain the historical evidence.
+
+Missed-occurrence calculation selects the latest eligible missed candidate without persisting a row
+for each missed date, applies an inclusive 15-minute grace, identifies the first future candidate,
+and represents older misses as one range. It scans the relevant local calendar dates in memory to
+collect each DST gap once by definition revision, local date, and local time. Safe pre-send retry
+lifetime is a separate inclusive 15-minute boundary. Runtime retry continuation and terminal
+advancement remain Phase 8D-2, but the 0016 occurrence and audit shapes represent their complete
+bounded state and historical next/no-next effects.
+
+All existing one-time scans, reconciliation loads, execution loads and claims, status/list reads,
+editable loads, edits, reschedules, and cancellation exclude rows with a recurring discriminator.
+Consequently a stale one-time pg-boss delivery carrying a recurring series ID is rejected before a
+Discord Create Message request. Existing one-time rows retain their prior behavior.
+
+Phase 8D-2 will add recurring Discord execution, retry continuation, pg-boss delivery projection,
+startup and runtime reconciliation, ambiguity handling, terminalization, and managed-message
+finalization. Phase 8D-3 will add recurring creation and recurrence-edit commands and integrate
+recurring schedules into administration commands. Neither later slice is implemented by Phase
+8D-1.
 
 ### Phase 9: MVP hardening
 

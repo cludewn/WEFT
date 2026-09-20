@@ -553,6 +553,60 @@ Recurring managed messages use structured, calendar-oriented input and IANA time
 Raw cron expressions are not accepted through the user-facing Discord interface. The exact
 Discord command fields for recurring schedules remain deferred.
 
+The recurring scheduling foundation supports daily execution at one local `HH:MM` and weekly
+execution on a non-empty selection of weekdays at one local `HH:MM`. Daily schedules are stored
+canonically as all seven selected weekdays. Monthly, nth-weekday, last-day, arbitrary interval,
+start-date, end-date, occurrence-count, raw cron, and user-facing RRULE schedules are not
+supported.
+
+Each recurring series snapshots a normalized named IANA timezone. `UTC`, named zones, and named
+links or aliases are accepted; numeric UTC offsets are rejected. Link or alias identity is
+preserved after case normalization rather than rewritten to a different primary-zone identifier.
+Calendar advancement uses local dates and times rather than fixed 24-hour or 168-hour instant
+arithmetic.
+
+For a local time in a daylight-saving overlap, WEFT selects only the earlier instant. For a local
+time in a daylight-saving gap, WEFT creates no occurrence and records a `DST_GAP_SKIPPED` audit.
+It does not shift the intended local time. The disambiguation algorithm compares both Temporal
+`earlier` and `later` round trips and does not assume a one-hour transition.
+
+Series creation and recurrence or timezone editing use one caller-established timestamp for the
+definition effective boundary, mutation audit, strictly-after candidate selection, and exact
+persistence confirmation. A materialized occurrence's absolute `scheduled_for` instant never
+changes. Future materialization uses current timezone data and the latest current recurrence
+definition.
+
+Recurring downtime recovery considers only the latest eligible missed calendar occurrence. It may
+materialize that one occurrence through the inclusive 15-minute missed grace boundary; older
+missed occurrences are represented as one explicit skipped-range audit rather than one row per
+calendar event. If the latest occurrence is also outside grace, advancement proceeds to the first
+future occurrence. DST gaps crossed during downtime are audited once per definition revision and
+intended local date and time, without creating occurrence rows for skipped dates. A safe pre-send
+retry chain has a separate inclusive 15-minute lifetime from its first attempt and a persisted
+retry budget of three.
+
+`scheduled_actions` remains the scheduling envelope and `scheduled_message_states.revision` is the
+single series revision. A row in `recurring_message_schedules` is the recurring discriminator.
+Payload edits increment the series revision without changing the definition revision or replacing
+the current occurrence. Recurrence and timezone edits increment the series revision, set the
+definition revision to that value, and replace a pending occurrence atomically. An executing or
+retry-pending occurrence retains its immutable claim snapshot and defers future materialization.
+Cancellation increments the series revision, prevents future materialization, skips a pending or
+retry-pending occurrence, and does not attempt to stop an already executing external operation.
+
+At most one pending, executing, or retry-pending occurrence may exist for a series. Occurrence
+materialization is unique by series, definition revision, intended local date, and intended local
+time. Initial execution claim atomically snapshots the current canonical payload and the current
+series and definition revisions. Recurring state-changing persistence uses stable operation
+identities and exact read-only confirmation rather than blind write retry. Materialization uses a
+stable occurrence ID and immutable occurrence fields as historical evidence when the transaction
+response is lost; while it remains pending, confirmation also checks its initial lifecycle shape
+and the updated execution time.
+
+The recurring persistence and calendar foundation does not itself execute Discord Create Message,
+project recurring delivery to pg-boss, run recurring reconciliation, or expose recurring Discord
+commands. Those runtime and administration behaviors are later Phase 8D work.
+
 One-time scheduled messages expose these commands:
 
 ```text
