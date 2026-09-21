@@ -21,6 +21,7 @@ import {
   isStrictRecurringLocalTime,
   validateRecurrence,
   type DstGapCandidate,
+  type NextOccurrenceResult,
   type RecurrenceDefinition,
   type RecurringMessageFrequency,
 } from "./recurring-message.js";
@@ -1022,6 +1023,18 @@ export type RecurringMutationResult =
       outcome: "CONFLICT" | "NOT_FOUND" | "INVALID_RECURRENCE" | "PERSISTENCE_UNCONFIRMED";
     };
 
+export type RecurrenceEditEffect = {
+  committedRevision: number;
+  deferredMaterialization: boolean;
+  replacementOccurrenceId: string | null;
+  replacementScheduledFor: Date | null;
+};
+
+export type RecurrenceEditResult =
+  | { outcome: "COMMITTED"; effect: RecurrenceEditEffect }
+  | { outcome: "UNCHANGED" }
+  | { outcome: "CONFLICT" | "NOT_FOUND" | "INVALID_RECURRENCE" | "PERSISTENCE_UNCONFIRMED" };
+
 export type RecurringClaimResult =
   | { outcome: "COMMITTED"; series: RecurringMessageSeries; occurrence: RecurringMessageOccurrence }
   | { outcome: "NOT_CLAIMED" };
@@ -1034,7 +1047,7 @@ export type RecurringMessageStore = {
   create: (input: CreateRecurringMessageSeries) => Promise<RecurringMutationResult>;
   find: (scheduledActionId: string) => Promise<RecurringMessageSeries | undefined>;
   editPayload: (input: EditRecurringMessagePayload) => Promise<RecurringMutationResult>;
-  editRecurrence: (input: EditRecurringMessageRecurrence) => Promise<RecurringMutationResult>;
+  editRecurrence: (input: EditRecurringMessageRecurrence) => Promise<RecurrenceEditResult>;
   cancel: (input: CancelRecurringMessageSeries) => Promise<RecurringMutationResult>;
   materialize: (input: MaterializeRecurringOccurrence) => Promise<RecurringMaterializationResult>;
   claimInitial: (input: ClaimRecurringOccurrence) => Promise<RecurringClaimResult>;
@@ -1423,11 +1436,9 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
       }
     },
     async editRecurrence(input) {
-      const validation = validateRecurrence(input.recurrence);
-      if (!validation.ok) return { outcome: "INVALID_RECURRENCE" };
-      const recurrenceDefinition = validation.definition;
       let nextRevision = input.expectedRevision + 1;
-      const selected = findNextOccurrence(recurrenceDefinition, nextRevision, input.effectiveAt);
+      let confirmationDefinition: RecurrenceDefinition | undefined;
+      let confirmationSelection: NextOccurrenceResult | undefined;
       let expectedAudit:
         | {
             before: RecurringMessageSchedule;
@@ -1460,6 +1471,25 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
           if (action.status !== "ACTIVE" || state.revision !== input.expectedRevision)
             return { outcome: "CONFLICT" } as const;
 
+          const lockedValidation = validateRecurrence(input.recurrence);
+          if (!lockedValidation.ok) return { outcome: "INVALID_RECURRENCE" } as const;
+          const recurrenceDefinition = lockedValidation.definition;
+          if (
+            recurrence.frequency === recurrenceDefinition.frequency &&
+            recurrence.weekdayMask === recurrenceDefinition.weekdayMask &&
+            recurrence.localTime.slice(0, 5) === recurrenceDefinition.localTime &&
+            recurrence.timezone === recurrenceDefinition.timezone
+          )
+            return { outcome: "UNCHANGED" } as const;
+          nextRevision = state.revision + 1;
+          const selected = findNextOccurrence(
+            recurrenceDefinition,
+            nextRevision,
+            input.effectiveAt,
+          );
+          confirmationDefinition = recurrenceDefinition;
+          confirmationSelection = selected;
+
           const [current] = await transaction
             .select()
             .from(recurringMessageOccurrences)
@@ -1482,13 +1512,9 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
             currentOccurrenceId: current.id,
             deferred,
           };
-          if (deferred) {
-            if (input.gapAuditIds.length !== 0)
-              throw new Error("Deferred edits cannot persist candidate gap audits");
-          } else {
+          if (!deferred) {
             assertGapAuditIds(selected.skippedGaps, input.gapAuditIds);
           }
-          nextRevision = state.revision + 1;
           const [updatedState] = await transaction
             .update(scheduledMessageStates)
             .set({ revision: nextRevision })
@@ -1599,54 +1625,75 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
               ),
             );
           }
-          return { outcome: "COMMITTED" } as const;
+          return {
+            outcome: "COMMITTED",
+            effect: {
+              committedRevision: nextRevision,
+              deferredMaterialization: deferred,
+              replacementOccurrenceId: replacement?.id ?? null,
+              replacementScheduledFor: replacement?.scheduledFor ?? null,
+            },
+          } as const;
         });
-        if (result.outcome !== "COMMITTED") return result;
-        const series = await find(input.scheduledActionId);
-        return series === undefined
-          ? { outcome: "PERSISTENCE_UNCONFIRMED" }
-          : { outcome: "COMMITTED", series };
+        return result;
       } catch {
-        const confirmed = await exactAuditCommitted(
-          input.auditId,
-          input.scheduledActionId,
-          (audit) =>
-            expectedAudit !== undefined &&
-            audit.event === "RECURRENCE_EDITED" &&
-            audit.actorType === "USER" &&
-            audit.actorId === input.actorId &&
-            audit.beforeRevision === input.expectedRevision &&
-            audit.afterRevision === nextRevision &&
-            audit.beforeFrequency === expectedAudit.before.frequency &&
-            audit.afterFrequency === recurrenceDefinition.frequency &&
-            audit.beforeWeekdayMask === expectedAudit.before.weekdayMask &&
-            audit.afterWeekdayMask === recurrenceDefinition.weekdayMask &&
-            audit.beforeLocalTime?.slice(0, 5) === expectedAudit.before.localTime.slice(0, 5) &&
-            audit.afterLocalTime?.slice(0, 5) === recurrenceDefinition.localTime &&
-            audit.beforeTimezone === expectedAudit.before.timezone &&
-            audit.afterTimezone === recurrenceDefinition.timezone &&
-            audit.beforeDefinitionRevision === expectedAudit.before.definitionRevision &&
-            audit.afterDefinitionRevision === nextRevision &&
-            audit.beforeEffectiveAt?.getTime() === expectedAudit.before.effectiveAt.getTime() &&
-            audit.afterEffectiveAt?.getTime() === input.effectiveAt.getTime() &&
-            audit.currentOccurrenceId === expectedAudit.currentOccurrenceId &&
-            audit.deferredMaterialization === expectedAudit.deferred &&
-            audit.selectedNextOccurrenceId ===
-              (expectedAudit.deferred ? null : input.replacementOccurrenceId) &&
-            audit.selectedNextLocalDate ===
-              (expectedAudit.deferred ? null : selected.occurrence.intendedLocalDate) &&
-            audit.selectedNextLocalTime?.slice(0, 5) ===
-              (expectedAudit.deferred ? undefined : selected.occurrence.intendedLocalTime) &&
+        const confirmed = await database
+          .select()
+          .from(recurringMessageAudits)
+          .where(eq(recurringMessageAudits.id, input.auditId))
+          .limit(1)
+          .then((rows) => rows[0])
+          .catch(() => undefined);
+        const matches =
+          confirmed !== undefined &&
+          confirmed.scheduledActionId === input.scheduledActionId &&
+          expectedAudit !== undefined &&
+          confirmationDefinition !== undefined &&
+          confirmationSelection !== undefined &&
+          confirmed.event === "RECURRENCE_EDITED" &&
+          confirmed.actorType === "USER" &&
+          confirmed.actorId === input.actorId &&
+          confirmed.beforeRevision === input.expectedRevision &&
+          confirmed.afterRevision === nextRevision &&
+          confirmed.beforeFrequency === expectedAudit.before.frequency &&
+          confirmed.afterFrequency === confirmationDefinition.frequency &&
+          confirmed.beforeWeekdayMask === expectedAudit.before.weekdayMask &&
+          confirmed.afterWeekdayMask === confirmationDefinition.weekdayMask &&
+          confirmed.beforeLocalTime?.slice(0, 5) === expectedAudit.before.localTime.slice(0, 5) &&
+          confirmed.afterLocalTime?.slice(0, 5) === confirmationDefinition.localTime &&
+          confirmed.beforeTimezone === expectedAudit.before.timezone &&
+          confirmed.afterTimezone === confirmationDefinition.timezone &&
+          confirmed.beforeDefinitionRevision === expectedAudit.before.definitionRevision &&
+          confirmed.afterDefinitionRevision === nextRevision &&
+          confirmed.beforeEffectiveAt?.getTime() === expectedAudit.before.effectiveAt.getTime() &&
+          confirmed.afterEffectiveAt?.getTime() === input.effectiveAt.getTime() &&
+          confirmed.currentOccurrenceId === expectedAudit.currentOccurrenceId &&
+          confirmed.deferredMaterialization === expectedAudit.deferred &&
+          confirmed.selectedNextOccurrenceId ===
+            (expectedAudit.deferred ? null : input.replacementOccurrenceId) &&
+          confirmed.selectedNextLocalDate ===
+            (expectedAudit.deferred ? null : confirmationSelection.occurrence.intendedLocalDate) &&
+          confirmed.selectedNextLocalTime?.slice(0, 5) ===
             (expectedAudit.deferred
-              ? audit.selectedNextScheduledFor === null
-              : audit.selectedNextScheduledFor?.getTime() ===
-                selected.occurrence.scheduledFor.getTime()) &&
-            audit.occurredAt.getTime() === input.effectiveAt.getTime() &&
-            audit.outcome === "SUCCESS",
-        ).catch(() => undefined);
-        return confirmed === undefined
+              ? undefined
+              : confirmationSelection.occurrence.intendedLocalTime) &&
+          (expectedAudit.deferred
+            ? confirmed.selectedNextScheduledFor === null
+            : confirmed.selectedNextScheduledFor?.getTime() ===
+              confirmationSelection.occurrence.scheduledFor.getTime()) &&
+          confirmed.occurredAt.getTime() === input.effectiveAt.getTime() &&
+          confirmed.outcome === "SUCCESS";
+        return !matches || confirmed === undefined
           ? { outcome: "PERSISTENCE_UNCONFIRMED" }
-          : { outcome: "COMMITTED", series: confirmed };
+          : {
+              outcome: "COMMITTED",
+              effect: {
+                committedRevision: confirmed.afterRevision!,
+                deferredMaterialization: confirmed.deferredMaterialization!,
+                replacementOccurrenceId: confirmed.selectedNextOccurrenceId,
+                replacementScheduledFor: confirmed.selectedNextScheduledFor,
+              },
+            };
       }
     },
     async cancel(input) {
