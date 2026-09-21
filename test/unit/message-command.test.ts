@@ -13,6 +13,8 @@ import type { ChatInputCommandInteraction, ModalBuilder, ModalSubmitInteraction 
 import {
   createManagedMessageSendModal,
   createManagedMessageEditModal,
+  createRecurringMessageCreateModalId,
+  parseRecurringMessageCreateModalId,
   handleManagedMessageModalSubmit,
   handleMessageCommand,
   MANAGED_MESSAGE_CONTENT_INPUT_ID,
@@ -29,6 +31,50 @@ import {
 import type { ManagedMessageService } from "../../src/managed-message.js";
 
 describe("message command", () => {
+  it("transports compact recurring state without losing omitted versus explicit UTC", () => {
+    const omitted = createRecurringMessageCreateModalId({ frequency: "daily", time: "09:30" });
+    const explicit = createRecurringMessageCreateModalId({
+      frequency: "daily",
+      time: "09:30",
+      timezone: "UTC",
+    });
+    expect(omitted.length).toBeLessThanOrEqual(100);
+    expect(explicit.length).toBeLessThanOrEqual(100);
+    expect(omitted).not.toBe(explicit);
+    expect(parseRecurringMessageCreateModalId(omitted)).toEqual({
+      frequency: "daily",
+      time: "09:30",
+    });
+    expect(parseRecurringMessageCreateModalId(explicit)).toEqual({
+      frequency: "daily",
+      time: "09:30",
+      timezone: "UTC",
+    });
+    expect(
+      parseRecurringMessageCreateModalId(
+        createRecurringMessageCreateModalId({
+          frequency: "weekly",
+          time: "01:30",
+          weekdays: "mon,fri",
+          timezone: "America/New_York",
+        }),
+      ),
+    ).toEqual({
+      frequency: "weekly",
+      time: "01:30",
+      weekdays: "mon,fri",
+      timezone: "America/New_York",
+    });
+    expect(
+      parseRecurringMessageCreateModalId("recurring-message:create:w:0930:0:-"),
+    ).toBeUndefined();
+    expect(
+      parseRecurringMessageCreateModalId("recurring-message:create:d:0930:1:-"),
+    ).toBeUndefined();
+    expect(
+      parseRecurringMessageCreateModalId("recurring-message:create:d:0930:127:%GG"),
+    ).toBeUndefined();
+  });
   it("defines guild-only /message send with ManageMessages and no input options", () => {
     const definition = messageCommandDefinition.toJSON();
     expect(definition.name).toBe("message");
@@ -44,8 +90,25 @@ describe("message command", () => {
     });
     expect(definition.options?.[2]).toMatchObject({
       name: "schedule",
+      description: "Manage scheduled messages",
       options: [
         { name: "create", options: [{ name: "after", required: true }] },
+        {
+          name: "recurring-create",
+          options: [
+            {
+              name: "frequency",
+              required: true,
+              choices: [
+                { name: "daily", value: "daily" },
+                { name: "weekly", value: "weekly" },
+              ],
+            },
+            { name: "time", required: true },
+            { name: "weekdays", required: false },
+            { name: "timezone", required: false },
+          ],
+        },
         { name: "cancel", options: [{ name: "id", required: true }] },
         { name: "status", options: [{ name: "id", required: true }] },
         { name: "list", options: [{ name: "page", required: false, min_value: 1 }] },
@@ -55,6 +118,23 @@ describe("message command", () => {
           options: [
             { name: "id", required: true },
             { name: "after", required: true },
+          ],
+        },
+        {
+          name: "recurrence-edit",
+          options: [
+            { name: "id", required: true },
+            {
+              name: "frequency",
+              required: true,
+              choices: [
+                { name: "daily", value: "daily" },
+                { name: "weekly", value: "weekly" },
+              ],
+            },
+            { name: "time", required: true },
+            { name: "weekdays", required: false },
+            { name: "timezone", required: false },
           ],
         },
       ],

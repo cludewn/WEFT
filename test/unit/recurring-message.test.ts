@@ -6,6 +6,7 @@ import {
   findNextOccurrence,
   isRecurringRetryWithinLifetime,
   normalizeRecurringTimezone,
+  parseRecurringCommandInput,
   resolveLocalCandidate,
   selectMissedAndFutureOccurrences,
   validateRecurrence,
@@ -20,6 +21,40 @@ const dailyUtc: RecurrenceDefinition = {
 };
 
 describe("recurring message calendar", () => {
+  it("parses only the supported recurring command syntax", () => {
+    expect(parseRecurringCommandInput({ frequency: "daily", time: "09:30" })).toEqual({
+      frequency: "DAILY",
+      weekdayMask: 127,
+      localTime: "09:30",
+    });
+    expect(
+      parseRecurringCommandInput({
+        frequency: "weekly",
+        time: "23:59",
+        weekdays: " MON , Wed,fri ",
+        timezone: "america/new_york",
+      }),
+    ).toEqual({
+      frequency: "WEEKLY",
+      weekdayMask: 21,
+      localTime: "23:59",
+      explicitTimezone: "America/New_York",
+    });
+    for (const input of [
+      { frequency: "daily", time: "09:30", weekdays: "mon" },
+      { frequency: "weekly", time: "09:30" },
+      { frequency: "weekly", time: "09:30", weekdays: "" },
+      { frequency: "weekly", time: "09:30", weekdays: "mon,mon" },
+      { frequency: "weekly", time: "09:30", weekdays: "mon,,wed" },
+      { frequency: "weekly", time: "09:30", weekdays: "mon;wed" },
+      { frequency: "weekly", time: "09:30", weekdays: "monday" },
+      { frequency: "daily", time: "9:30" },
+      { frequency: "daily", time: "09:30:00" },
+      { frequency: "daily", time: "24:00" },
+      { frequency: "daily", time: "09:30", timezone: "+09:00" },
+    ])
+      expect(parseRecurringCommandInput(input)).toBeUndefined();
+  });
   it("normalizes supported recurrence and rejects invalid combinations and minute precision", () => {
     expect(validateRecurrence(dailyUtc)).toEqual({ ok: true, definition: dailyUtc });
     expect(validateRecurrence({ ...dailyUtc, frequency: "DAILY", weekdayMask: 1 })).toEqual({

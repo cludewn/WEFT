@@ -38,11 +38,13 @@ import type {
   CreateScheduledMessageCommandResult,
   ScheduledMessageCommandService,
 } from "./scheduled-message-command.js";
+import { parseRecurringCommandInput, type RecurringCommandInput } from "./recurring-message.js";
 
 export const MANAGED_MESSAGE_SEND_MODAL_ID = "managed-message:send";
 export const MANAGED_MESSAGE_EDIT_MODAL_PREFIX = "managed-message:edit:";
 export const SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX = "scheduled-message:schedule-create:";
 export const SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX = "scheduled-message:schedule-edit:";
+export const RECURRING_MESSAGE_CREATE_MODAL_PREFIX = "recurring-message:create:";
 export const MANAGED_MESSAGE_CONTENT_INPUT_ID = "managed-message:content";
 export const MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID = "managed-message:embed-title";
 export const MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID = "managed-message:embed-description";
@@ -58,6 +60,7 @@ const editModalRegex = new RegExp(`^managed-message:edit:(${SNOWFLAKE_PATTERN}):
 const scheduledCreateModalRegex = /^scheduled-message:schedule-create:([1-9][0-9]*)$/;
 const scheduledEditModalRegex =
   /^scheduled-message:schedule-edit:([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(0|[1-9][0-9]*)$/i;
+const recurringCreateModalRegex = /^recurring-message:create:([dw]):([0-9]{4}):([0-9]{1,3}):(.+)$/;
 const MAX_UNSIGNED_64 = (1n << 64n) - 1n;
 const MAX_POSTGRES_INTEGER = 2_147_483_647;
 
@@ -123,6 +126,53 @@ export function parseScheduledMessageCreateModalId(customId: string): number | u
   return isValidRelativeDurationMilliseconds(durationMs) ? durationMs : undefined;
 }
 
+const weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
+export function createRecurringMessageCreateModalId(input: RecurringCommandInput): string {
+  const parsed = parseRecurringCommandInput(input);
+  if (parsed === undefined) throw new Error("Invalid recurring command input");
+  const timezone =
+    parsed.explicitTimezone === undefined ? "-" : encodeURIComponent(parsed.explicitTimezone);
+  const customId = `${RECURRING_MESSAGE_CREATE_MODAL_PREFIX}${parsed.frequency === "DAILY" ? "d" : "w"}:${parsed.localTime.replace(":", "")}:${parsed.weekdayMask}:${timezone}`;
+  if (customId.length > 100) throw new Error("Recurring modal identity exceeds Discord limit");
+  return customId;
+}
+
+export function parseRecurringMessageCreateModalId(
+  customId: string,
+): RecurringCommandInput | undefined {
+  if (customId.length > 100) return undefined;
+  const match = recurringCreateModalRegex.exec(customId);
+  if (
+    match === null ||
+    match[1] === undefined ||
+    match[2] === undefined ||
+    match[3] === undefined ||
+    match[4] === undefined
+  )
+    return undefined;
+  const mask = Number(match[3]);
+  if (!Number.isInteger(mask) || mask < 1 || mask > 127 || String(mask) !== match[3])
+    return undefined;
+  let timezone: string | undefined;
+  try {
+    timezone = match[4] === "-" ? undefined : decodeURIComponent(match[4]);
+  } catch {
+    return undefined;
+  }
+  const frequency = match[1] === "d" ? "daily" : "weekly";
+  const input: RecurringCommandInput = {
+    frequency,
+    time: `${match[2].slice(0, 2)}:${match[2].slice(2)}`,
+    ...(frequency === "weekly"
+      ? { weekdays: weekdays.filter((_, index) => (mask & (1 << index)) !== 0).join(",") }
+      : {}),
+    ...(timezone === undefined ? {} : { timezone }),
+  };
+  const parsed = parseRecurringCommandInput(input);
+  return parsed !== undefined && parsed.weekdayMask === mask ? input : undefined;
+}
+
 export type ScheduledMessageEditModalTarget = {
   scheduledActionId: string;
   expectedRevision: number;
@@ -183,7 +233,7 @@ export const messageCommandDefinition = new SlashCommandBuilder()
   .addSubcommandGroup((group) =>
     group
       .setName("schedule")
-      .setDescription("Manage one-time scheduled messages")
+      .setDescription("Manage scheduled messages")
       .addSubcommand((subcommand) =>
         subcommand
           .setName("create")
@@ -193,6 +243,27 @@ export const messageCommandDefinition = new SlashCommandBuilder()
               .setName("after")
               .setDescription("Delay such as 30m, 2h, or 7d")
               .setRequired(true),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("recurring-create")
+          .setDescription("Schedule a recurring managed message in this channel")
+          .addStringOption((option) =>
+            option
+              .setName("frequency")
+              .setDescription("Daily or weekly")
+              .setRequired(true)
+              .addChoices({ name: "daily", value: "daily" }, { name: "weekly", value: "weekly" }),
+          )
+          .addStringOption((option) =>
+            option.setName("time").setDescription("Local time HH:MM").setRequired(true),
+          )
+          .addStringOption((option) =>
+            option.setName("weekdays").setDescription("Weekly days, e.g. mon,wed,fri"),
+          )
+          .addStringOption((option) =>
+            option.setName("timezone").setDescription("Named IANA timezone"),
           ),
       )
       .addSubcommand((subcommand) =>
@@ -240,6 +311,30 @@ export const messageCommandDefinition = new SlashCommandBuilder()
               .setDescription("Delay such as 30m, 2h, or 7d")
               .setRequired(true),
           ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("recurrence-edit")
+          .setDescription("Edit a recurring message schedule in this channel")
+          .addStringOption((option) =>
+            option.setName("id").setDescription("Schedule ID").setRequired(true),
+          )
+          .addStringOption((option) =>
+            option
+              .setName("frequency")
+              .setDescription("Daily or weekly")
+              .setRequired(true)
+              .addChoices({ name: "daily", value: "daily" }, { name: "weekly", value: "weekly" }),
+          )
+          .addStringOption((option) =>
+            option.setName("time").setDescription("Local time HH:MM").setRequired(true),
+          )
+          .addStringOption((option) =>
+            option.setName("weekdays").setDescription("Weekly days, e.g. mon,wed,fri"),
+          )
+          .addStringOption((option) =>
+            option.setName("timezone").setDescription("Named IANA timezone"),
+          ),
       ),
   );
 
@@ -255,6 +350,17 @@ function createInput(
     .setRequired(false)
     .setMaxLength(maxLength);
   return value === undefined || value === "" ? input : input.setValue(value);
+}
+
+function recurrenceOptions(interaction: ChatInputCommandInteraction): RecurringCommandInput {
+  const weekdays = interaction.options.getString("weekdays");
+  const timezone = interaction.options.getString("timezone");
+  return {
+    frequency: interaction.options.getString("frequency", true),
+    time: interaction.options.getString("time", true),
+    ...(weekdays === null ? {} : { weekdays }),
+    ...(timezone === null ? {} : { timezone }),
+  };
 }
 
 function createPayloadModal(
@@ -344,6 +450,13 @@ export function createScheduledMessageCreateModal(durationMs: number): ModalBuil
   );
 }
 
+export function createRecurringMessageCreateModal(input: RecurringCommandInput): ModalBuilder {
+  return createPayloadModal(
+    createRecurringMessageCreateModalId(input),
+    "Schedule recurring message",
+  );
+}
+
 export function createScheduledMessageEditModal(
   scheduledActionId: string,
   revision: number,
@@ -394,23 +507,25 @@ export async function handleMessageCommand(
     (!scheduled && subcommand !== "send" && subcommand !== "edit") ||
     (scheduled &&
       subcommand !== "create" &&
+      subcommand !== "recurring-create" &&
       subcommand !== "cancel" &&
       subcommand !== "status" &&
       subcommand !== "list" &&
       subcommand !== "edit" &&
+      subcommand !== "recurrence-edit" &&
       subcommand !== "reschedule")
   ) {
     throw new Error("Unsupported message subcommand");
   }
   const supportedContext =
     interaction.inGuild() &&
-    (scheduled && subcommand !== "create"
+    (scheduled && subcommand !== "create" && subcommand !== "recurring-create"
       ? isSupportedTarget(interaction.channel)
       : isActiveSupportedTarget(interaction.channel));
   if (!supportedContext) {
     await interaction.reply(
       ephemeralReply(
-        scheduled && subcommand !== "create"
+        scheduled && subcommand !== "create" && subcommand !== "recurring-create"
           ? "Scheduled-message administration is only supported in a guild text or thread channel."
           : "Managed messages are only supported in a guild text or active thread channel.",
       ),
@@ -438,6 +553,26 @@ export async function handleMessageCommand(
         return;
       }
       await interaction.showModal(createScheduledMessageCreateModal(durationMs));
+      return;
+    }
+
+    if (subcommand === "recurring-create") {
+      const recurrence = recurrenceOptions(interaction);
+      if (parseRecurringCommandInput(recurrence) === undefined) {
+        await interaction.reply(
+          ephemeralReply(
+            "Enter daily without weekdays, or weekly with unique comma-separated weekdays, strict HH:MM, and a named IANA timezone.",
+          ),
+        );
+        return;
+      }
+      try {
+        await interaction.showModal(createRecurringMessageCreateModal(recurrence));
+      } catch {
+        await interaction.reply(
+          ephemeralReply("The recurring timezone is too long for this form."),
+        );
+      }
       return;
     }
 
@@ -477,6 +612,19 @@ export async function handleMessageCommand(
     }
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (subcommand === "recurrence-edit") {
+      if (scheduledMessages.editRecurrence === undefined)
+        throw new Error("Recurring administration is unavailable");
+      const result = await scheduledMessages.editRecurrence({
+        scheduledActionId: scheduledActionId!,
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        actorUserId: interaction.user.id,
+        recurrence: recurrenceOptions(interaction),
+      });
+      await interaction.editReply(editReply(recurrenceEditResultMessage(result)));
+      return;
+    }
     if (subcommand === "cancel") {
       const result = await scheduledMessages.cancel({
         scheduledActionId: scheduledActionId!,
@@ -625,7 +773,43 @@ function cancelScheduledMessageResultMessage(
       return "No scheduled message was found in this channel for that ID.";
     case "PERSISTENCE_UNCONFIRMED":
       return "WEFT could not confirm the cancellation. Please try again later.";
+    case "CONFLICT":
+      return "The scheduled message changed concurrently. Review it before retrying.";
   }
+}
+
+function createRecurringMessageResultMessage(
+  result: Awaited<ReturnType<NonNullable<ScheduledMessageCommandService["createRecurring"]>>>,
+): string {
+  if (result.outcome === "SUCCESS") {
+    const when = Math.floor(result.scheduledFor.getTime() / 1_000);
+    return `Recurring message scheduled as \`${result.scheduledActionId}\`. First occurrence: <t:${when}:F>.${result.deliveryPendingReconciliation ? " Delivery is pending reconciliation." : ""}`;
+  }
+  if (result.outcome === "FAILURE") return createScheduledMessageResultMessage(result);
+  if (result.outcome === "INVALID_GUILD_TIMEZONE")
+    return "Configure a valid named IANA guild timezone or supply an explicit valid timezone.";
+  if (result.outcome === "INVALID_RECURRENCE") return "The recurrence is invalid.";
+  if (result.outcome === "PERSISTENCE_UNCONFIRMED")
+    return "WEFT could not confirm that the recurring schedule was saved. No delivery was enqueued.";
+  return "Recurring scheduling is temporarily unavailable.";
+}
+
+function recurrenceEditResultMessage(
+  result: Awaited<ReturnType<NonNullable<ScheduledMessageCommandService["editRecurrence"]>>>,
+): string {
+  if (result.outcome === "COMMITTED")
+    return `Recurrence updated.${result.effect.deferredMaterialization ? " The current in-flight occurrence remains unchanged; future materialization is deferred." : ""}${result.deliveryPendingReconciliation ? " Delivery is pending reconciliation." : ""}`;
+  if (result.outcome === "UNCHANGED") return "The recurrence is already unchanged.";
+  if (result.outcome === "WRONG_KIND")
+    return "This is a one-time schedule; use /message schedule reschedule.";
+  if (result.outcome === "INVALID_RECURRENCE") return "The recurrence is invalid.";
+  if (result.outcome === "CONFLICT")
+    return "The recurring schedule changed concurrently. Review it before retrying.";
+  if (result.outcome === "NOT_FOUND_OR_WRONG_CONTEXT")
+    return "No recurring schedule was found in this channel for that ID.";
+  if (result.outcome === "PERSISTENCE_UNCONFIRMED")
+    return "WEFT could not confirm the recurrence edit. Inspect the schedule before retrying.";
+  return "WEFT could not load the recurring schedule. Please try again later.";
 }
 
 function scheduledMessageStatusMessage(
@@ -634,6 +818,21 @@ function scheduledMessageStatusMessage(
   if (result.outcome === "FOUND") {
     const schedule = result.schedule;
     const when = Math.floor(schedule.executeAt.getTime() / 1_000);
+    if ("kind" in schedule) {
+      const days =
+        schedule.frequency === "WEEKLY"
+          ? ` weekdays: ${weekdays.filter((_, index) => (schedule.weekdayMask & (1 << index)) !== 0).join(",")};`
+          : "";
+      const timeMeaning =
+        schedule.status === "CANCELLED"
+          ? "Historical scheduled time"
+          : schedule.currentOccurrenceStatus === "PENDING"
+            ? "Next scheduled occurrence"
+            : schedule.currentOccurrenceStatus === null
+              ? "Last materialized scheduled time"
+              : "Current occurrence scheduled time";
+      return `Schedule \`${schedule.scheduledActionId}\` is **${schedule.status}** (recurring). Creator ID: \`${schedule.creatorUserId}\`. Revision: ${schedule.revision}. ${schedule.frequency.toLowerCase()};${days} local time: ${schedule.localTime.slice(0, 5)}; timezone: ${schedule.timezone}. ${timeMeaning}: <t:${when}:F>. Current occurrence: \`${schedule.currentOccurrenceId ?? "none"}\` (${schedule.currentOccurrenceStatus ?? "none"}); retry count: ${schedule.currentOccurrenceId === null ? "none" : (schedule.retryCount ?? "none")}.`;
+    }
     const messageLink =
       schedule.status === "COMPLETED" && schedule.resultMessageId !== null
         ? ` Message: https://discord.com/channels/${schedule.guildId}/${schedule.channelId}/${schedule.resultMessageId}.`
@@ -687,7 +886,21 @@ function scheduledMessageListMessage(
   }
   const rows = result.schedules.map((schedule) => {
     const when = Math.floor(schedule.executeAt.getTime() / 1_000);
-    return `- \`${schedule.scheduledActionId}\` — **${schedule.status}** — <t:${when}:F> (<t:${when}:R>) — creator \`${schedule.creatorUserId}\``;
+    if ("kind" in schedule && schedule.kind === "RECURRING") {
+      const label =
+        schedule.currentOccurrenceStatus === "PENDING"
+          ? "next scheduled occurrence"
+          : schedule.currentOccurrenceStatus === null
+            ? "last materialized scheduled time"
+            : "current occurrence scheduled time";
+      const selectedDays =
+        schedule.frequency === "WEEKLY"
+          ? ` ${weekdays.filter((_, index) => (schedule.weekdayMask & (1 << index)) !== 0).join(",")}`
+          : "";
+      return `- \`${schedule.scheduledActionId}\` — recurring ${schedule.frequency.toLowerCase()}${selectedDays} ${schedule.localTime.slice(0, 5)} ${schedule.timezone} — **${schedule.currentOccurrenceStatus ?? schedule.status}** — ${label}: <t:${when}:F> — creator \`${schedule.creatorUserId}\``;
+    }
+    const kind = "kind" in schedule ? "one-time " : "";
+    return `- \`${schedule.scheduledActionId}\` — ${kind}**${schedule.status}** — <t:${when}:F> (<t:${when}:R>) — creator \`${schedule.creatorUserId}\``;
   });
   return [`Scheduled messages — page ${page}`, ...rows].join("\n");
 }
@@ -734,6 +947,8 @@ function scheduledMessageRescheduleResultMessage(
   if (result.outcome === "INVALID_DURATION") {
     return "Enter one duration from 1m through 365d using m, h, or d.";
   }
+  if (result.outcome === "WRONG_KIND")
+    return "This is a recurring schedule; use /message schedule recurrence-edit.";
   if (result.outcome === "CONFLICT") {
     return "The scheduled message changed concurrently. Review it and retry the reschedule.";
   }
@@ -866,12 +1081,19 @@ export async function handleManagedMessageModalSubmit(
   const ownedScheduledCreate = interaction.customId.startsWith(
     SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX,
   );
+  const ownedRecurringCreate = interaction.customId.startsWith(
+    RECURRING_MESSAGE_CREATE_MODAL_PREFIX,
+  );
   const ownedScheduledEdit = interaction.customId.startsWith(SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX);
-  if (!send && !ownedEdit && !ownedScheduledCreate && !ownedScheduledEdit) return false;
+  if (!send && !ownedEdit && !ownedScheduledCreate && !ownedRecurringCreate && !ownedScheduledEdit)
+    return false;
 
   const editTarget = ownedEdit ? parseManagedMessageEditModalId(interaction.customId) : undefined;
   const scheduledDurationMs = ownedScheduledCreate
     ? parseScheduledMessageCreateModalId(interaction.customId)
+    : undefined;
+  const recurringInput = ownedRecurringCreate
+    ? parseRecurringMessageCreateModalId(interaction.customId)
     : undefined;
   const scheduledEditTarget = ownedScheduledEdit
     ? parseScheduledMessageEditModalId(interaction.customId)
@@ -886,6 +1108,10 @@ export async function handleManagedMessageModalSubmit(
     await interaction.reply(
       ephemeralReply("This scheduled-message form has an invalid or expired duration."),
     );
+    return true;
+  }
+  if (ownedRecurringCreate && recurringInput === undefined) {
+    await interaction.reply(ephemeralReply("This recurring-message form is invalid or expired."));
     return true;
   }
   if (ownedScheduledEdit && scheduledEditTarget === undefined) {
@@ -931,7 +1157,7 @@ export async function handleManagedMessageModalSubmit(
     const result = { outcome: "FAILURE", code: validation.code } as const;
     await interaction.reply(
       ephemeralReply(
-        ownedScheduledCreate
+        ownedScheduledCreate || ownedRecurringCreate
           ? createScheduledMessageResultMessage(result)
           : send
             ? sendResultMessage(result)
@@ -962,6 +1188,17 @@ export async function handleManagedMessageModalSubmit(
       payload: validation.payload,
     });
     await interaction.editReply(editReply(createScheduledMessageResultMessage(result)));
+  } else if (ownedRecurringCreate) {
+    if (recurringInput === undefined || scheduledMessages?.createRecurring === undefined)
+      throw new Error("Recurring creation is unavailable");
+    const result = await scheduledMessages.createRecurring({
+      guildId: interaction.guildId,
+      channelId: interaction.channelId,
+      actorUserId: interaction.user.id,
+      recurrence: recurringInput,
+      payload: validation.payload,
+    });
+    await interaction.editReply(editReply(createRecurringMessageResultMessage(result)));
   } else if (ownedScheduledEdit) {
     if (scheduledEditTarget === undefined)
       throw new Error("Validated scheduled edit target is missing");
