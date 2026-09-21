@@ -1,8 +1,13 @@
 import { ChannelType } from "discord.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChatInputCommandInteraction } from "discord.js";
 
+import {
+  createApplicationRuntime,
+  SHUTDOWN_TIMEOUT_MS,
+  ShutdownTimeoutError,
+} from "../../src/application-runtime.js";
 import type { AutomaticCloseThreadMaintenanceService } from "../../src/automatic-close-thread-maintenance.js";
 import type { GuildSettings, GuildSettingsStore } from "../../src/guild-settings.js";
 import type { ScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
@@ -32,6 +37,8 @@ const scheduledThreadCloseCommandStub = {
   schedule: vi.fn(),
 } as unknown as ScheduledThreadCloseCommandService;
 const automaticCloseMaintenanceStub = {} as AutomaticCloseThreadMaintenanceService;
+
+afterEach(() => vi.useRealTimers());
 
 describe("thread title rules", () => {
   it("adds one prefix and removes only the saved leading prefix", () => {
@@ -921,6 +928,189 @@ describe("thread lifecycle", () => {
     expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
   });
 
+  it("drains one retained logical operation across raw mutation and finalization ownership", async () => {
+    vi.useFakeTimers();
+    const fixture = createFixture({ deadlineMs: 250, mutationWaitMs: 20 });
+    const archive = deferred<void>();
+    const finalAudit = deferred<void>();
+    const recordAudit = fixture.auditStore.record;
+    fixture.discord.archiveThread = vi.fn(() => archive.promise);
+    fixture.auditStore.record = vi.fn<ThreadAuditStore["record"]>((audit) =>
+      finalAudit.promise.then(() => recordAudit(audit)),
+    );
+
+    const close = fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(close).resolves.toEqual({ ok: false, pending: true });
+
+    let drained = false;
+    const drain = fixture.service.drain().then(() => {
+      drained = true;
+    });
+    archive.resolve(undefined);
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    expect(fixture.auditStore.record).toHaveBeenCalledOnce();
+    expect(drained).toBe(false);
+
+    finalAudit.resolve(undefined);
+    await drain;
+    expect(drained).toBe(true);
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({ action: "CLOSE", outcome: "SUCCESS" }),
+    ]);
+  });
+
+  it("drains actual thread work created late by an admitted handler before closing resources", async () => {
+    vi.useFakeTimers();
+    const fixture = createFixture({ deadlineMs: 250, mutationWaitMs: 20 });
+    const enterThreadLifecycle = deferred<void>();
+    const archive = deferred<void>();
+    const finalAudit = deferred<void>();
+    const recordAudit = fixture.auditStore.record;
+    fixture.discord.archiveThread = vi.fn(() => archive.promise);
+    fixture.auditStore.record = vi.fn<ThreadAuditStore["record"]>((audit) =>
+      finalAudit.promise.then(() => recordAudit(audit)),
+    );
+    const destroyDiscord = vi.fn();
+    const closeDatabase = vi.fn(() => Promise.resolve());
+    const drainThreadLifecycle = vi.fn(() => fixture.service.drain());
+    const startupStep = () => Promise.resolve();
+    const runtime = createApplicationRuntime({
+      verifyDatabaseConnection: startupStep,
+      startPgBoss: startupStep,
+      ensureScheduledThreadCloseQueue: startupStep,
+      ensureScheduledMessageQueue: startupStep,
+      ensureRecurringMessageQueue: startupStep,
+      recoverScheduledThreadCloseDeliveries: startupStep,
+      recoverScheduledMessageDeliveries: startupStep,
+      recoverRecurringMessageDeliveries: startupStep,
+      startDiscord: startupStep,
+      startScheduledThreadCloseWorkers: startupStep,
+      startScheduledMessageWorker: startupStep,
+      startRecurringMessageWorker: startupStep,
+      startScheduledThreadCloseRuntimeReconciliation: startupStep,
+      startScheduledMessageRuntimeReconciliation: startupStep,
+      startRecurringMessageRuntimeReconciliation: startupStep,
+      reconcileAutomaticCloseBaselines: startupStep,
+      startAutomaticCloseRuntime: startupStep,
+      quiesce: [],
+      drainThreadLifecycle,
+      stopPgBoss: startupStep,
+      destroyDiscord,
+      closeDatabase,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processControl: { setExitCode: vi.fn(), forceExit: vi.fn(), writeStderr: vi.fn() },
+    });
+    await runtime.start();
+    await fixture.service.drain();
+
+    const handler = runtime.ingress.run(async () => {
+      await enterThreadLifecycle.promise;
+      return fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID);
+    });
+    expect(fixture.discord.archiveThread).not.toHaveBeenCalled();
+
+    const shutdown = runtime.shutdown("SIGTERM");
+    await Promise.resolve();
+    expect(drainThreadLifecycle).not.toHaveBeenCalled();
+    expect(destroyDiscord).not.toHaveBeenCalled();
+    expect(closeDatabase).not.toHaveBeenCalled();
+
+    enterThreadLifecycle.resolve(undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(handler).resolves.toEqual({ ok: false, pending: true });
+    await vi.waitFor(() => expect(drainThreadLifecycle).toHaveBeenCalledOnce());
+    expect(fixture.auditStore.record).not.toHaveBeenCalled();
+    expect(destroyDiscord).not.toHaveBeenCalled();
+    expect(closeDatabase).not.toHaveBeenCalled();
+
+    archive.resolve(undefined);
+    for (let index = 0; index < 20; index += 1) await Promise.resolve();
+    expect(fixture.auditStore.record).toHaveBeenCalledOnce();
+    expect(destroyDiscord).not.toHaveBeenCalled();
+    expect(closeDatabase).not.toHaveBeenCalled();
+
+    finalAudit.resolve(undefined);
+    await shutdown;
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({ action: "CLOSE", outcome: "SUCCESS" }),
+    ]);
+    expect(destroyDiscord).toHaveBeenCalledOnce();
+    expect(closeDatabase).toHaveBeenCalledOnce();
+  });
+
+  it("does not invent a retained-operation outcome when the process deadline wins", async () => {
+    vi.useFakeTimers();
+    const fixture = createFixture({ deadlineMs: 250, mutationWaitMs: 20 });
+    const archive = deferred<void>();
+    fixture.discord.archiveThread = vi.fn(() => archive.promise);
+    const setExitCode = vi.fn();
+    const forceExit = vi.fn();
+    const destroyDiscord = vi.fn();
+    const closeDatabase = vi.fn(() => Promise.resolve());
+    const startupStep = () => Promise.resolve();
+    const runtime = createApplicationRuntime({
+      verifyDatabaseConnection: startupStep,
+      startPgBoss: startupStep,
+      ensureScheduledThreadCloseQueue: startupStep,
+      ensureScheduledMessageQueue: startupStep,
+      ensureRecurringMessageQueue: startupStep,
+      recoverScheduledThreadCloseDeliveries: startupStep,
+      recoverScheduledMessageDeliveries: startupStep,
+      recoverRecurringMessageDeliveries: startupStep,
+      startDiscord: startupStep,
+      startScheduledThreadCloseWorkers: startupStep,
+      startScheduledMessageWorker: startupStep,
+      startRecurringMessageWorker: startupStep,
+      startScheduledThreadCloseRuntimeReconciliation: startupStep,
+      startScheduledMessageRuntimeReconciliation: startupStep,
+      startRecurringMessageRuntimeReconciliation: startupStep,
+      reconcileAutomaticCloseBaselines: startupStep,
+      startAutomaticCloseRuntime: startupStep,
+      quiesce: [],
+      drainThreadLifecycle: () => fixture.service.drain(),
+      stopPgBoss: startupStep,
+      destroyDiscord,
+      closeDatabase,
+      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      processControl: { setExitCode, forceExit, writeStderr: vi.fn() },
+    });
+    await runtime.start();
+
+    const handler = runtime.ingress.run(() => fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(20);
+    await expect(handler).resolves.toEqual({ ok: false, pending: true });
+    const stateWritesBeforeTimeout = vi.mocked(fixture.managedThreads.saveClosed).mock.calls.length;
+    const fetchesBeforeTimeout = vi.mocked(fixture.discord.fetchThread).mock.calls.length;
+    const stateBeforeTimeout = { ...fixture.state };
+    expect(fixture.auditStore.record).not.toHaveBeenCalled();
+
+    const shutdown = runtime.shutdown("SIGTERM");
+    const timedOut = expect(shutdown).rejects.toBeInstanceOf(ShutdownTimeoutError);
+    await vi.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS);
+    await timedOut;
+
+    expect(setExitCode).toHaveBeenLastCalledWith(1);
+    expect(forceExit).toHaveBeenCalledExactlyOnceWith(1);
+    expect(fixture.managedThreads.saveClosed).toHaveBeenCalledTimes(stateWritesBeforeTimeout);
+    expect(fixture.discord.fetchThread).toHaveBeenCalledTimes(fetchesBeforeTimeout);
+    expect(fixture.state).toEqual(stateBeforeTimeout);
+    expect(fixture.managedThreads.markOpen).not.toHaveBeenCalled();
+    expect(fixture.auditStore.record).not.toHaveBeenCalled();
+    expect(fixture.logger.warn).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: "thread_lifecycle_reconciliation_retry_scheduled" }),
+      expect.any(String),
+    );
+    expect(destroyDiscord).not.toHaveBeenCalled();
+    expect(closeDatabase).not.toHaveBeenCalled();
+  });
+
   it("reconciles a late close with the prefix selected before caller wait expires", async () => {
     const fixture = createFixture({ deadlineMs: 250, mutationWaitMs: 20 });
     let completeArchive: (() => void) | undefined;
@@ -972,6 +1162,7 @@ describe("thread lifecycle", () => {
     });
     await expect(close).resolves.toEqual({ ok: false, pending: true });
     expect(fixture.state?.lifecycleState).toBe("CLOSED");
+    const drain = fixture.service.drain();
 
     closeAudit.resolve(undefined);
     await vi.waitFor(() => expect(fixture.state?.lifecycleState).toBe("OPEN"));
@@ -983,6 +1174,7 @@ describe("thread lifecycle", () => {
     );
     expect(fixture.thread).toMatchObject({ name: "Topic", archived: false });
     expect(fixture.discord.renameThread).toHaveBeenCalledOnce();
+    await drain;
   });
 
   it("reconciles a rejected mutation that Discord did not apply", async () => {

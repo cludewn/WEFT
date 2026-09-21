@@ -171,7 +171,10 @@ export function createRecurringMessageWorker({
       if (jobs.length === 1) await process(jobs[0]!);
     })();
     inFlight.add(invocation);
-    void invocation.finally(() => inFlight.delete(invocation));
+    void invocation.then(
+      () => inFlight.delete(invocation),
+      () => inFlight.delete(invocation),
+    );
     return invocation;
   };
   return {

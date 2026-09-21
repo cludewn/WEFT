@@ -120,7 +120,7 @@ describe("pg-boss runtime", () => {
     await expect(runtime.start()).rejects.toThrow("partial startup failure");
     await runtime.stop();
 
-    expect(pgBossMock.stop).toHaveBeenCalledWith({ close: true });
+    expect(pgBossMock.stop).toHaveBeenCalledWith({ close: true, timeout: 30_000 });
   });
 
   it("waits for stop to close the pg-boss-owned pool", async () => {
@@ -140,13 +140,21 @@ describe("pg-boss runtime", () => {
 
     finishStop?.();
     await stopping;
-    expect(pgBossMock.stop).toHaveBeenCalledWith({ close: true });
+    expect(pgBossMock.stop).toHaveBeenCalledWith({ close: true, timeout: 30_000 });
     const loggedFields: unknown = (logger.info as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0];
     expect(loggedFields).toMatchObject({ event: "pg_boss_stopped" });
     expect(typeof (loggedFields as { durationMs?: unknown }).durationMs).toBe("number");
     expect((logger.info as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[1]).toBe(
       "pg-boss shutdown completed",
     );
+  });
+
+  it("passes the remaining application shutdown budget to pg-boss", async () => {
+    const runtime = createPgBossRuntime(databaseConfig, createLogger());
+
+    await runtime.stop(4_321);
+
+    expect(pgBossMock.stop).toHaveBeenCalledWith({ close: true, timeout: 4_321 });
   });
 
   it("logs runtime errors without raw error details", () => {

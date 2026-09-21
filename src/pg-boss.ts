@@ -8,7 +8,7 @@ import { getErrorName } from "./shutdown.js";
 export type PgBossRuntime = {
   client: PgBoss;
   start: () => Promise<void>;
-  stop: () => Promise<void>;
+  stop: (timeoutMs?: number) => Promise<void>;
 };
 
 export function createPgBossRuntime(config: DatabaseConfig, logger: Logger): PgBossRuntime {
@@ -56,12 +56,12 @@ export function createPgBossRuntime(config: DatabaseConfig, logger: Logger): PgB
       }
     },
 
-    async stop(): Promise<void> {
+    async stop(timeoutMs = 30_000): Promise<void> {
       const startedAt = Date.now();
       logger.info({ event: "pg_boss_stopping" }, "pg-boss shutdown started");
 
       try {
-        await boss.stop({ close: true });
+        await boss.stop({ close: true, timeout: Math.max(1, timeoutMs) });
         logger.info(
           { event: "pg_boss_stopped", durationMs: Date.now() - startedAt },
           "pg-boss shutdown completed",

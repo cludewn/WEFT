@@ -658,6 +658,7 @@ function createLifecycle(overrides: Partial<ThreadLifecycleService> = {}): Threa
     autoCloseAsSystem: vi.fn(() => Promise.resolve({ outcome: "SUCCESS", changed: true } as const)),
     open: vi.fn(() => Promise.resolve({ ok: true, changed: true } as const)),
     autoOpen: vi.fn(() => Promise.resolve({ ok: true, changed: true } as const)),
+    drain: vi.fn(() => Promise.resolve()),
     ...overrides,
   };
 }

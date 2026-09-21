@@ -286,36 +286,54 @@ authoritative action and safely ignores `CANCELLED` state.
 
 ## Startup and shutdown
 
-Startup must initialize components in a controlled order.
+One application-specific runtime owner coordinates the process-local `STARTING`, `READY`,
+`SHUTTING_DOWN`, and `STOPPED` states. It is deliberately not a generic lifecycle or dependency-
+injection framework.
 
-The intended sequence is:
+After configuration validation, Discord event handlers are wired behind the runtime's closed
+ingress gate. The runtime verifies PostgreSQL with `SELECT 1`, starts pg-boss, validates all queues,
+completes scheduled-thread-close, scheduled-message, and recurring-message startup recovery, waits
+for Discord `ClientReady`, registers all workers, schedules all periodic reconcilers, attempts the
+best-effort automatic-close baseline repair, and starts the automatic-close timer. Only then does
+one synchronous boundary enter `READY`; handlers consult that state directly before entering an
+application service. `application_ready` is logged after the boundary. Command deployment remains
+outside this path.
 
-1. load and validate application configuration,
-2. initialize structured logging,
-3. connect to PostgreSQL,
-4. run or verify database migrations according to the approved migration strategy,
-5. initialize pg-boss when scheduling is implemented,
-6. create and validate required scheduling queues,
-7. reconcile persistent scheduled actions and their delivery state,
-8. initialize the Discord client and wait until it is ready,
-9. register workers and event handlers,
-10. start runtime reconciliation loops,
-11. begin normal operation.
+Each awaited startup step has a state checkpoint. A shutdown request during one step closes ingress
+and prevents the next step, but does not close a dependency underneath the active step. The active
+step receives the remaining shared shutdown budget, after which startup and shutdown converge on
+the single cleanup operation. Partial-startup failure uses the same operation; the original startup
+step and safe error name remain primary while cleanup failures are separate bounded events.
 
-Startup code must not print secret values.
+The ingress gate tracks admitted top-level Discord operations. Thread lifecycle separately tracks
+the full logical operation when a raw mutation outlives a `PENDING` interaction result. Retained
+ownership begins when the raw mutation starts and ends only after finalization, so the transition
+from raw settlement to finalization cannot produce a false empty drain. A deferred auto-open that
+was admitted before ingress closed remains attached to that bounded logical operation. Unrelated
+post-close events cannot enter the service.
 
-Shutdown must:
+Shutdown has two phases. Quiesce synchronously closes ingress and initiates every automatic-close
+timer, scheduled-thread-close reconciler, scheduled-message reconciler, recurring-message
+reconciler, scheduled-thread-close worker poller, scheduled-message worker poller, and recurring-
+message worker poller stop before awaiting any drain. Drain first establishes a source barrier by
+waiting for the active startup step, admitted handlers, active sweeps, and worker callbacks, because
+each can transfer ownership to retained thread-lifecycle work. It then drains that stable retained-
+work set. After both drain stages, pg-boss stops and closes its own PostgreSQL resources, Discord is
+destroyed, the application pool closes, and process listeners are removed. Cleanup operations are
+idempotent.
 
-1. stop accepting new application work where practical,
-2. stop new runtime reconciliation sweeps and drain an in-flight sweep,
-3. stop worker polling and drain in-flight scheduled execution,
-4. stop pg-boss and close its independently owned database connections,
-5. destroy the Discord client,
-6. close the application database connections,
-7. report shutdown failures,
-8. exit without silently abandoning in-process state.
+The first shutdown request creates one 30,000 ms deadline. Every phase uses its remaining budget;
+pg-boss receives the remaining time but the application timer remains final authority over its
+minimum timeout behavior. Expiry emits only a sanitized `shutdown_timed_out`, selects status 1, and
+forces termination without changing feature state. No database transaction or advisory lock spans
+unrelated shutdown waits.
 
-The exact migration and command-registration strategies must be selected during their implementation phases.
+One disposable process-handler installation owns `SIGINT`, `SIGTERM`, `unhandledRejection`, and
+`uncaughtException`. Normal signals join the shared shutdown and select status 0 only when cleanup
+succeeds. The first fatal event synchronously selects status 1 and closes ingress before joining
+shutdown. A second fatal event, or the shared deadline during fatal shutdown, forces immediate
+status-1 termination. Fatal logging contains only the origin and a bounded error name; logger
+failure uses a fixed stderr fallback.
 
 ## Error handling
 
