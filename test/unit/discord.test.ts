@@ -373,6 +373,8 @@ describe("managed message modal routing", () => {
     } satisfies ManagedMessageService;
     const scheduledMessages = {
       create: vi.fn(),
+      createRecurring: vi.fn(),
+      editRecurrence: vi.fn(),
       cancel: vi.fn(),
       status: vi.fn(),
       list: vi.fn(),
@@ -408,6 +410,8 @@ describe("managed message modal routing", () => {
     } satisfies ManagedMessageService;
     const scheduledMessages = {
       create: vi.fn(),
+      createRecurring: vi.fn(),
+      editRecurrence: vi.fn(),
       cancel: vi.fn(),
       status: vi.fn(),
       list: vi.fn(),
@@ -687,6 +691,8 @@ function registerTestCommandHandler(
     },
     scheduledMessages: {
       create: vi.fn(),
+      createRecurring: vi.fn(),
+      editRecurrence: vi.fn(),
       cancel: vi.fn(),
       status: vi.fn(),
       list: vi.fn(),

@@ -12,8 +12,9 @@ import {
   type CreateRecurringMessageSeries,
   type RecurringMessageStore,
   type RecurringMutationResult,
+  type RecurrenceEditResult,
 } from "../../src/recurring-message-persistence.js";
-import { ALL_WEEKDAYS_MASK } from "../../src/recurring-message.js";
+import { ALL_WEEKDAYS_MASK, findNextOccurrence } from "../../src/recurring-message.js";
 import type { ScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
 import { createScheduledMessageExecutor } from "../../src/scheduled-message-execution.js";
 import {
@@ -43,6 +44,145 @@ afterAll(async () => {
 });
 
 describe("recurring message persistence", () => {
+  it("decides recurrence no-op under the series lock after revision validation", async () => {
+    const input = createInput("recurrence-noop");
+    await recurring.create(input);
+    const before = await recurring.find(input.scheduledActionId);
+    const unchanged = await recurring.editRecurrence({
+      scheduledActionId: input.scheduledActionId,
+      actorId: "editor",
+      expectedRevision: 0,
+      recurrence: { ...dailyRecurrence, timezone: "utc" },
+      effectiveAt: new Date("2030-01-01T09:01:00.000Z"),
+      replacementOccurrenceId: "unused-noop-occurrence",
+      auditId: "unused-noop-audit",
+      gapAuditIds: [],
+    });
+    expect(unchanged).toEqual({ outcome: "UNCHANGED" });
+    const after = await recurring.find(input.scheduledActionId);
+    expect(after).toMatchObject({ revision: 0, recurrence: { definitionRevision: 0 } });
+    expect(after?.action.executeAt).toEqual(before?.action.executeAt);
+    expect(after?.occurrence?.id).toBe(input.occurrenceId);
+    await expect(
+      database.client
+        .select()
+        .from(recurringMessageAudits)
+        .where(eq(recurringMessageAudits.id, "unused-noop-audit")),
+    ).resolves.toHaveLength(0);
+    await recurring.editPayload({
+      scheduledActionId: input.scheduledActionId,
+      actorId: "other-editor",
+      expectedRevision: 0,
+      payload: { content: "changed", embed: null },
+      auditId: "noop-race-payload-audit",
+      occurredAt: new Date("2030-01-01T09:02:00.000Z"),
+    });
+    await expect(
+      recurring.editRecurrence({
+        scheduledActionId: input.scheduledActionId,
+        actorId: "editor",
+        expectedRevision: 0,
+        recurrence: dailyRecurrence,
+        effectiveAt: new Date("2030-01-01T09:03:00.000Z"),
+        replacementOccurrenceId: "unused-stale-occurrence",
+        auditId: "unused-stale-audit",
+        gapAuditIds: [],
+      }),
+    ).resolves.toEqual({ outcome: "CONFLICT" });
+  });
+
+  it("accepts unused gap identities when a claim wins before recurrence edit", async () => {
+    const input = {
+      ...createInput("gap-claim-race"),
+      effectiveAt: new Date("2024-03-10T05:00:00.000Z"),
+    };
+    await recurring.create(input);
+    const replacement = {
+      frequency: "DAILY" as const,
+      weekdayMask: 127,
+      localTime: "02:30",
+      timezone: "America/New_York",
+    };
+    const effectiveAt = new Date("2024-03-10T06:00:00.000Z");
+    expect(findNextOccurrence(replacement, 1, effectiveAt).skippedGaps).toHaveLength(1);
+    await recurring.claimInitial({
+      occurrenceId: input.occurrenceId,
+      expectedSeriesRevision: 0,
+      claimedAt: effectiveAt,
+    });
+    const result = await recurring.editRecurrence({
+      scheduledActionId: input.scheduledActionId,
+      actorId: "editor",
+      expectedRevision: 0,
+      recurrence: replacement,
+      effectiveAt,
+      replacementOccurrenceId: "unused-gap-race-occurrence",
+      auditId: "gap-race-edit-audit",
+      gapAuditIds: ["unused-gap-race-audit"],
+    });
+    expect(result).toMatchObject({
+      outcome: "COMMITTED",
+      effect: {
+        deferredMaterialization: true,
+        replacementOccurrenceId: null,
+        replacementScheduledFor: null,
+      },
+    });
+    await expect(
+      database.client
+        .select()
+        .from(recurringMessageAudits)
+        .where(eq(recurringMessageAudits.id, "unused-gap-race-audit")),
+    ).resolves.toHaveLength(0);
+    await expect(
+      database.client
+        .select()
+        .from(recurringMessageOccurrences)
+        .where(eq(recurringMessageOccurrences.id, "unused-gap-race-occurrence")),
+    ).resolves.toHaveLength(0);
+  });
+
+  it("uses the supplied gap audit identity while the locked occurrence remains pending", async () => {
+    const input = {
+      ...createInput("pending-gap-edit"),
+      effectiveAt: new Date("2024-03-10T05:00:00.000Z"),
+    };
+    await recurring.create(input);
+    const replacement = {
+      frequency: "DAILY" as const,
+      weekdayMask: 127,
+      localTime: "02:30",
+      timezone: "America/New_York",
+    };
+    const effectiveAt = new Date("2024-03-10T06:00:00.000Z");
+    const selection = findNextOccurrence(replacement, 1, effectiveAt);
+    expect(selection.skippedGaps).toHaveLength(1);
+    await expect(
+      recurring.editRecurrence({
+        scheduledActionId: input.scheduledActionId,
+        actorId: "editor",
+        expectedRevision: 0,
+        recurrence: replacement,
+        effectiveAt,
+        replacementOccurrenceId: "pending-gap-replacement",
+        auditId: "pending-gap-edit-audit",
+        gapAuditIds: ["pending-gap-audit"],
+      }),
+    ).resolves.toMatchObject({
+      outcome: "COMMITTED",
+      effect: {
+        committedRevision: 1,
+        deferredMaterialization: false,
+        replacementOccurrenceId: "pending-gap-replacement",
+        replacementScheduledFor: selection.occurrence.scheduledFor,
+      },
+    });
+    const [gapAudit] = await database.client
+      .select()
+      .from(recurringMessageAudits)
+      .where(eq(recurringMessageAudits.id, "pending-gap-audit"));
+    expect(gapAudit?.event).toBe("DST_GAP_SKIPPED");
+  });
   it("atomically creates the discriminator, exact audit, and one initial occurrence", async () => {
     const input = createInput("create");
     input.recurrence = { ...input.recurrence, timezone: "america/new_york" };
@@ -175,11 +315,16 @@ describe("recurring message persistence", () => {
     });
     expect(edited).toMatchObject({
       outcome: "COMMITTED",
-      series: {
-        revision: 1,
-        recurrence: { definitionRevision: 1, effectiveAt },
-        occurrence: { id: "replacement-pending", status: "PENDING" },
+      effect: {
+        committedRevision: 1,
+        deferredMaterialization: false,
+        replacementOccurrenceId: "replacement-pending",
       },
+    });
+    await expect(recurring.find(pendingInput.scheduledActionId)).resolves.toMatchObject({
+      revision: 1,
+      recurrence: { definitionRevision: 1, effectiveAt },
+      occurrence: { id: "replacement-pending", status: "PENDING" },
     });
     const [old] = await database.client
       .select()
@@ -214,19 +359,24 @@ describe("recurring message persistence", () => {
     });
     expect(deferred).toMatchObject({
       outcome: "COMMITTED",
-      series: {
-        revision: 1,
-        recurrence: { definitionRevision: 1 },
-        occurrence: {
-          id: executingInput.occurrenceId,
-          status: "EXECUTING",
-          claimContent: "original",
-        },
+      effect: {
+        committedRevision: 1,
+        deferredMaterialization: true,
+        replacementOccurrenceId: null,
+        replacementScheduledFor: null,
       },
     });
-    expect(deferred.outcome === "COMMITTED" ? deferred.series.action.executeAt : null).toEqual(
-      before?.action.executeAt,
-    );
+    const deferredSeries = await recurring.find(executingInput.scheduledActionId);
+    expect(deferredSeries).toMatchObject({
+      revision: 1,
+      recurrence: { definitionRevision: 1 },
+      occurrence: {
+        id: executingInput.occurrenceId,
+        status: "EXECUTING",
+        claimContent: "original",
+      },
+    });
+    expect(deferredSeries?.action.executeAt).toEqual(before?.action.executeAt);
   });
 
   it("preserves retry-pending snapshots through recurrence edit and cancellation", async () => {
@@ -254,19 +404,18 @@ describe("recurring message persistence", () => {
     });
     expect(edited).toMatchObject({
       outcome: "COMMITTED",
-      series: {
-        revision: 1,
-        occurrence: {
-          id: input.occurrenceId,
-          status: "RETRY_PENDING",
-          retryCount: 1,
-          claimContent: "original",
-        },
+    });
+    const editedSeries = await recurring.find(input.scheduledActionId);
+    expect(editedSeries).toMatchObject({
+      revision: 1,
+      occurrence: {
+        id: input.occurrenceId,
+        status: "RETRY_PENDING",
+        retryCount: 1,
+        claimContent: "original",
       },
     });
-    expect(edited.outcome === "COMMITTED" ? edited.series.action.executeAt : null).toEqual(
-      before?.action.executeAt,
-    );
+    expect(editedSeries?.action.executeAt).toEqual(before?.action.executeAt);
     const cancelled = await recurring.cancel({
       scheduledActionId: input.scheduledActionId,
       actorId: "canceller",
@@ -535,7 +684,60 @@ describe("recurring message persistence", () => {
         auditId: "first-recurrence-audit",
         gapAuditIds: [],
       }),
-    ).resolves.toMatchObject({ outcome: "COMMITTED", series: { revision: 2 } });
+    ).resolves.toMatchObject({
+      outcome: "COMMITTED",
+      effect: {
+        committedRevision: 1,
+        deferredMaterialization: false,
+        replacementOccurrenceId: "first-recurrence-occurrence",
+      },
+    });
+    await expect(recurring.find(recurrenceInput.scheduledActionId)).resolves.toMatchObject({
+      revision: 2,
+    });
+
+    const deferredInput = createInput("deferred-recurrence-response-loss");
+    await recurring.create(deferredInput);
+    await recurring.claimInitial({
+      occurrenceId: deferredInput.occurrenceId,
+      expectedSeriesRevision: 0,
+      claimedAt: new Date("2030-01-01T09:00:00.000Z"),
+    });
+    const responseLossDeferredStore = createRecurringMessageStore(
+      responseLossDatabase(async () => {
+        await recurring.cancel({
+          scheduledActionId: deferredInput.scheduledActionId,
+          actorId: "later-canceller",
+          expectedRevision: 1,
+          auditId: "later-deferred-cancel-audit",
+          occurredAt: new Date("2030-01-01T09:02:00.000Z"),
+        });
+      }),
+    );
+    await expect(
+      responseLossDeferredStore.editRecurrence({
+        scheduledActionId: deferredInput.scheduledActionId,
+        actorId: "first-editor",
+        expectedRevision: 0,
+        recurrence: { ...dailyRecurrence, localTime: "10:00" },
+        effectiveAt: new Date("2030-01-01T09:01:00.000Z"),
+        replacementOccurrenceId: "unused-deferred-response-loss-replacement",
+        auditId: "first-deferred-recurrence-audit",
+        gapAuditIds: [],
+      }),
+    ).resolves.toEqual({
+      outcome: "COMMITTED",
+      effect: {
+        committedRevision: 1,
+        deferredMaterialization: true,
+        replacementOccurrenceId: null,
+        replacementScheduledFor: null,
+      },
+    });
+    await expect(recurring.find(deferredInput.scheduledActionId)).resolves.toMatchObject({
+      revision: 2,
+      action: { status: "CANCELLED" },
+    });
 
     const cancellationInput = createInput("cancellation-response-loss");
     await recurring.create(cancellationInput);
@@ -1014,7 +1216,7 @@ describe("recurring message persistence", () => {
     });
     const readPromise = createRecurringMessageStore(gatedDatabase).find(input.scheduledActionId);
     void readPromise.catch((error: unknown) => firstSelectFinished.reject(error));
-    let editResult: RecurringMutationResult | undefined;
+    let editResult: RecurringMutationResult | RecurrenceEditResult | undefined;
     let editError: unknown;
     try {
       await firstSelectFinished.promise;
@@ -1682,7 +1884,7 @@ function runConcurrentMutation(
   mutation: "payload" | "recurrence" | "cancel",
   input: CreateRecurringMessageSeries,
   suffix: string,
-): Promise<RecurringMutationResult> {
+): Promise<RecurringMutationResult | RecurrenceEditResult> {
   if (mutation === "payload") {
     return store.editPayload({
       scheduledActionId: input.scheduledActionId,

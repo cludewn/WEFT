@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { ManagedMessageService } from "../../src/managed-message.js";
 import {
   createScheduledMessageCreateModalId,
+  createRecurringMessageCreateModalId,
   createScheduledMessageEditModalId,
   handleManagedMessageModalSubmit,
   handleMessageCommand,
@@ -104,6 +105,17 @@ function services(
     reschedule: vi.fn<ScheduledMessageCommandService["reschedule"]>(() =>
       Promise.resolve({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" }),
     ),
+    createRecurring: vi.fn<NonNullable<ScheduledMessageCommandService["createRecurring"]>>(() =>
+      Promise.resolve({
+        outcome: "SUCCESS",
+        scheduledActionId: "series-id",
+        scheduledFor: executeAt,
+        deliveryPendingReconciliation: false,
+      }),
+    ),
+    editRecurrence: vi.fn<NonNullable<ScheduledMessageCommandService["editRecurrence"]>>(() =>
+      Promise.resolve({ outcome: "UNCHANGED" }),
+    ),
   } satisfies ScheduledMessageCommandService;
   const managed = {
     send: vi.fn(),
@@ -114,10 +126,19 @@ function services(
 }
 
 function commandInteraction(input: {
-  subcommand: "create" | "cancel" | "status" | "list" | "edit" | "reschedule";
+  subcommand:
+    | "create"
+    | "recurring-create"
+    | "cancel"
+    | "status"
+    | "list"
+    | "edit"
+    | "reschedule"
+    | "recurrence-edit";
   value: string;
   after?: string;
   archived?: boolean;
+  options?: Record<string, string | null>;
 }) {
   const showModal = vi.fn((modal: ModalBuilder) => {
     void modal;
@@ -135,7 +156,12 @@ function commandInteraction(input: {
     options: {
       getSubcommand: () => input.subcommand,
       getSubcommandGroup: () => "schedule",
-      getString: (name: string) => (name === "after" ? (input.after ?? input.value) : input.value),
+      getString: (name: string) =>
+        input.options !== undefined && name in input.options
+          ? input.options[name]
+          : name === "after"
+            ? (input.after ?? input.value)
+            : input.value,
       getInteger: () => 1,
     },
     inGuild: () => true,
@@ -194,6 +220,164 @@ function modalInteraction(
 }
 
 describe("scheduled message command handler", () => {
+  it("opens recurring-create modal without persisting and submits the carried recurrence", async () => {
+    const s = services();
+    const f = commandInteraction({
+      subcommand: "recurring-create",
+      value: "",
+      options: { frequency: "weekly", time: "09:30", weekdays: "MON,Wed", timezone: null },
+    });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    expect(f.showModal).toHaveBeenCalledTimes(1);
+    expect(s.scheduled.createRecurring).not.toHaveBeenCalled();
+    const customId = f.showModal.mock.calls[0]![0].toJSON().custom_id;
+    expect(customId).toBe(
+      createRecurringMessageCreateModalId({
+        frequency: "weekly",
+        time: "09:30",
+        weekdays: "mon,wed",
+      }),
+    );
+    const submission = modalInteraction(customId);
+    await handleManagedMessageModalSubmit(submission.interaction, s.managed, s.scheduled);
+    expect(s.scheduled.createRecurring).toHaveBeenCalledWith(
+      expect.objectContaining({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        recurrence: { frequency: "weekly", time: "09:30", weekdays: "mon,wed" },
+      }),
+    );
+    expect(JSON.stringify(submission.editReply.mock.calls)).toContain("series-id");
+  });
+
+  it("rejects malformed recurring modal state before reading its payload", async () => {
+    const s = services();
+    const f = modalInteraction("recurring-message:create:w:0930:0:-");
+    await handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled);
+    expect(f.getTextInputValue).not.toHaveBeenCalled();
+    expect(s.scheduled.createRecurring).not.toHaveBeenCalled();
+  });
+
+  it("routes recurrence-edit in archived supported threads", async () => {
+    const s = services();
+    const f = commandInteraction({
+      subcommand: "recurrence-edit",
+      value: "schedule-id",
+      archived: true,
+      options: {
+        id: "schedule-id",
+        frequency: "daily",
+        time: "10:00",
+        weekdays: null,
+        timezone: null,
+      },
+    });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    expect(s.scheduled.editRecurrence).toHaveBeenCalledWith({
+      scheduledActionId: "schedule-id",
+      guildId: "guild-id",
+      channelId: "channel-id",
+      actorUserId: "actor-id",
+      recurrence: { frequency: "daily", time: "10:00" },
+    });
+  });
+
+  it("labels recurring status by occurrence state without exposing payload", async () => {
+    const s = services();
+    const f = commandInteraction({ subcommand: "status", value: "series-id", archived: true });
+    s.scheduled.status.mockResolvedValueOnce({
+      outcome: "FOUND",
+      schedule: {
+        scheduledActionId: "series-id",
+        kind: "RECURRING",
+        status: "ACTIVE",
+        guildId: "guild-id",
+        channelId: "channel-id",
+        executeAt,
+        creatorUserId: "actor-id",
+        revision: 3,
+        frequency: "WEEKLY",
+        weekdayMask: 5,
+        localTime: "09:30",
+        timezone: "America/New_York",
+        currentOccurrenceId: "occurrence-id",
+        currentOccurrenceStatus: "RETRY_PENDING",
+        retryCount: 2,
+      },
+    });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    const response = JSON.stringify(f.editReply.mock.calls);
+    expect(response).toContain("Current occurrence scheduled time");
+    expect(response).not.toContain("Next scheduled occurrence");
+    expect(response).not.toContain("sensitive scheduled content");
+    expect(response).toContain("mon,wed");
+  });
+
+  it("shows no retry count when recurring status has no current occurrence", async () => {
+    const s = services();
+    const f = commandInteraction({ subcommand: "status", value: "series-id" });
+    s.scheduled.status.mockResolvedValueOnce({
+      outcome: "FOUND",
+      schedule: {
+        scheduledActionId: "series-id",
+        kind: "RECURRING",
+        status: "CANCELLED",
+        guildId: "guild-id",
+        channelId: "channel-id",
+        executeAt,
+        creatorUserId: "actor-id",
+        revision: 2,
+        frequency: "DAILY",
+        weekdayMask: 127,
+        localTime: "09:00",
+        timezone: "UTC",
+        currentOccurrenceId: null,
+        currentOccurrenceStatus: null,
+        retryCount: null,
+      },
+    });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    const response = JSON.stringify(f.editReply.mock.calls);
+    expect(response).toContain("retry count: none");
+    expect(response).toContain("Historical scheduled time");
+  });
+
+  it("labels recurring list rows by state", async () => {
+    const s = services();
+    const f = commandInteraction({ subcommand: "list", value: "", archived: true });
+    s.scheduled.list.mockResolvedValueOnce({
+      outcome: "FOUND",
+      schedules: [
+        {
+          scheduledActionId: "one-time-id",
+          kind: "ONE_TIME",
+          status: "ACTIVE",
+          executeAt,
+          creatorUserId: "actor-id",
+        },
+        {
+          scheduledActionId: "series-id",
+          kind: "RECURRING",
+          status: "ACTIVE",
+          executeAt,
+          creatorUserId: "actor-id",
+          frequency: "DAILY",
+          weekdayMask: 127,
+          localTime: "09:00",
+          timezone: "UTC",
+          currentOccurrenceStatus: "EXECUTING",
+        },
+      ],
+    });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    const response = JSON.stringify(f.editReply.mock.calls);
+    expect(response).toContain("one-time **ACTIVE**");
+    expect(response).toContain("recurring daily");
+    expect(response).toContain("current occurrence scheduled time");
+    expect(response).not.toContain("next scheduled occurrence");
+    expect(response).not.toContain("sensitive scheduled content");
+  });
   it("round-trips only a validated relative delay in the modal custom ID", () => {
     const customId = createScheduledMessageCreateModalId(3_600_000);
     expect(customId).toBe(`${SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX}3600000`);

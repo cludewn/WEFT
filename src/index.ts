@@ -30,6 +30,7 @@ import { createRecurringMessageWorker } from "./recurring-message-worker.js";
 import { createScheduledActionStore } from "./scheduled-action-persistence.js";
 import { createScheduledMessageDiscord } from "./scheduled-message-discord.js";
 import { createScheduledMessageCommandService } from "./scheduled-message-command.js";
+import { createScheduledMessageAdministrationStore } from "./scheduled-message-administration-persistence.js";
 import { createScheduledMessageExecutor } from "./scheduled-message-execution.js";
 import { createScheduledMessageStore } from "./scheduled-message-persistence.js";
 import {
@@ -174,6 +175,10 @@ async function main(): Promise<void> {
     discord: scheduledMessageDiscord,
     store: scheduledMessageStore,
     delivery: scheduledMessageWorkers,
+    administration: createScheduledMessageAdministrationStore(database.client),
+    recurring: recurringMessageStore,
+    recurringWorker,
+    guildSettings,
     logger,
   });
   registerManagedMessageModalHandler(

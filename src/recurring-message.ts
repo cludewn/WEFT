@@ -103,6 +103,61 @@ export function normalizeRecurringTimezone(timezone: string): string | undefined
   }
 }
 
+export type RecurringCommandInput = {
+  frequency: string;
+  time: string;
+  weekdays?: string;
+  timezone?: string;
+};
+
+export type ParsedRecurringCommandInput = {
+  frequency: RecurringMessageFrequency;
+  weekdayMask: number;
+  localTime: string;
+  explicitTimezone?: string;
+};
+
+const weekdayTokens = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] as const;
+
+export function parseRecurringCommandInput(
+  input: RecurringCommandInput,
+): ParsedRecurringCommandInput | undefined {
+  const frequency =
+    input.frequency === "daily" ? "DAILY" : input.frequency === "weekly" ? "WEEKLY" : undefined;
+  if (frequency === undefined) return undefined;
+  if (
+    (frequency === "DAILY" && input.weekdays !== undefined) ||
+    (frequency === "WEEKLY" && input.weekdays === undefined)
+  )
+    return undefined;
+  let weekdayMask = ALL_WEEKDAYS_MASK;
+  if (frequency === "WEEKLY") {
+    weekdayMask = 0;
+    for (const raw of input.weekdays!.split(",")) {
+      const token = raw.trim().toLowerCase();
+      const index = weekdayTokens.indexOf(token as (typeof weekdayTokens)[number]);
+      if (index < 0 || (weekdayMask & (1 << index)) !== 0) return undefined;
+      weekdayMask |= 1 << index;
+    }
+  }
+  const explicitTimezone =
+    input.timezone === undefined ? undefined : normalizeRecurringTimezone(input.timezone);
+  if (input.timezone !== undefined && explicitTimezone === undefined) return undefined;
+  const validation = validateRecurrence({
+    frequency,
+    weekdayMask,
+    localTime: input.time,
+    timezone: explicitTimezone ?? "UTC",
+  });
+  if (!validation.ok) return undefined;
+  return {
+    frequency,
+    weekdayMask,
+    localTime: validation.definition.localTime,
+    ...(explicitTimezone === undefined ? {} : { explicitTimezone }),
+  };
+}
+
 export function resolveLocalCandidate(
   intended: Temporal.PlainDateTime,
   timezone: string,
