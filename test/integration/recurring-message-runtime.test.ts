@@ -676,6 +676,89 @@ describe("recurring runtime races", () => {
     expect(await secondClaim).toEqual({ outcome: "NOT_CLAIMED" });
   });
 
+  it("accepts pre-generated gap IDs when a concurrent claim wins the series lock", async () => {
+    const created = await recurring.create({
+      scheduledActionId: "runtime-gap-claim-series",
+      occurrenceId: "runtime-gap-claim-occurrence",
+      auditId: "runtime-gap-claim-created",
+      gapAuditIds: [],
+      guildId: "runtime-guild",
+      channelId: "runtime-channel",
+      actorId: "runtime-user",
+      payload: { content: "hello", embed: null },
+      recurrence: {
+        frequency: "DAILY",
+        weekdayMask: ALL_WEEKDAYS_MASK,
+        localTime: "09:00",
+        timezone: "UTC",
+      },
+      effectiveAt: new Date("2024-03-10T05:00:00.000Z"),
+    });
+    expect(created.outcome).toBe("COMMITTED");
+
+    const effectiveAt = new Date("2024-03-10T06:00:00.000Z");
+    const ready = deferred<number>();
+    const release = deferred();
+    const claiming = createRecurringMessageStore(
+      pauseTransactionBeforeCommitDatabase(first.client, ready, release),
+    ).claimInitial({
+      occurrenceId: "runtime-gap-claim-occurrence",
+      expectedSeriesRevision: 0,
+      claimedAt: effectiveAt,
+    });
+    const blockerPid = await ready.promise;
+    const started = deferred<number>();
+    const editing = createRecurringMessageStore(
+      observeTransactionStartDatabase(second.client, started),
+    ).editRecurrence({
+      scheduledActionId: "runtime-gap-claim-series",
+      actorId: "runtime-user",
+      expectedRevision: 0,
+      recurrence: {
+        frequency: "DAILY",
+        weekdayMask: ALL_WEEKDAYS_MASK,
+        localTime: "02:30",
+        timezone: "America/New_York",
+      },
+      effectiveAt,
+      replacementOccurrenceId: "unused-runtime-gap-replacement",
+      auditId: "runtime-gap-recurrence-edited",
+      gapAuditIds: ["unused-runtime-gap-audit"],
+    });
+    const blockedPid = await started.promise;
+    try {
+      await expectTransactionBlockedBy(blockedPid, blockerPid, editing);
+    } finally {
+      release.resolve();
+    }
+
+    expect(await claiming).toMatchObject({ outcome: "COMMITTED" });
+    expect(await editing).toMatchObject({
+      outcome: "COMMITTED",
+      effect: {
+        committedRevision: 1,
+        deferredMaterialization: true,
+        replacementOccurrenceId: null,
+        replacementScheduledFor: null,
+      },
+    });
+    const [current] = await first.client
+      .select()
+      .from(recurringMessageOccurrences)
+      .where(eq(recurringMessageOccurrences.id, "runtime-gap-claim-occurrence"));
+    expect(current?.status).toBe("EXECUTING");
+    const [unusedGapAudit] = await first.client
+      .select()
+      .from(recurringMessageAudits)
+      .where(eq(recurringMessageAudits.id, "unused-runtime-gap-audit"));
+    expect(unusedGapAudit).toBeUndefined();
+    const [unusedReplacement] = await first.client
+      .select()
+      .from(recurringMessageOccurrences)
+      .where(eq(recurringMessageOccurrences.id, "unused-runtime-gap-replacement"));
+    expect(unusedReplacement).toBeUndefined();
+  });
+
   for (const winner of ["cancel", "resume"] as const) {
     it(`serializes retry resume when ${winner} holds the series lock first`, async () => {
       const { occurrence, firstAt } = await claimed(`resume-cancel-${winner}`);
