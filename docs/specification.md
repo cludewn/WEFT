@@ -550,8 +550,7 @@ commit status cannot be determined, WEFT neither deletes nor resends. On startup
 another send.
 
 Recurring managed messages use structured, calendar-oriented input and IANA timezone semantics.
-Raw cron expressions are not accepted through the user-facing Discord interface. The exact
-Discord command fields for recurring schedules remain deferred.
+Raw cron expressions are not accepted through the user-facing Discord interface.
 
 The recurring scheduling foundation supports daily execution at one local `HH:MM` and weekly
 execution on a non-empty selection of weekdays at one local `HH:MM`. Daily schedules are stored
@@ -639,20 +638,59 @@ Runtime reconciliation does not fail a live executing occurrence based on queue
 absence. Retry expiry uses a separate PostgreSQL transition that requires the occurrence still be
 `RETRY_PENDING` at the expected retry count after locking the series and occurrence. A concurrent
 resume to `EXECUTING` wins over stale expiry reads, and expiry never terminalizes that live send.
-Phase 8D-3 recurring administration commands remain deferred.
-
-One-time scheduled messages expose these commands:
+Scheduled messages expose these commands:
 
 ```text
 /message schedule create after:<duration>
+/message schedule recurring-create frequency:<daily|weekly> time:<HH:MM> [weekdays:<weekday-list>] [timezone:<IANA>]
 /message schedule cancel id:<schedule-id>
 /message schedule status id:<schedule-id>
 /message schedule list [page:<positive-integer>]
 /message schedule edit id:<schedule-id>
 /message schedule reschedule id:<schedule-id> after:<duration>
+/message schedule recurrence-edit id:<schedule-id> frequency:<daily|weekly> time:<HH:MM> [weekdays:<weekday-list>] [timezone:<IANA>]
 ```
 
-Creation accepts one relative duration from `1m` through `365d`, using a single `m`, `h`, or `d`
+`create` and `reschedule` are one-time only. `recurring-create` and `recurrence-edit` are recurring
+only. `cancel`, `status`, `list`, and `edit` support both kinds while preserving the recurring
+discriminator in all one-time persistence and runtime paths. A recurring ID passed to
+`reschedule` is directed to `recurrence-edit` without mutation.
+
+Daily recurrence omits `weekdays` and persists the all-weekday mask. Weekly recurrence requires a
+non-empty comma-separated selection of unique `mon,tue,wed,thu,fri,sat,sun` tokens; token case
+and whitespace around commas are ignored. Both use strict `HH:MM` local time. An explicit
+timezone must be a named IANA identifier or `UTC`, including valid links and aliases; numeric
+offsets are rejected. When timezone is omitted at creation, WEFT validates and snapshots the
+current guild timezone at payload modal submission. A later guild setting change does not alter
+the series. An edit without a timezone option preserves the persisted series timezone.
+
+Recurring creation revalidates recurrence, payload, target, actor, and bot permissions on modal
+submission and writes no series before then. Confirmed creation projects its initial pending
+occurrence to pg-boss after commit. Projection failure leaves the PostgreSQL series authoritative
+and pending reconciliation.
+
+Recurring payload edit is permitted while an active series has a pending, executing, or retrying
+occurrence. A changed payload increments the unified revision once without changing the current
+occurrence or an in-flight claim snapshot. Exact canonical no-ops neither revise nor audit.
+Recurrence edit validates expected unified revision under the series lock and compares the complete
+normalized definition there. An exact no-op leaves revision, audit, occurrence, execution time,
+and projection unchanged. A changed edit replaces a pending occurrence atomically. Executing or
+retry-pending work remains immutable and future materialization is deferred. The committed result
+records whether that particular edit created a replacement, including its identity and scheduled
+time. Response-loss confirmation reads the stable audit to recover that historical effect. Only
+an immediate replacement still observed as active and pending is projected; a concurrent change
+after that read may leave a stale job, which execution revalidates against PostgreSQL.
+
+Shared cancellation is revision-checked and idempotent when already cancelled. A pending or
+retry-pending occurrence is skipped; an executing occurrence remains in flight. Shared status is
+read-only and payload-free for recurring series. Shared list combines one-time and recurring
+nonterminal schedules in `(execute_at, scheduled_action_id)` order before ten-row pagination.
+For recurring rows, `execute_at` is the next scheduled occurrence only while current work is
+`PENDING`; during execution or retry it is the current occurrence's original scheduled instant,
+and after cancellation it may be historical. It is never the retry wake time. User mutations
+compete on the unified revision; a stale edit or cancellation reports conflict without blind retry.
+
+One-time creation accepts one relative duration from `1m` through `365d`, using a single `m`, `h`, or `d`
 unit. The delay begins only after modal submission and fresh authorization succeed. Creation
 revalidates the target, active thread state, actor membership and `ManageMessages`, and WEFT's
 view/send permissions; an explicit rich embed also requires `EmbedLinks`. Creation persists the
@@ -660,17 +698,17 @@ active schedule and `CREATED` audit before enqueueing delivery and never sends t
 itself. A confirmed schedule remains active when initial delivery enqueueing cannot be confirmed;
 runtime reconciliation repairs missing delivery.
 
-Cancellation and status are scoped to the current guild and channel and require `ManageMessages`.
+One-time cancellation and status are scoped to the current guild and channel and require `ManageMessages`.
 They remain available in an archived supported thread and do not require WEFT's current send
-permission. Cancellation changes only `ACTIVE` to `CANCELLED`, atomically records a user-attributed
+permission. One-time cancellation changes only `ACTIVE` to `CANCELLED`, atomically records a user-attributed
 `CANCELLED` audit, and never overwrites executing or terminal state. Delivery cleanup failure does
 not undo confirmed cancellation. Status is read-only and does not expose the scheduled payload.
 Completed status includes a canonical Discord message link when the result message ID is present.
 
-List returns only `ACTIVE` and `EXECUTING` one-time messages for the current guild and channel,
-ordered by execution time and schedule ID in fixed pages of 10. Each row contains the full schedule
-ID, status, execution time, and creator ID. It never returns scheduled content and performs no
-Discord, pg-boss, repair, or database mutation work.
+For one-time messages, list includes `ACTIVE` and `EXECUTING` rows. The combined list uses the
+same current-guild/channel scope, execution-time and schedule-ID ordering, and fixed ten-row pages.
+Each row contains the full schedule ID, status, execution time, and creator ID. It never returns
+scheduled content and performs no Discord, pg-boss, repair, or database mutation work.
 
 Edit is available only while a one-time schedule remains `ACTIVE`. It loads the current canonical
 managed-message payload into the existing five-field modal and binds the form to the persisted
@@ -685,7 +723,7 @@ Only `ACTIVE` schedules may change. A successful reschedule updates only executi
 scheduled-message revision, preserves payload, creator, retry count, and result state, and commits
 a complete `RESCHEDULED` user audit atomically.
 
-The persisted scheduled-message revision starts at zero and increments exactly once for each
+For one-time schedules, the persisted scheduled-message revision starts at zero and increments exactly once for each
 successful edit or reschedule. Execution loads the authoritative revision before Discord preflight
 and must still match it while atomically claiming `ACTIVE` to `EXECUTING`. Thus an edit or
 reschedule that commits during preflight prevents the stale executor from creating a Discord

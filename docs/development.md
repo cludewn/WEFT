@@ -1240,11 +1240,35 @@ delivery, and fails orphaned `EXECUTING` occurrences conservatively without rese
 reconciliation runs non-overlapping 60-second sweeps for pending and retry work, including missed
 grace and retry expiry. Retry expiry checks `RETRY_PENDING`, its expected retry generation, and
 the matching retry audit inside one series-then-occurrence-locked transaction before failing an
-occurrence; it cannot claim a live resumed `EXECUTING` occurrence. An active series with no nonterminal occurrence derives a safe candidate
-from its current definition effective boundary and latest terminal occurrence history. It never
-infers an interrupted execution from queue absence. Phase 8D-3
-will add recurring creation and recurrence-edit commands and integrate recurring schedules into
-administration commands; those commands are not implemented by Phase 8D-2.
+occurrence; it cannot claim a live resumed `EXECUTING` occurrence. An active series with no
+nonterminal occurrence derives a safe candidate from its current definition effective boundary
+and latest terminal occurrence history. It never infers an interrupted execution from queue
+absence.
+
+Phase 8D-3 completes the recurring command surface with `recurring-create` and `recurrence-edit`.
+The payload modal transports validated compact recurrence input in a stateless custom ID. Creation
+loads an omitted guild timezone at modal submission, performs fresh Discord preflight, generates
+stable series, occurrence, and audit IDs, and uses the existing calendar helper to enumerate DST
+gaps. Only confirmed PostgreSQL creation projects the initial pending occurrence; a lost pg-boss
+projection is reconciled later.
+
+The recurring persistence primitive checks expected unified revision and normalized recurrence
+equality under the series lock. An exact no-op does not revise or audit. A pending occurrence is
+skipped and replaced in the edit transaction; executing or retry-pending work remains immutable
+and defers future materialization. Pre-generated replacement and gap IDs may remain unused if a
+claim wins before the lock. The `RECURRENCE_EDITED` audit records that edit's historical deferred
+or immediate replacement effect, and exact response-loss confirmation reconstructs it from the
+audit. A replacement is projected only after a read-only eligibility check; execution-time
+PostgreSQL validation makes a job stale after that check harmless.
+
+Shared payload edit, cancel, and status route by the recurring discriminator. One-time persistence
+retains its exclusion and `reschedule` remains one-time only. Recurring payload edits use the
+unified revision without rewriting the current occurrence or claim snapshot. Recurring status
+reads no payload columns. A combined payload-free list query orders both kinds by
+`(execute_at, scheduled_action_id)` before ten-row pagination. Recurring `execute_at` is the next
+scheduled time only for pending work; executing and retry-pending rows show the current
+occurrence's original scheduled instant, while cancelled rows may show historical time. Phase 8D
+is complete; Phase 9 remains separate.
 
 ### Phase 9: MVP hardening
 
