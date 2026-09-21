@@ -62,7 +62,7 @@ function fixture() {
     seriesRevision: 0,
     retryCount: 0,
   };
-  return { worker, boss, jobs, executor, delivery, handler: () => handler };
+  return { worker, boss, jobs, executor, delivery, logger, handler: () => handler };
 }
 
 describe("recurring delivery worker", () => {
@@ -110,5 +110,27 @@ describe("recurring delivery worker", () => {
     ).resolves.toBeUndefined();
     expect(executor.execute).not.toHaveBeenCalled();
     await worker.stop();
+  });
+
+  it("does not create a detached bookkeeping rejection when an invocation rejects", async () => {
+    const { worker, delivery, handler, logger } = fixture();
+    vi.mocked(logger.info).mockImplementation(() => {
+      throw new Error("logger rejected the invocation");
+    });
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+    try {
+      await worker.start();
+      const callback = handler();
+      if (callback === undefined) throw new Error("Worker callback missing");
+      await expect(
+        callback([{ id: "current", data: delivery } as JobWithMetadata<unknown>]),
+      ).rejects.toThrow("logger rejected the invocation");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+      await worker.stop();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
   });
 });

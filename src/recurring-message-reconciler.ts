@@ -26,7 +26,9 @@ export function createRecurringMessageReconciler({
 }: Dependencies) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let stopped = false;
+  let started = false;
   let running: Promise<void> | undefined;
+  let stopPromise: Promise<void> | undefined;
 
   const projectPending = async (row: RecurringRuntimeDefinition): Promise<void> => {
     await worker.project({
@@ -165,8 +167,10 @@ export function createRecurringMessageReconciler({
     await sweepMissing();
   };
   const schedule = () => {
-    if (stopped) return;
+    if (stopped || timer !== undefined) return;
     timer = setTimeout(() => {
+      timer = undefined;
+      if (stopped) return;
       running = sweep("RUNTIME")
         .catch(() =>
           logger.warn(
@@ -183,14 +187,23 @@ export function createRecurringMessageReconciler({
   return {
     recoverAtStartup: () => sweep("STARTUP"),
     start: () => {
-      stopped = false;
+      if (started) return Promise.resolve();
+      if (stopped) return Promise.reject(new Error("Recurring reconciliation has stopped"));
+      started = true;
       schedule();
       return Promise.resolve();
     },
-    stop: async () => {
+    stop: () => {
       stopped = true;
-      if (timer !== undefined) clearTimeout(timer);
-      await running;
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      stopPromise ??= (async () => {
+        await running;
+        started = false;
+      })();
+      return stopPromise;
     },
   };
 }

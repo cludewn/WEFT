@@ -14,6 +14,7 @@ import type {
 import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
+import type { ApplicationIngress } from "../../src/application-runtime.js";
 import {
   createDiscordClient,
   createDiscordRuntime,
@@ -23,6 +24,7 @@ import {
   registerAutomaticCloseActivityHandlers,
   registerDiscordCommandHandler,
   registerManagedMessageModalHandler,
+  registerThreadLifecycleEventHandler,
   startDiscordClient,
 } from "../../src/discord.js";
 import type { AutomaticCloseActivityService } from "../../src/automatic-close-activity.js";
@@ -48,6 +50,73 @@ function createLogger(): Logger {
 }
 
 describe("Discord client", () => {
+  it("keeps command, modal, automatic-open, and activity services behind closed ingress", async () => {
+    const logger = createLogger();
+    const autoOpen = vi.fn(() => Promise.resolve({ ok: true, changed: true } as const));
+    const lifecycle = {
+      close: vi.fn(),
+      closeAsSystem: vi.fn(),
+      autoCloseAsSystem: vi.fn(),
+      open: vi.fn(),
+      autoOpen,
+      drain: vi.fn(() => Promise.resolve()),
+    } as unknown as ThreadLifecycleService;
+    const runtime = createDiscordRuntime(logger, discordDependencies, lifecycle);
+    const closedIngress: ApplicationIngress = { run: vi.fn(() => undefined) };
+    registerThreadLifecycleEventHandler(runtime.client, lifecycle, logger, closedIngress);
+    registerTestCommandHandler(runtime.client, logger, lifecycle, closedIngress);
+    const managedMessages = {
+      send: vi.fn(),
+      findForEdit: vi.fn(),
+      edit: vi.fn(),
+    } satisfies ManagedMessageService;
+    const scheduledMessages = {
+      create: vi.fn(),
+      createRecurring: vi.fn(),
+      editRecurrence: vi.fn(),
+      cancel: vi.fn(),
+      status: vi.fn(),
+      list: vi.fn(),
+      findEditable: vi.fn(),
+      edit: vi.fn(),
+      reschedule: vi.fn(),
+    };
+    registerManagedMessageModalHandler(
+      runtime.client,
+      managedMessages,
+      scheduledMessages,
+      logger,
+      closedIngress,
+    );
+    const activity = {
+      recordMessageActivity: vi.fn(),
+      initializeThreadBaseline: vi.fn(),
+      recordThreadReentryBaseline: vi.fn(),
+    } as unknown as AutomaticCloseActivityService;
+    registerAutomaticCloseActivityHandlers(runtime.client, { activity, logger }, closedIngress);
+    const reply = vi.fn();
+
+    runtime.client.emit(Events.InteractionCreate, {
+      commandName: "ping",
+      isChatInputCommand: () => true,
+      isModalSubmit: () => false,
+      reply,
+    } as unknown as ChatInputCommandInteraction);
+    runtime.client.emit(Events.InteractionCreate, createModal("managed-message:send").interaction);
+    runtime.client.emit(Events.MessageCreate, createMessage() as never);
+    runtime.client.emit(
+      Events.ThreadUpdate,
+      createThread({ archived: true }) as never,
+      createThread({ archived: false, locked: false }) as never,
+    );
+
+    expect(reply).not.toHaveBeenCalled();
+    expect(managedMessages.send).not.toHaveBeenCalled();
+    expect(activity.recordMessageActivity).not.toHaveBeenCalled();
+    expect(autoOpen).not.toHaveBeenCalled();
+    await runtime.client.destroy();
+  });
+
   it("returns the same lifecycle instance used by interactive Discord handlers", async () => {
     const lifecycle = {
       close: vi.fn(),
@@ -302,6 +371,40 @@ describe("Discord client", () => {
 
     await vi.waitFor(() => expect(autoOpen).toHaveBeenCalledOnce());
     expect(error).not.toHaveBeenCalled();
+    await client.destroy();
+  });
+
+  it("bounds an automatic-open rejection error name", async () => {
+    const logger = createLogger();
+    const rejection = new Error("private automatic-open detail");
+    rejection.name = `Private${"X".repeat(100)}`;
+    const autoOpen = vi.fn(() => Promise.reject(rejection));
+    const lifecycle = {
+      close: vi.fn(),
+      open: vi.fn(),
+      autoOpen,
+    } as unknown as ThreadLifecycleService;
+    const client = createDiscordClient(logger, discordDependencies, lifecycle);
+    const activeThread = createThread({ archived: false, locked: false });
+
+    client.emit(
+      Events.ThreadUpdate,
+      createThread({ archived: true }) as never,
+      activeThread as never,
+    );
+
+    await vi.waitFor(() => expect(logger.error).toHaveBeenCalledOnce());
+    expect(logger.error).toHaveBeenCalledWith(
+      {
+        event: "automatic_thread_open_rejected",
+        guildId: "guild-id",
+        threadId: "thread-id",
+        errorName: "Error",
+      },
+      "Automatic thread open reconciliation rejected",
+    );
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain(rejection.name);
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain(rejection.message);
     await client.destroy();
   });
 
@@ -669,41 +772,46 @@ function registerTestCommandHandler(
     open: vi.fn(),
     autoOpen: vi.fn(),
   } as unknown as ThreadLifecycleService,
+  ingress?: ApplicationIngress,
 ): void {
-  registerDiscordCommandHandler(client, {
-    automaticCloseConfiguration: {
-      show: vi.fn(),
-      setInactivitySeconds: vi.fn(),
-      setBotMessagesCountAsActivity: vi.fn(),
-      addParentChannel: vi.fn(),
-      removeParentChannel: vi.fn(),
+  registerDiscordCommandHandler(
+    client,
+    {
+      automaticCloseConfiguration: {
+        show: vi.fn(),
+        setInactivitySeconds: vi.fn(),
+        setBotMessagesCountAsActivity: vi.fn(),
+        addParentChannel: vi.fn(),
+        removeParentChannel: vi.fn(),
+      },
+      automaticCloseMaintenance: {
+        track: vi.fn(),
+        untrack: vi.fn(),
+        status: vi.fn(),
+      },
+      guildSettings: discordDependencies.guildSettings,
+      managedMessages: {
+        send: vi.fn(),
+        findForEdit: vi.fn(),
+        edit: vi.fn(),
+      },
+      scheduledMessages: {
+        create: vi.fn(),
+        createRecurring: vi.fn(),
+        editRecurrence: vi.fn(),
+        cancel: vi.fn(),
+        status: vi.fn(),
+        list: vi.fn(),
+        findEditable: vi.fn(),
+        edit: vi.fn(),
+        reschedule: vi.fn(),
+      },
+      scheduledThreadClose: { schedule: vi.fn(), cancel: vi.fn(), closeManually: vi.fn() },
+      threadLifecycle: lifecycle,
+      logger,
     },
-    automaticCloseMaintenance: {
-      track: vi.fn(),
-      untrack: vi.fn(),
-      status: vi.fn(),
-    },
-    guildSettings: discordDependencies.guildSettings,
-    managedMessages: {
-      send: vi.fn(),
-      findForEdit: vi.fn(),
-      edit: vi.fn(),
-    },
-    scheduledMessages: {
-      create: vi.fn(),
-      createRecurring: vi.fn(),
-      editRecurrence: vi.fn(),
-      cancel: vi.fn(),
-      status: vi.fn(),
-      list: vi.fn(),
-      findEditable: vi.fn(),
-      edit: vi.fn(),
-      reschedule: vi.fn(),
-    },
-    scheduledThreadClose: { schedule: vi.fn(), cancel: vi.fn(), closeManually: vi.fn() },
-    threadLifecycle: lifecycle,
-    logger,
-  });
+    ingress,
+  );
 }
 
 function createModal(customId: string, content = "managed content") {

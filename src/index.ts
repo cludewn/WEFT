@@ -1,6 +1,6 @@
 import pino from "pino";
 
-import { runApplicationStartup } from "./application-startup.js";
+import { createApplicationRuntime, type ProcessControl } from "./application-runtime.js";
 import { createAutomaticCloseActivityService } from "./automatic-close-activity.js";
 import { createAutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
 import { createAutomaticCloseExecutor } from "./automatic-close-execution.js";
@@ -15,6 +15,7 @@ import {
   registerAutomaticCloseActivityHandlers,
   registerDiscordCommandHandler,
   registerManagedMessageModalHandler,
+  registerThreadLifecycleEventHandler,
   startDiscordClient,
 } from "./discord.js";
 import { createGuildSettingsStore } from "./guild-settings.js";
@@ -22,6 +23,7 @@ import { createManagedMessageDiscord } from "./managed-message-discord.js";
 import { createManagedMessageStore } from "./managed-message-persistence.js";
 import { createManagedMessageService } from "./managed-message.js";
 import { createPgBossRuntime } from "./pg-boss.js";
+import { installProcessHandlers } from "./process-handlers.js";
 import { createRecurringMessageExecutor } from "./recurring-message-execution.js";
 import { createRecurringMessageStore } from "./recurring-message-persistence.js";
 import { createRecurringMessageReconciler } from "./recurring-message-reconciler.js";
@@ -46,7 +48,6 @@ import {
   createScheduledThreadCloseStartupReconciler,
 } from "./scheduled-thread-close-reconciler.js";
 import { createScheduledThreadCloseWorkerController } from "./scheduled-thread-close-worker.js";
-import { createShutdown } from "./shutdown.js";
 import {
   createAutoCloseDiscord,
   createAutomaticCloseExecutionDiscord,
@@ -121,10 +122,6 @@ async function main(): Promise<void> {
     executor: automaticCloseExecutor,
     logger,
   });
-  registerAutomaticCloseActivityHandlers(discordRuntime.client, {
-    activity: automaticCloseActivity,
-    logger,
-  });
   const scheduledThreadCloseExecutor = createScheduledThreadCloseExecutor({
     scheduledActions,
     schedules: scheduledThreadCloses,
@@ -181,22 +178,6 @@ async function main(): Promise<void> {
     guildSettings,
     logger,
   });
-  registerManagedMessageModalHandler(
-    discordRuntime.client,
-    managedMessages,
-    scheduledMessages,
-    logger,
-  );
-  registerDiscordCommandHandler(discordRuntime.client, {
-    automaticCloseConfiguration,
-    automaticCloseMaintenance,
-    guildSettings,
-    managedMessages,
-    scheduledMessages,
-    scheduledThreadClose: scheduledThreadCloseCommand,
-    threadLifecycle: discordRuntime.threadLifecycle,
-    logger,
-  });
   const scheduledThreadCloseReconciler = createScheduledThreadCloseStartupReconciler({
     scheduledActions,
     schedules: scheduledThreadCloses,
@@ -222,70 +203,97 @@ async function main(): Promise<void> {
     delivery: scheduledMessageWorkers,
     logger,
   });
-  const startupAbortController = new AbortController();
-  const shutdown = createShutdown(
-    [
-      { name: "automatic-close-runtime", close: () => automaticCloseRuntime.stop() },
+  const processControl: ProcessControl = {
+    setExitCode: (code) => {
+      process.exitCode = code;
+    },
+    forceExit: (code) => process.exit(code),
+    writeStderr: (message) => process.stderr.write(message),
+  };
+  const runtime = createApplicationRuntime({
+    verifyDatabaseConnection: () => database.verifyConnection(),
+    startPgBoss: () => pgBoss.start(),
+    ensureScheduledThreadCloseQueue: () => scheduledThreadCloseWorkers.ensureQueue(),
+    ensureScheduledMessageQueue: () => scheduledMessageWorkers.ensureQueue(),
+    ensureRecurringMessageQueue: () => recurringWorker.ensureQueue(),
+    recoverScheduledThreadCloseDeliveries: () => scheduledThreadCloseReconciler.recoverAtStartup(),
+    recoverScheduledMessageDeliveries: () => scheduledMessageStartupReconciler.recoverAtStartup(),
+    recoverRecurringMessageDeliveries: () => recurringReconciler.recoverAtStartup(),
+    startDiscord: () =>
+      startDiscordClient(discordRuntime.client, config.discord.token, new AbortController().signal),
+    startScheduledThreadCloseWorkers: () => scheduledThreadCloseWorkers.start(),
+    startScheduledMessageWorker: () => scheduledMessageWorkers.start(),
+    startRecurringMessageWorker: () => recurringWorker.start(),
+    startScheduledThreadCloseRuntimeReconciliation: () =>
+      scheduledThreadCloseRuntimeReconciler.start(),
+    startScheduledMessageRuntimeReconciliation: () => scheduledMessageRuntimeReconciler.start(),
+    startRecurringMessageRuntimeReconciliation: () => recurringReconciler.start(),
+    reconcileAutomaticCloseBaselines: () =>
+      automaticCloseBaselineReconciler.reconcileMissingBaselines(),
+    startAutomaticCloseRuntime: () => automaticCloseRuntime.start(),
+    quiesce: [
+      { name: "automatic-close-runtime", stop: () => automaticCloseRuntime.stop() },
       {
         name: "scheduled-message-runtime-reconciler",
-        close: () => scheduledMessageRuntimeReconciler.stop(),
+        stop: () => scheduledMessageRuntimeReconciler.stop(),
       },
       {
         name: "scheduled-thread-close-runtime-reconciler",
-        close: () => scheduledThreadCloseRuntimeReconciler.stop(),
+        stop: () => scheduledThreadCloseRuntimeReconciler.stop(),
       },
-      { name: "scheduled-thread-close-workers", close: () => scheduledThreadCloseWorkers.stop() },
-      { name: "scheduled-message-workers", close: () => scheduledMessageWorkers.stop() },
-      { name: "recurring-message-runtime-reconciler", close: () => recurringReconciler.stop() },
-      { name: "recurring-message-worker", close: () => recurringWorker.stop() },
-      { name: "pg-boss", close: () => pgBoss.stop() },
-      { name: "discord", close: () => discordRuntime.client.destroy() },
-      { name: "database", close: () => database.close() },
+      {
+        name: "recurring-message-runtime-reconciler",
+        stop: () => recurringReconciler.stop(),
+      },
+      {
+        name: "scheduled-thread-close-workers",
+        stop: () => scheduledThreadCloseWorkers.stop(),
+      },
+      { name: "scheduled-message-workers", stop: () => scheduledMessageWorkers.stop() },
+      { name: "recurring-message-worker", stop: () => recurringWorker.stop() },
     ],
+    drainThreadLifecycle: () => discordRuntime.threadLifecycle.drain(),
+    stopPgBoss: (remainingMs) => pgBoss.stop(remainingMs),
+    destroyDiscord: () => discordRuntime.client.destroy(),
+    closeDatabase: () => database.close(),
     logger,
+    processControl,
+  });
+
+  registerThreadLifecycleEventHandler(
+    discordRuntime.client,
+    discordRuntime.threadLifecycle,
+    logger,
+    runtime.ingress,
   );
-
-  const handleSignal = (signal: NodeJS.Signals): void => {
-    startupAbortController.abort();
-    void shutdown(signal).catch(() => {
-      process.exitCode = 1;
-    });
-  };
-
-  process.once("SIGINT", handleSignal);
-  process.once("SIGTERM", handleSignal);
-
-  await runApplicationStartup(
+  registerAutomaticCloseActivityHandlers(
+    discordRuntime.client,
+    { activity: automaticCloseActivity, logger },
+    runtime.ingress,
+  );
+  registerManagedMessageModalHandler(
+    discordRuntime.client,
+    managedMessages,
+    scheduledMessages,
+    logger,
+    runtime.ingress,
+  );
+  registerDiscordCommandHandler(
+    discordRuntime.client,
     {
-      verifyDatabaseConnection: () => database.verifyConnection(),
-      startPgBoss: () => pgBoss.start(),
-      ensureScheduledThreadCloseQueue: () => scheduledThreadCloseWorkers.ensureQueue(),
-      ensureScheduledMessageQueue: () => scheduledMessageWorkers.ensureQueue(),
-      ensureRecurringMessageQueue: () => recurringWorker.ensureQueue(),
-      recoverScheduledThreadCloseDeliveries: () =>
-        scheduledThreadCloseReconciler.recoverAtStartup(),
-      recoverScheduledMessageDeliveries: () => scheduledMessageStartupReconciler.recoverAtStartup(),
-      recoverRecurringMessageDeliveries: () => recurringReconciler.recoverAtStartup(),
-      startDiscord: () =>
-        startDiscordClient(
-          discordRuntime.client,
-          config.discord.token,
-          startupAbortController.signal,
-        ),
-      startScheduledThreadCloseWorkers: () => scheduledThreadCloseWorkers.start(),
-      startScheduledMessageWorker: () => scheduledMessageWorkers.start(),
-      startRecurringMessageWorker: () => recurringWorker.start(),
-      startScheduledThreadCloseRuntimeReconciliation: () =>
-        scheduledThreadCloseRuntimeReconciler.start(),
-      startScheduledMessageRuntimeReconciliation: () => scheduledMessageRuntimeReconciler.start(),
-      startRecurringMessageRuntimeReconciliation: () => recurringReconciler.start(),
-      reconcileAutomaticCloseBaselines: () =>
-        automaticCloseBaselineReconciler.reconcileMissingBaselines(),
-      startAutomaticCloseRuntime: () => automaticCloseRuntime.start(),
-      shutdown,
+      automaticCloseConfiguration,
+      automaticCloseMaintenance,
+      guildSettings,
+      managedMessages,
+      scheduledMessages,
+      scheduledThreadClose: scheduledThreadCloseCommand,
+      threadLifecycle: discordRuntime.threadLifecycle,
+      logger,
     },
-    logger,
+    runtime.ingress,
   );
+  installProcessHandlers(runtime, processControl);
+  await runtime.start().catch(() => undefined);
 }
 
 await main();

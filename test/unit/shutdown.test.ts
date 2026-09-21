@@ -1,91 +1,97 @@
-import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
-import { createShutdown } from "../../src/shutdown.js";
+import {
+  createApplicationRuntime,
+  type ApplicationRuntimeDependencies,
+} from "../../src/application-runtime.js";
 
-function createLogger(): Logger {
+function createDependencies(calls: string[], now: () => number): ApplicationRuntimeDependencies {
+  const step = () => Promise.resolve();
   return {
-    info: vi.fn(),
-    error: vi.fn(),
-  } as unknown as Logger;
+    verifyDatabaseConnection: step,
+    startPgBoss: step,
+    ensureScheduledThreadCloseQueue: step,
+    ensureScheduledMessageQueue: step,
+    ensureRecurringMessageQueue: step,
+    recoverScheduledThreadCloseDeliveries: step,
+    recoverScheduledMessageDeliveries: step,
+    recoverRecurringMessageDeliveries: step,
+    startDiscord: step,
+    startScheduledThreadCloseWorkers: step,
+    startScheduledMessageWorker: step,
+    startRecurringMessageWorker: step,
+    startScheduledThreadCloseRuntimeReconciliation: step,
+    startScheduledMessageRuntimeReconciliation: step,
+    startRecurringMessageRuntimeReconciliation: step,
+    reconcileAutomaticCloseBaselines: step,
+    startAutomaticCloseRuntime: step,
+    quiesce: [
+      {
+        name: "workers",
+        stop: () => {
+          calls.push("quiesce");
+        },
+      },
+    ],
+    drainThreadLifecycle: () => {
+      calls.push("thread-drain");
+      return Promise.resolve();
+    },
+    stopPgBoss: (remainingMs) => {
+      calls.push(`boss:${remainingMs}`);
+      return Promise.resolve();
+    },
+    destroyDiscord: vi.fn(() => {
+      calls.push("discord");
+    }),
+    closeDatabase: vi.fn(() => {
+      calls.push("database");
+      return Promise.resolve();
+    }),
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    processControl: { setExitCode: vi.fn(), forceExit: vi.fn(), writeStderr: vi.fn() },
+    now,
+  };
 }
 
-describe("createShutdown", () => {
-  it("closes resources only once when shutdown is requested repeatedly", async () => {
-    const closeResources = vi.fn(() => Promise.resolve());
-    const shutdown = createShutdown([{ name: "database", close: closeResources }], createLogger());
-
-    await Promise.all([shutdown("SIGTERM"), shutdown("SIGINT")]);
-
-    expect(closeResources).toHaveBeenCalledOnce();
-  });
-
-  it("propagates resource cleanup failures", async () => {
-    const failure = new Error("cleanup failed");
-    const shutdown = createShutdown(
-      [{ name: "database", close: async () => Promise.reject(failure) }],
-      createLogger(),
-    );
-
-    await expect(shutdown("SIGTERM")).rejects.toEqual(
-      expect.objectContaining({ errors: [failure] }),
-    );
-  });
-
-  it("drains runtime reconciliation and workers before pg-boss, Discord, and database", async () => {
+describe("shutdown ordering", () => {
+  it("passes only the remaining process-wide budget to pg-boss", async () => {
+    let currentTime = 1_000;
     const calls: string[] = [];
-    const pgBossFailure = new Error("pg-boss shutdown failed");
-    const shutdown = createShutdown(
-      [
-        {
-          name: "automatic-close-runtime",
-          close: () => {
-            calls.push("automatic-close-runtime");
-          },
-        },
-        {
-          name: "scheduled-thread-close-runtime-reconciler",
-          close: () => {
-            calls.push("scheduled-thread-close-runtime-reconciler");
-          },
-        },
-        {
-          name: "scheduled-thread-close-workers",
-          close: () => {
-            calls.push("scheduled-thread-close-workers");
-          },
-        },
-        {
-          name: "pg-boss",
-          close: () => {
-            calls.push("pg-boss");
-            throw pgBossFailure;
-          },
-        },
-        {
-          name: "discord",
-          close: () => {
-            calls.push("discord");
-          },
-        },
-        {
-          name: "database",
-          close: () => {
-            calls.push("database");
-          },
-        },
-      ],
-      createLogger(),
-    );
+    const values = createDependencies(calls, () => currentTime);
+    values.drainThreadLifecycle = () => {
+      calls.push("thread-drain");
+      currentTime += 12_345;
+      return Promise.resolve();
+    };
+    const runtime = createApplicationRuntime(values);
+    await runtime.start();
 
-    await expect(shutdown("SIGTERM")).rejects.toBeInstanceOf(AggregateError);
-    expect(calls).toEqual([
-      "automatic-close-runtime",
-      "scheduled-thread-close-runtime-reconciler",
-      "scheduled-thread-close-workers",
-      "pg-boss",
-      "discord",
-      "database",
-    ]);
+    await runtime.shutdown("SIGTERM");
+
+    expect(values.processControl?.setExitCode).toHaveBeenCalledWith(0);
+    expect(calls).toEqual(["quiesce", "thread-drain", "boss:17655", "discord", "database"]);
+  });
+
+  it("continues closing later resources and selects non-zero after cleanup failure", async () => {
+    const calls: string[] = [];
+    const values = createDependencies(calls, () => 1_000);
+    values.stopPgBoss = () => Promise.reject(new TypeError("private failure"));
+    const runtime = createApplicationRuntime(values);
+    await runtime.start();
+
+    await expect(runtime.shutdown("SIGINT")).rejects.toBeInstanceOf(AggregateError);
+
+    expect(values.destroyDiscord).toHaveBeenCalledOnce();
+    expect(values.closeDatabase).toHaveBeenCalledOnce();
+    expect(values.processControl?.setExitCode).toHaveBeenCalledWith(1);
+    expect(values.logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "resource_cleanup_failed",
+        resource: "pg-boss",
+        errorName: "TypeError",
+      }),
+      expect.any(String),
+    );
   });
 });

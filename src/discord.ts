@@ -2,6 +2,7 @@ import { Client, Events, GatewayDispatchEvents, GatewayIntentBits, RESTEvents } 
 
 import type { Logger } from "pino";
 
+import { safeErrorName, type ApplicationIngress } from "./application-runtime.js";
 import type { AutomaticCloseActivityService } from "./automatic-close-activity.js";
 import { handleCommand, type CommandDependencies } from "./commands.js";
 import {
@@ -34,6 +35,16 @@ export type DiscordRuntime = {
   client: Client;
   threadDiscord: ThreadLifecycleDiscord;
   threadLifecycle: ReturnType<typeof createThreadLifecycleService>;
+};
+
+const openIngress: ApplicationIngress = {
+  run: (operation) => {
+    try {
+      return Promise.resolve(operation());
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error("Discord handler failed"));
+    }
+  },
 };
 
 export class DiscordStartupAbortedError extends Error {
@@ -129,6 +140,15 @@ export function createDiscordRuntime(
     );
   });
 
+  return { client, threadDiscord, threadLifecycle };
+}
+
+export function registerThreadLifecycleEventHandler(
+  client: Client,
+  threadLifecycle: ReturnType<typeof createThreadLifecycleService>,
+  logger: Pick<Logger, "error">,
+  ingress: ApplicationIngress = openIngress,
+): void {
   client.on(Events.ThreadUpdate, (oldThread, newThread) => {
     if (
       oldThread.archived !== true ||
@@ -139,34 +159,50 @@ export function createDiscordRuntime(
       return;
     }
 
-    void threadLifecycle.autoOpen(newThread.guildId, newThread.id).then((result) => {
-      if (!result.ok && !result.pending) {
+    const invocation = ingress.run(() => threadLifecycle.autoOpen(newThread.guildId, newThread.id));
+    if (invocation === undefined) return;
+    void invocation.then(
+      (result) => {
+        if (!result.ok && !result.pending) {
+          logger.error(
+            {
+              event: "automatic_thread_open_failed",
+              guildId: newThread.guildId,
+              threadId: newThread.id,
+              failureCode: result.code,
+            },
+            "Automatic thread open reconciliation failed",
+          );
+        }
+      },
+      (error: unknown) => {
         logger.error(
           {
-            event: "automatic_thread_open_failed",
+            event: "automatic_thread_open_rejected",
             guildId: newThread.guildId,
             threadId: newThread.id,
-            failureCode: result.code,
+            errorName: safeErrorName(error),
           },
-          "Automatic thread open reconciliation failed",
+          "Automatic thread open reconciliation rejected",
         );
-      }
-    });
+      },
+    );
   });
-
-  return { client, threadDiscord, threadLifecycle };
 }
 
 export function registerDiscordCommandHandler(
   client: Client,
   dependencies: CommandDependencies,
+  ingress: ApplicationIngress = openIngress,
 ): void {
   client.on(Events.InteractionCreate, (interaction) => {
     if (!interaction.isChatInputCommand()) {
       return;
     }
 
-    void handleCommand(interaction, dependencies)
+    const invocation = ingress.run(() => handleCommand(interaction, dependencies));
+    if (invocation === undefined) return;
+    void invocation
       .then((handled) => {
         if (!handled) {
           dependencies.logger.warn(
@@ -180,7 +216,7 @@ export function registerDiscordCommandHandler(
           {
             event: "command_failed",
             commandName: interaction.commandName,
-            errorName: error instanceof Error ? error.name : "UnknownError",
+            errorName: safeErrorName(error),
           },
           "Discord command failed",
         );
@@ -193,6 +229,7 @@ export function registerManagedMessageModalHandler(
   service: ManagedMessageService,
   scheduledMessages: ScheduledMessageCommandService,
   logger: Pick<Logger, "error">,
+  ingress: ApplicationIngress = openIngress,
 ): void {
   client.on(Events.InteractionCreate, (interaction) => {
     if (
@@ -205,19 +242,21 @@ export function registerManagedMessageModalHandler(
       return;
     }
 
-    void handleManagedMessageModalSubmit(interaction, service, scheduledMessages).catch(
-      (error: unknown) => {
-        logger.error(
-          {
-            event: "managed_message_modal_failed",
-            guildId: interaction.guildId,
-            channelId: interaction.channelId,
-            errorName: error instanceof Error ? error.name : "UnknownError",
-          },
-          "Managed message modal handling failed",
-        );
-      },
+    const invocation = ingress.run(() =>
+      handleManagedMessageModalSubmit(interaction, service, scheduledMessages),
     );
+    if (invocation === undefined) return;
+    void invocation.catch((error: unknown) => {
+      logger.error(
+        {
+          event: "managed_message_modal_failed",
+          guildId: interaction.guildId,
+          channelId: interaction.channelId,
+          errorName: safeErrorName(error),
+        },
+        "Managed message modal handling failed",
+      );
+    });
   });
 }
 
@@ -265,6 +304,7 @@ function parseActiveRawThreadUpdate(packet: unknown): ActiveRawThreadUpdate | un
 export function registerAutomaticCloseActivityHandlers(
   client: Client,
   dependencies: AutomaticCloseActivityDependencies,
+  ingress: ApplicationIngress = openIngress,
 ): void {
   const now = dependencies.now ?? (() => new Date());
 
@@ -297,12 +337,23 @@ export function registerAutomaticCloseActivityHandlers(
       return;
     }
 
-    void dependencies.activity.recordMessageActivity({
-      guildId: message.guildId,
-      threadId: channel.id,
-      parentChannelId,
-      occurredAt: message.createdAt,
-      authorIsBot: message.author.bot,
+    const invocation = ingress.run(() =>
+      dependencies.activity.recordMessageActivity({
+        guildId: message.guildId,
+        threadId: channel.id,
+        parentChannelId,
+        occurredAt: message.createdAt,
+        authorIsBot: message.author.bot,
+      }),
+    );
+    void invocation?.catch((error: unknown) => {
+      dependencies.logger.debug(
+        {
+          event: "automatic_close_activity_persistence_failed",
+          errorName: safeErrorName(error),
+        },
+        "Automatic close activity persistence failed",
+      );
     });
   });
 
@@ -322,11 +373,22 @@ export function registerAutomaticCloseActivityHandlers(
     const baselineAt =
       newlyCreated && createdTimestamp !== null ? new Date(createdTimestamp) : now();
 
-    void dependencies.activity.initializeThreadBaseline({
-      guildId: thread.guildId,
-      threadId: thread.id,
-      parentChannelId,
-      baselineAt,
+    const invocation = ingress.run(() =>
+      dependencies.activity.initializeThreadBaseline({
+        guildId: thread.guildId,
+        threadId: thread.id,
+        parentChannelId,
+        baselineAt,
+      }),
+    );
+    void invocation?.catch((error: unknown) => {
+      dependencies.logger.debug(
+        {
+          event: "automatic_close_baseline_persistence_failed",
+          errorName: safeErrorName(error),
+        },
+        "Automatic close baseline persistence failed",
+      );
     });
   });
 
@@ -355,9 +417,20 @@ export function registerAutomaticCloseActivityHandlers(
 
     // Locked threads still begin a new inactivity episode when Discord makes them active. The
     // lifecycle path independently decides whether a later close attempt can proceed.
-    void dependencies.activity.recordThreadReentryBaseline({
-      ...update,
-      reopenedAt,
+    const invocation = ingress.run(() =>
+      dependencies.activity.recordThreadReentryBaseline({
+        ...update,
+        reopenedAt,
+      }),
+    );
+    void invocation?.catch((error: unknown) => {
+      dependencies.logger.debug(
+        {
+          event: "automatic_close_reentry_persistence_failed",
+          errorName: safeErrorName(error),
+        },
+        "Automatic close reentry persistence failed",
+      );
     });
   });
 }
@@ -367,7 +440,9 @@ export function createDiscordClient(
   dependencies: DiscordDependencies,
   threadLifecycleOverride?: ReturnType<typeof createThreadLifecycleService>,
 ): Client {
-  return createDiscordRuntime(logger, dependencies, threadLifecycleOverride).client;
+  const runtime = createDiscordRuntime(logger, dependencies, threadLifecycleOverride);
+  registerThreadLifecycleEventHandler(runtime.client, runtime.threadLifecycle, logger);
+  return runtime.client;
 }
 
 export function startDiscordClient(

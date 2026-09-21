@@ -151,6 +151,7 @@ type OperationContext = {
   startedAt: number;
   deadlineAt: number;
   completionMode: "INTERACTIVE" | "FINAL";
+  retain: (promise: Promise<void>) => void;
 };
 
 type LifecycleTarget = "CLOSED" | "OPEN";
@@ -209,6 +210,11 @@ type FinalizationPlan = {
 type FinalizationJob = {
   generation: number;
   promise: Promise<FinalizationPlan>;
+};
+
+type DeferredAutoOpen = {
+  completion: Promise<void>;
+  resolve: () => void;
 };
 
 export class PendingDiscordMutationGuard {
@@ -277,6 +283,7 @@ export type ThreadLifecycleService = {
   ) => Promise<SystemThreadCloseResult>;
   open: (guildId: string, threadId: string, actorId: string) => Promise<ThreadLifecycleResult>;
   autoOpen: (guildId: string, threadId: string) => Promise<ThreadLifecycleResult>;
+  drain: () => Promise<void>;
 };
 
 export type SystemThreadCloseResult =
@@ -313,7 +320,8 @@ export function createThreadLifecycleService(
   const queuedOperations = new Map<string, QueuedOperation>();
   const pendingMutations = new PendingDiscordMutationGuard();
   const finalizationJobs = new Map<string, FinalizationJob>();
-  const deferredAutoOpen = new Set<string>();
+  const deferredAutoOpen = new Map<string, DeferredAutoOpen[]>();
+  const activeLogicalOperations = new Set<Promise<void>>();
 
   function isCloseOperation(operation: LifecycleOperation): operation is CloseOperation {
     return operation === "CLOSE" || operation === "AUTO_CLOSE";
@@ -325,6 +333,7 @@ export function createThreadLifecycleService(
     operation: LifecycleOperation,
     auditId: string = randomUUID(),
     completionMode: OperationContext["completionMode"] = "INTERACTIVE",
+    retain: OperationContext["retain"],
   ): OperationContext {
     const startedAt = Date.now();
     return {
@@ -335,6 +344,7 @@ export function createThreadLifecycleService(
       startedAt,
       deadlineAt: startedAt + deadlineMs,
       completionMode,
+      retain,
     };
   }
 
@@ -350,10 +360,20 @@ export function createThreadLifecycleService(
     contextOptions?: {
       auditId?: string;
       completionMode?: OperationContext["completionMode"];
+      onLogicalSettled?: () => void;
     },
   ): Promise<ThreadLifecycleResult> {
     const key = `${guildId}:${threadId}`;
     const preceding = queuedOperations.get(key);
+    const retained = new Set<Promise<void>>();
+    const retain = (promise: Promise<void>): void => {
+      const tracked = promise.then(
+        () => undefined,
+        () => undefined,
+      );
+      retained.add(tracked);
+      void tracked.then(() => retained.delete(tracked));
+    };
     const result = (async () => {
       let precedingChangedSameTarget = false;
       if (preceding !== undefined) {
@@ -391,6 +411,7 @@ export function createThreadLifecycleService(
         lifecycleOperation,
         contextOptions?.auditId,
         contextOptions?.completionMode,
+        retain,
       );
       return operation(context, precedingChangedSameTarget);
     })();
@@ -405,6 +426,21 @@ export function createThreadLifecycleService(
         }
       })
       .catch(() => undefined);
+    const logicalOperation = (async () => {
+      try {
+        await result.catch(() => undefined);
+        while (retained.size > 0) {
+          await Promise.allSettled([...retained]);
+        }
+      } finally {
+        contextOptions?.onLogicalSettled?.();
+      }
+    })();
+    activeLogicalOperations.add(logicalOperation);
+    void logicalOperation.then(
+      () => activeLogicalOperations.delete(logicalOperation),
+      () => activeLogicalOperations.delete(logicalOperation),
+    );
     return result;
   }
 
@@ -510,16 +546,18 @@ export function createThreadLifecycleService(
     let trackedGeneration: number | undefined;
     let settlement: Promise<RawDiscordMutationSettlement> | undefined;
     let settlementScheduled = false;
+    let finishRetainedWork: (() => void) | undefined;
     const scheduleSettlement = (outcome: RawDiscordMutationSettlement): void => {
       if (settlementScheduled || trackedGeneration === undefined) {
         return;
       }
       settlementScheduled = true;
-      void startFinalizationJob(context.guildId, context.threadId, intent, {
+      const finalization = startFinalizationJob(context.guildId, context.threadId, intent, {
         generation: trackedGeneration,
         boundary,
         ...outcome,
       });
+      void finalization.then(finishRetainedWork, finishRetainedWork);
     };
 
     const startMutation = (): Promise<RawDiscordMutationSettlement> => {
@@ -527,6 +565,10 @@ export function createThreadLifecycleService(
         throw new LifecyclePending();
       }
       const mutation = Promise.resolve().then(operation);
+      const retainedCompletion = new Promise<void>((resolve) => {
+        finishRetainedWork = resolve;
+      });
+      context.retain(retainedCompletion);
       trackedGeneration = pendingMutations.track(context.guildId, context.threadId, mutation);
       settlement = mutation.then(
         () => ({ outcome: "resolved" as const }),
@@ -593,6 +635,7 @@ export function createThreadLifecycleService(
       boundary,
       ...settlementOutcome,
     });
+    void finalization.then(finishRetainedWork, finishRetainedWork);
     if (context.completionMode === "FINAL") {
       return finalization;
     }
@@ -634,7 +677,15 @@ export function createThreadLifecycleService(
       return;
     }
     if (context.operation === "AUTO_OPEN") {
-      deferredAutoOpen.add(threadKey(context.guildId, context.threadId));
+      let resolve = (): void => undefined;
+      const completion = new Promise<void>((resolvePromise) => {
+        resolve = resolvePromise;
+      });
+      const key = threadKey(context.guildId, context.threadId);
+      const deferred = deferredAutoOpen.get(key) ?? [];
+      deferred.push({ completion, resolve });
+      deferredAutoOpen.set(key, deferred);
+      context.retain(completion);
     }
     throw new LifecyclePending();
   }
@@ -885,16 +936,24 @@ export function createThreadLifecycleService(
 
   function scheduleDeferredAutoOpen(guildId: string, threadId: string): void {
     const key = threadKey(guildId, threadId);
-    if (!deferredAutoOpen.delete(key)) {
+    const deferred = deferredAutoOpen.get(key);
+    if (deferred === undefined) {
       return;
     }
-    void serialize(guildId, threadId, "AUTO_OPEN", "OPEN", (context, precedingChangedSameTarget) =>
-      reconcileOpen(
-        context,
-        { operation: "AUTO_OPEN", actor: { type: "SYSTEM" } },
-        precedingChangedSameTarget,
-        true,
-      ),
+    deferredAutoOpen.delete(key);
+    void serialize(
+      guildId,
+      threadId,
+      "AUTO_OPEN",
+      "OPEN",
+      (context, precedingChangedSameTarget) =>
+        reconcileOpen(
+          context,
+          { operation: "AUTO_OPEN", actor: { type: "SYSTEM" } },
+          precedingChangedSameTarget,
+          true,
+        ),
+      { onLogicalSettled: () => deferred.forEach((entry) => entry.resolve()) },
     );
   }
 
@@ -1333,6 +1392,11 @@ export function createThreadLifecycleService(
             precedingChangedSameTarget,
           ),
       );
+    },
+    async drain() {
+      while (activeLogicalOperations.size > 0) {
+        await Promise.allSettled([...activeLogicalOperations]);
+      }
     },
   };
 }
