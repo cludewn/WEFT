@@ -19,6 +19,7 @@ import {
   startDiscordClient,
 } from "./discord.js";
 import { createGuildSettingsStore } from "./guild-settings.js";
+import { createHealthListener } from "./health.js";
 import { createManagedMessageDiscord } from "./managed-message-discord.js";
 import { createManagedMessageStore } from "./managed-message-persistence.js";
 import { createManagedMessageService } from "./managed-message.js";
@@ -210,7 +211,16 @@ async function main(): Promise<void> {
     forceExit: (code) => process.exit(code),
     writeStderr: (message) => process.stderr.write(message),
   };
+  const health = createHealthListener({
+    port: config.healthPort,
+    getState: () => runtime.getState(),
+    isDiscordReady: () => discordRuntime.client.isReady(),
+    verifyDatabaseConnection: () => database.verifyConnection(),
+  });
   const runtime = createApplicationRuntime({
+    startHealthListener: () => health.start(),
+    quiesceHealth: () => health.quiesce(),
+    drainHealth: () => health.drain(),
     verifyDatabaseConnection: () => database.verifyConnection(),
     startPgBoss: () => pgBoss.start(),
     ensureScheduledThreadCloseQueue: () => scheduledThreadCloseWorkers.ensureQueue(),

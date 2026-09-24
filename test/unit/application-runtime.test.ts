@@ -36,6 +36,9 @@ function createFixture(overrides: Partial<ApplicationRuntimeDependencies> = {}) 
     writeStderr: vi.fn(),
   };
   const dependencies: ApplicationRuntimeDependencies = {
+    startHealthListener: step("health-listener"),
+    quiesceHealth: vi.fn(() => calls.push("health-quiesce")),
+    drainHealth: step("health-drain"),
     verifyDatabaseConnection: step("database"),
     startPgBoss: step("boss"),
     ensureScheduledThreadCloseQueue: step("thread-queue"),
@@ -88,6 +91,7 @@ describe("application runtime", () => {
     expect(fixture.runtime.getState()).toBe("READY");
     expect(fixture.calls).toEqual([
       "startup_started",
+      "health-listener",
       "database",
       "boss",
       "thread-queue",
@@ -258,6 +262,63 @@ describe("application runtime", () => {
     expect(fixture.dependencies.stopPgBoss).toHaveBeenCalledOnce();
     expect(fixture.dependencies.destroyDiscord).toHaveBeenCalledOnce();
     expect(fixture.dependencies.closeDatabase).toHaveBeenCalledOnce();
+  });
+
+  it("starts health quiescence synchronously but drains it after retained thread work", async () => {
+    const retained = deferred();
+    const health = deferred();
+    const calls: string[] = [];
+    const fixture = createFixture({
+      quiesceHealth: () => {
+        calls.push("health-quiesce");
+      },
+      drainThreadLifecycle: () => {
+        calls.push("thread-drain");
+        return retained.promise;
+      },
+      drainHealth: () => {
+        calls.push("health-drain");
+        return health.promise;
+      },
+      stopPgBoss: () => {
+        calls.push("boss-stop");
+        return Promise.resolve();
+      },
+      closeDatabase: () => {
+        calls.push("database-close");
+        return Promise.resolve();
+      },
+    });
+    await fixture.runtime.start();
+    const shutdown = fixture.runtime.shutdown("SIGTERM");
+    expect(calls).toEqual(["health-quiesce"]);
+    await vi.waitFor(() => expect(calls).toContain("thread-drain"));
+    expect(calls).not.toContain("health-drain");
+    retained.resolve();
+    await vi.waitFor(() => expect(calls).toContain("health-drain"));
+    expect(calls).not.toContain("boss-stop");
+    health.resolve();
+    await shutdown;
+    expect(calls).toEqual([
+      "health-quiesce",
+      "thread-drain",
+      "health-drain",
+      "boss-stop",
+      "database-close",
+    ]);
+  });
+
+  it("uses the shared deadline when a physical health probe never drains", async () => {
+    vi.useFakeTimers();
+    const fixture = createFixture({ drainHealth: () => new Promise<void>(() => undefined) });
+    await fixture.runtime.start();
+    const shutdown = fixture.runtime.shutdown("SIGTERM");
+    const assertion = expect(shutdown).rejects.toBeInstanceOf(ShutdownTimeoutError);
+    await vi.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS);
+    await assertion;
+    expect(fixture.processControl.forceExit).toHaveBeenCalledWith(1);
+    expect(fixture.dependencies.stopPgBoss).not.toHaveBeenCalled();
+    expect(fixture.dependencies.closeDatabase).not.toHaveBeenCalled();
   });
 
   it("uses one 30-second deadline and forces a sanitized non-zero timeout", async () => {

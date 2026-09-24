@@ -8,6 +8,9 @@ import {
 function createDependencies(calls: string[], now: () => number): ApplicationRuntimeDependencies {
   const step = () => Promise.resolve();
   return {
+    startHealthListener: step,
+    quiesceHealth: () => {},
+    drainHealth: step,
     verifyDatabaseConnection: step,
     startPgBoss: step,
     ensureScheduledThreadCloseQueue: step,

@@ -56,6 +56,7 @@ export type DiscordConfig = {
 export type AppConfig = {
   database: DatabaseConfig;
   discord: DiscordConfig;
+  healthPort: number;
   logLevel: z.output<typeof logLevelSchema>;
 };
 
@@ -73,14 +74,19 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
   const database = parseDatabaseConfig(environment, productionDatabaseVariables, true);
   const discord = loadDiscordConfig(environment);
   const logLevelResult = logLevelSchema.safeParse(environment.LOG_LEVEL);
+  const healthPortResult = portSchema.safeParse(environment.HEALTH_PORT ?? "3000");
 
   if (!logLevelResult.success) {
     throw new ConfigurationError(["LOG_LEVEL"]);
+  }
+  if (!healthPortResult.success) {
+    throw new ConfigurationError(["HEALTH_PORT"]);
   }
 
   return {
     database,
     discord,
+    healthPort: healthPortResult.data,
     logLevel: logLevelResult.data,
   };
 }
