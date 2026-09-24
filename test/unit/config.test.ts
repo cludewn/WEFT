@@ -27,9 +27,23 @@ describe("loadConfig", () => {
         token: "local-test-token",
         applicationId: "123456789012345678",
       },
+      healthPort: 3000,
       logLevel: "info",
     });
   });
+
+  it("accepts a strict health port override", () => {
+    expect(loadConfig({ ...validEnvironment, HEALTH_PORT: "65535" }).healthPort).toBe(65535);
+  });
+
+  it.each(["0", "65536", " 3000", "+3000", "3000.0", "invalid"])(
+    "rejects invalid health port %s without echoing the value",
+    (value) => {
+      expect(() => loadConfig({ ...validEnvironment, HEALTH_PORT: value })).toThrowError(
+        new ConfigurationError(["HEALTH_PORT"]),
+      );
+    },
+  );
 
   it("loads an optional development guild without validating token format", () => {
     const config = loadConfig({

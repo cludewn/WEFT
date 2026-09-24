@@ -36,6 +36,7 @@ Commands run directly on the host do not load `.env` automatically. Provide the 
 | `DATABASE_PASSWORD`      | Yes                    | PostgreSQL password                                                    |
 | `DATABASE_SSL`           | No                     | Set to `true` to require certificate-verified TLS; defaults to `false` |
 | `LOG_LEVEL`              | No                     | Pino log level; defaults to `info`                                     |
+| `HEALTH_PORT`            | No                     | Local health listener port; defaults to `3000`                         |
 | `DISCORD_TOKEN`          | Yes                    | Discord bot token; never logged or format-validated                    |
 | `DISCORD_APPLICATION_ID` | Yes                    | Discord application ID                                                 |
 | `DISCORD_GUILD_ID`       | For command deployment | Development guild used by the default command deployment mode          |
@@ -74,6 +75,20 @@ docker compose up -d postgres
 ```
 
 PostgreSQL is published only on `127.0.0.1` at `DATABASE_PORT`. Its data is stored in the `postgres-data` named volume.
+
+## Operational health
+
+WEFT serves `GET /health/live` and `GET /health/ready` on `127.0.0.1:HEALTH_PORT` (default
+`3000`). Liveness returns `200` with `{"status":"alive"}` when the local listener responds.
+Readiness returns `200` with `{"status":"ready"}` only after application startup is complete,
+Discord currently reports ready, and a read-only PostgreSQL query succeeds. Otherwise it returns
+`503` with `{"status":"unavailable"}`. Readiness is an observation of those three conditions;
+it does not guarantee that a later Discord or database operation will succeed or trigger recovery.
+
+Docker Compose checks readiness inside the app container every 30 seconds, with a 5-second timeout,
+three retries, and a 60-second startup grace period. The health port is not published to the host.
+A timed-out readiness request leaves any unfinished database query owned by the process until it
+settles or the shared shutdown deadline expires; no second physical health query starts meanwhile.
 
 ## Migrations
 

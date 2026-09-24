@@ -978,6 +978,9 @@ describe("thread lifecycle", () => {
     const drainThreadLifecycle = vi.fn(() => fixture.service.drain());
     const startupStep = () => Promise.resolve();
     const runtime = createApplicationRuntime({
+      startHealthListener: startupStep,
+      quiesceHealth: () => {},
+      drainHealth: startupStep,
       verifyDatabaseConnection: startupStep,
       startPgBoss: startupStep,
       ensureScheduledThreadCloseQueue: startupStep,
@@ -1054,6 +1057,9 @@ describe("thread lifecycle", () => {
     const closeDatabase = vi.fn(() => Promise.resolve());
     const startupStep = () => Promise.resolve();
     const runtime = createApplicationRuntime({
+      startHealthListener: startupStep,
+      quiesceHealth: () => {},
+      drainHealth: startupStep,
       verifyDatabaseConnection: startupStep,
       startPgBoss: startupStep,
       ensureScheduledThreadCloseQueue: startupStep,

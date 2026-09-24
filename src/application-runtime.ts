@@ -17,6 +17,7 @@ export type ProcessControl = {
 };
 
 type StartupDependencies = {
+  startHealthListener: () => Promise<void>;
   verifyDatabaseConnection: () => Promise<void>;
   startPgBoss: () => Promise<void>;
   ensureScheduledThreadCloseQueue: () => Promise<void>;
@@ -37,6 +38,8 @@ type StartupDependencies = {
 };
 
 export type ApplicationRuntimeDependencies = StartupDependencies & {
+  quiesceHealth: () => void;
+  drainHealth: () => Promise<void>;
   quiesce: readonly { name: string; stop: () => void | Promise<void> }[];
   drainThreadLifecycle: () => Promise<void>;
   stopPgBoss: (remainingMs: number) => Promise<void>;
@@ -218,6 +221,7 @@ export function createApplicationRuntime(
     shutdownReason = reason;
     shutdownDeadlineAt = now() + SHUTDOWN_TIMEOUT_MS;
     state = "SHUTTING_DOWN";
+    dependencies.quiesceHealth();
   };
 
   const runCleanup = async (): Promise<void> => {
@@ -246,6 +250,9 @@ export function createApplicationRuntime(
       dependencies.drainThreadLifecycle(),
     );
     if (threadLifecycleFailure !== undefined) failures.push(threadLifecycleFailure.error);
+
+    const healthFailure = await invokeCleanup("health", dependencies.drainHealth);
+    if (healthFailure !== undefined) failures.push(healthFailure.error);
 
     const pgBossFailure = await invokeCleanup("pg-boss", () =>
       dependencies.stopPgBoss(remainingMs()),
@@ -317,6 +324,7 @@ export function createApplicationRuntime(
     startupPromise ??= (async () => {
       logger.info({ event: "startup_started" }, "Application startup started");
       try {
+        await runStartupStep("health_listener_start", dependencies.startHealthListener);
         await runStartupStep("database_verify", dependencies.verifyDatabaseConnection);
         await runStartupStep("pg_boss_start", dependencies.startPgBoss);
         await runStartupStep("queue_validation", dependencies.ensureScheduledThreadCloseQueue);

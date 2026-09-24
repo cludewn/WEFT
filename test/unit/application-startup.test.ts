@@ -14,6 +14,7 @@ function deferred() {
 }
 
 const startupSteps = [
+  "startHealthListener",
   "verifyDatabaseConnection",
   "startPgBoss",
   "ensureScheduledThreadCloseQueue",
@@ -34,6 +35,7 @@ const startupSteps = [
 ] as const satisfies readonly (keyof ApplicationRuntimeDependencies)[];
 
 const partialStartupFailures = [
+  ["health listener", "startHealthListener", "health_listener_start"],
   ["database verification", "verifyDatabaseConnection", "database_verify"],
   ["pg-boss start", "startPgBoss", "pg_boss_start"],
   ["queue validation", "ensureScheduledThreadCloseQueue", "queue_validation"],
@@ -47,6 +49,9 @@ const partialStartupFailures = [
 function dependencies(): ApplicationRuntimeDependencies {
   const resolved = () => Promise.resolve();
   return {
+    startHealthListener: vi.fn(resolved),
+    quiesceHealth: vi.fn(),
+    drainHealth: vi.fn(resolved),
     verifyDatabaseConnection: vi.fn(resolved),
     startPgBoss: vi.fn(resolved),
     ensureScheduledThreadCloseQueue: vi.fn(resolved),
