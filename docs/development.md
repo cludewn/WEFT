@@ -284,6 +284,27 @@ Once committed, the cancellation is not restored if later lifecycle work is unch
 fails. WEFT does not directly cancel the stale pg-boss delivery; the existing worker reloads the
 authoritative action and safely ignores `CANCELLED` state.
 
+## Operational health
+
+The focused health module owns only the Node HTTP listener, request admission and completion, and
+one outstanding physical application PostgreSQL readiness query. It reads the application runtime's
+lifecycle state and the Discord client's current readiness. It reuses the application's `SELECT 1`
+connection verification boundary and does not own a separate pool or persistent health state.
+
+The listener starts as `health_listener_start` before database verification. Its local-only port is
+`HEALTH_PORT`, default `3000`, with the same strict port validation as `DATABASE_PORT`. GET liveness
+answers without dependency work. GET readiness observes `READY`, current Discord readiness, and a
+read-only database query with a 2,000 ms per-request wait budget. A timed-out query retains physical
+ownership until settlement, so later requests cannot start a second unresolved query. No result is
+cached and neither timeout nor rejection causes application recovery.
+
+At shutdown, the runtime closes health probe admission synchronously and initiates listener close
+alongside producer quiescence. It waits for active health requests and the physical query only after
+the existing source and retained thread-lifecycle work barriers. Database close follows health
+drain, all under the shared 30,000 ms deadline. Compose probes the container-local readiness route
+every 30 seconds, allows 5 seconds per probe, marks unhealthy after three failures, and allows
+60 seconds for startup. The health port has no host port mapping.
+
 ## Startup and shutdown
 
 One application-specific runtime owner coordinates the process-local `STARTING`, `READY`,
@@ -291,8 +312,9 @@ One application-specific runtime owner coordinates the process-local `STARTING`,
 injection framework.
 
 After configuration validation, Discord event handlers are wired behind the runtime's closed
-ingress gate. The runtime verifies PostgreSQL with `SELECT 1`, starts pg-boss, validates all queues,
-completes scheduled-thread-close, scheduled-message, and recurring-message startup recovery, waits
+ingress gate. The runtime starts the local health listener, verifies PostgreSQL with `SELECT 1`,
+starts pg-boss, validates all queues, completes scheduled-thread-close, scheduled-message, and
+recurring-message startup recovery, waits
 for Discord `ClientReady`, registers all workers, schedules all periodic reconcilers, attempts the
 best-effort automatic-close baseline repair, and starts the automatic-close timer. Only then does
 one synchronous boundary enter `READY`; handlers consult that state directly before entering an
@@ -312,13 +334,14 @@ from raw settlement to finalization cannot produce a false empty drain. A deferr
 was admitted before ingress closed remains attached to that bounded logical operation. Unrelated
 post-close events cannot enter the service.
 
-Shutdown has two phases. Quiesce synchronously closes ingress and initiates every automatic-close
-timer, scheduled-thread-close reconciler, scheduled-message reconciler, recurring-message
+Shutdown has two phases. Quiesce synchronously closes ingress and health probe admission, starts
+listener close, and initiates every automatic-close timer, scheduled-thread-close reconciler, scheduled-message reconciler, recurring-message
 reconciler, scheduled-thread-close worker poller, scheduled-message worker poller, and recurring-
 message worker poller stop before awaiting any drain. Drain first establishes a source barrier by
 waiting for the active startup step, admitted handlers, active sweeps, and worker callbacks, because
 each can transfer ownership to retained thread-lifecycle work. It then drains that stable retained-
-work set. After both drain stages, pg-boss stops and closes its own PostgreSQL resources, Discord is
+work set. After those source and retained-work drain stages, health requests and any physical
+health probe drain. Then pg-boss stops and closes its own PostgreSQL resources, Discord is
 destroyed, the application pool closes, and process listeners are removed. Cleanup operations are
 idempotent.
 

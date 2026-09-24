@@ -107,15 +107,16 @@ WEFT configuration, schedules, managed resources, and audit history.
 Runtime startup validates configuration before constructing the lifecycle owner. It then wires
 Discord handlers behind a closed ingress gate and performs the following ordered work:
 
-1. verify the application PostgreSQL connection with a real query,
-2. start pg-boss and validate every required queue,
-3. complete PostgreSQL-authoritative startup recovery,
-4. connect Discord and observe `ClientReady`,
-5. register the scheduled and recurring workers,
-6. schedule the periodic reconciliation loops,
-7. attempt best-effort automatic-close baseline reconciliation,
-8. schedule the automatic-close runtime,
-9. atomically enter `READY`, open application ingress, and log `application_ready`.
+1. start the local health listener without entering `READY`,
+2. verify the application PostgreSQL connection with a real query,
+3. start pg-boss and validate every required queue,
+4. complete PostgreSQL-authoritative startup recovery,
+5. connect Discord and observe `ClientReady`,
+6. register the scheduled and recurring workers,
+7. schedule the periodic reconciliation loops,
+8. attempt best-effort automatic-close baseline reconciliation,
+9. schedule the automatic-close runtime,
+10. atomically enter `READY`, open application ingress, and log `application_ready`.
 
 The first periodic reconciliation sweep need not complete before `READY`. Remote Discord command
 deployment remains a separate CLI operation and is not runtime startup or a readiness condition.
@@ -127,12 +128,13 @@ mutation, finalization work, or an admitted deferred continuation. That retained
 process-locally tracked without extending the interaction wait budget.
 
 The first shutdown request synchronously enters `SHUTTING_DOWN`, closes ingress, prevents another
-startup step, and starts quiescing every reconciler timer, automatic-close timer, and worker poller
-before drain waiting. Shutdown first waits for every source that can create thread-lifecycle work:
+startup step, and starts quiescing the health listener, every reconciler timer, automatic-close
+timer, and worker poller before drain waiting. Shutdown first waits for every source that can create thread-lifecycle work:
 the active startup step, admitted handlers, reconciliation sweeps, and worker callbacks. Only after
-that source barrier does it drain retained thread-lifecycle work. One 30-second process-wide
-deadline covers both drain stages, pg-boss stop, Discord destruction, application PostgreSQL close,
-and process-listener removal. Discord and the application PostgreSQL pool remain available during
+that source barrier does it drain retained thread-lifecycle work, followed by active health
+requests and the physical health probe. One 30-second process-wide deadline covers all drain
+stages, pg-boss stop, Discord destruction, application PostgreSQL close, and process-listener
+removal. Discord and the application PostgreSQL pool remain available during
 the bounded drain. pg-boss closes before Discord, and Discord closes before the application pool.
 
 `SIGINT` and `SIGTERM` join the same idempotent shutdown. Successful normal signal shutdown selects
@@ -146,6 +148,39 @@ Startup failure keeps its bounded startup-step identity as the primary failure a
 same cleanup path. A cleanup failure is reported separately. Shutdown timeout never invents a
 feature success, failure, or retry; restart continues to use existing PostgreSQL-authoritative
 recovery and reconciliation.
+
+#### Operational health observation
+
+After configuration validation and process-handler installation, a Node HTTP listener binds only to
+`127.0.0.1` on `HEALTH_PORT` (default `3000`, strict decimal port 1–65535) as the named first
+startup step `health_listener_start`. It precedes PostgreSQL verification without changing the
+relative dependency startup order. Listener startup does not enter `READY`; a bind failure uses the
+existing bounded startup-failure cleanup.
+
+`GET /health/live` returns HTTP 200 and exactly `{"status":"alive"}` without dependency checks.
+`GET /health/ready` returns HTTP 200 and exactly `{"status":"ready"}` only if lifecycle state is
+`READY`, the existing Discord client currently reports ready, and the application database completes
+a read-only `SELECT 1` query. Otherwise it returns HTTP 503 and exactly
+`{"status":"unavailable"}`. All responses use `Content-Type: application/json` and disclose no
+failure reason. Readiness is an observation, not authority over application state or recovery. It
+does not guarantee future Discord or PostgreSQL work, inspect pg-boss, or cause repair or writes.
+
+Path matching ignores query strings but requires the exact pathname. Unknown paths return 404 with
+`{"status":"not_found"}`. A known path with a method other than GET returns 405 with `Allow: GET`
+and `{"status":"method_not_allowed"}`. HEAD follows the same status and header rules but sends no
+body, including for unknown paths.
+
+Each readiness request waits at most 2,000 ms for its PostgreSQL query. At most one physical
+PostgreSQL health query may remain unresolved, including after its initiating HTTP request times
+out. Concurrent requests may await that query within their own budgets; a settled result is never
+cached. Late success or rejection is consumed without changing application state.
+
+On entry to `SHUTTING_DOWN`, health probe admission closes synchronously and listener quiescence
+begins. In-flight readiness rechecks lifecycle and Discord state before success. Health requests
+and the physical query drain after the thread-lifecycle source and retained-work barriers, before
+pg-boss, Discord, and the application database close. The existing 30-second process-wide deadline
+remains the sole timeout authority. Compose checks readiness from inside the app container; the
+health port is not published.
 
 ### Guild configuration
 
