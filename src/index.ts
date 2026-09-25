@@ -1,5 +1,8 @@
 import pino from "pino";
 
+import { createAuditLogDestinationDiscord } from "./audit-log-destination-discord.js";
+import { createAuditLogDestinationStore } from "./audit-log-destination-persistence.js";
+import { createAuditLogDestinationService } from "./audit-log-destination.js";
 import { createApplicationRuntime, type ProcessControl } from "./application-runtime.js";
 import { createAutomaticCloseActivityService } from "./automatic-close-activity.js";
 import { createAutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
@@ -82,6 +85,10 @@ async function main(): Promise<void> {
   const automaticCloses = createAutomaticClosePersistenceStore(database.client);
   const managedMessageStore = createManagedMessageStore(database.client);
   const discordRuntime = createDiscordRuntime(logger, { guildSettings, managedThreads, audits });
+  const auditLogDestination = createAuditLogDestinationService(
+    createAuditLogDestinationStore(database.client),
+    createAuditLogDestinationDiscord(discordRuntime.client),
+  );
   const managedMessages = createManagedMessageService({
     discord: createManagedMessageDiscord(discordRuntime.client),
     store: managedMessageStore,
@@ -291,6 +298,7 @@ async function main(): Promise<void> {
   registerDiscordCommandHandler(
     discordRuntime.client,
     {
+      auditLogDestination,
       automaticCloseConfiguration,
       automaticCloseMaintenance,
       guildSettings,

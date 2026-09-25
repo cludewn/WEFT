@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
+import { auditLogDestinationAudits } from "./audit-log-destination-persistence.js";
 import {
   autoCloseParentChannels,
   autoCloseThreadActivity,
@@ -32,6 +33,7 @@ export function createDatabase(config: DatabaseConfig) {
 
   const client = drizzle(pool, {
     schema: {
+      auditLogDestinationAudits,
       autoCloseParentChannels,
       autoCloseThreadActivity,
       autoCloseThreadExclusions,

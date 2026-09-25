@@ -1323,4 +1323,19 @@ is complete; Phase 9 remains separate.
 - Review runtime dependencies and licenses.
 - Prepare the first public release.
 
+### Phase 9B-2A: Audit-log destination configuration
+
+The optional guild destination is disabled by default and stores only a channel ID. `/config
+audit-log show` performs a read-only PostgreSQL lookup and projects a missing row as disabled.
+`set` re-fetches a guild text or announcement channel and the bot member, then checks effective
+`ViewChannel` and `SendMessages` permissions before entering the database transaction. `disable`
+performs no Discord lookup. All commands require the user's `ManageGuild` permission.
+
+Destination changes serialize on the `guild_settings` row and atomically write the setting and a
+dedicated PostgreSQL audit. An exact no-op changes neither timestamp nor audit history. Ambiguous
+write responses are checked through the stable audit ID; a later destination change does not erase
+that historical proof. PostgreSQL remains authoritative. The Discord preflight is point-in-time,
+and Phase 9B-2A sends no notification. Phase 9B-2B will revalidate and deliver best-effort
+notifications.
+
 Deferred ideas must not be implemented during these phases without an approved specification change.
