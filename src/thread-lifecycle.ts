@@ -483,7 +483,12 @@ export function createThreadLifecycleService(
 
     try {
       const boundaryTimeoutMs = Math.min(remainingMs, timeoutOptions?.timeoutMs ?? remainingMs);
-      const result = await withTimeout(operation(), boundaryTimeoutMs);
+      const underlying = operation();
+      if (boundary === "audit_write") {
+        // Retain the original write and publication after the caller wait expires.
+        context.retain(underlying.then(() => undefined));
+      }
+      const result = await withTimeout(underlying, boundaryTimeoutMs);
       logger.debug(
         {
           event: "thread_lifecycle_boundary_completed",

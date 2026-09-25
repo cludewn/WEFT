@@ -71,6 +71,7 @@ function dependencies(): ApplicationRuntimeDependencies {
     startAutomaticCloseRuntime: vi.fn(resolved),
     quiesce: [],
     drainThreadLifecycle: vi.fn(resolved),
+    drainAuditNotifications: vi.fn(resolved),
     stopPgBoss: vi.fn(resolved),
     destroyDiscord: vi.fn(resolved),
     closeDatabase: vi.fn(resolved),

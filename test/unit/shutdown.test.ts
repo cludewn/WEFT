@@ -40,6 +40,10 @@ function createDependencies(calls: string[], now: () => number): ApplicationRunt
       calls.push("thread-drain");
       return Promise.resolve();
     },
+    drainAuditNotifications: () => {
+      calls.push("notification-drain");
+      return Promise.resolve();
+    },
     stopPgBoss: (remainingMs) => {
       calls.push(`boss:${remainingMs}`);
       return Promise.resolve();
@@ -73,7 +77,14 @@ describe("shutdown ordering", () => {
     await runtime.shutdown("SIGTERM");
 
     expect(values.processControl?.setExitCode).toHaveBeenCalledWith(0);
-    expect(calls).toEqual(["quiesce", "thread-drain", "boss:17655", "discord", "database"]);
+    expect(calls).toEqual([
+      "quiesce",
+      "thread-drain",
+      "notification-drain",
+      "boss:17655",
+      "discord",
+      "database",
+    ]);
   });
 
   it("continues closing later resources and selects non-zero after cleanup failure", async () => {

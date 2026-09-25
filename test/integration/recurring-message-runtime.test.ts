@@ -1,6 +1,6 @@
 import { and, eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
@@ -192,10 +192,12 @@ async function threeRetries(id: string, firstAt: Date) {
 }
 
 describe("recurring retry persistence", () => {
-  it("atomically completes an occurrence, managed message, audits, and next occurrence", async () => {
+  it("atomically completes an occurrence and publishes both committed audits", async () => {
     const { occurrence, firstAt } = await claimed("complete");
+    const publish = vi.fn();
+    const publishingRuntime = createRecurringRuntimeStore(first.client, { publish });
     expect(
-      await runtime.terminalize({
+      await publishingRuntime.terminalize({
         occurrenceId: occurrence.id,
         auditId: "complete-audit",
         nextOccurrenceId: "complete-next",
@@ -233,6 +235,15 @@ describe("recurring retry persistence", () => {
       event: "OCCURRENCE_COMPLETED",
       nextOccurrenceId: "complete-next",
       resultMessageId: "discord-complete",
+    });
+    expect(publish).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenCalledWith({
+      source: "RECURRING_MESSAGE",
+      auditId: "complete-audit",
+    });
+    expect(publish).toHaveBeenCalledWith({
+      source: "MANAGED_MESSAGE",
+      auditId: "managed-complete",
     });
   });
 

@@ -58,6 +58,7 @@ function createFixture(overrides: Partial<ApplicationRuntimeDependencies> = {}) 
     startAutomaticCloseRuntime: step("automatic-runtime"),
     quiesce: [],
     drainThreadLifecycle: step("thread-drain"),
+    drainAuditNotifications: step("audit-drain"),
     stopPgBoss: vi.fn((remainingMs: number) => {
       calls.push(`boss-stop:${remainingMs}`);
       return Promise.resolve();
@@ -264,6 +265,58 @@ describe("application runtime", () => {
     expect(fixture.dependencies.closeDatabase).toHaveBeenCalledOnce();
   });
 
+  it("drains late accepted notification delivery after source and thread work, before Discord and DB close", async () => {
+    const worker = deferred();
+    const thread = deferred();
+    const delivery = deferred();
+    const calls: string[] = [];
+    const fixture = createFixture({
+      quiesce: [
+        {
+          name: "worker",
+          stop: () => {
+            calls.push("worker-stop");
+            return worker.promise;
+          },
+        },
+      ],
+      drainThreadLifecycle: () => {
+        calls.push("thread-drain");
+        return thread.promise;
+      },
+      drainAuditNotifications: () => {
+        calls.push("notification-drain");
+        return delivery.promise;
+      },
+      destroyDiscord: () => {
+        calls.push("discord-destroy");
+      },
+      closeDatabase: () => {
+        calls.push("database-close");
+        return Promise.resolve();
+      },
+    });
+    await fixture.runtime.start();
+    const shutdown = fixture.runtime.shutdown("SIGTERM");
+    expect(calls).toEqual(["worker-stop"]);
+    worker.resolve();
+    await vi.waitFor(() => expect(calls).toContain("thread-drain"));
+    expect(calls).not.toContain("notification-drain");
+    thread.resolve();
+    await vi.waitFor(() => expect(calls).toContain("notification-drain"));
+    expect(calls).not.toContain("discord-destroy");
+    expect(calls).not.toContain("database-close");
+    delivery.resolve();
+    await shutdown;
+    expect(calls).toEqual([
+      "worker-stop",
+      "thread-drain",
+      "notification-drain",
+      "discord-destroy",
+      "database-close",
+    ]);
+  });
+
   it("starts health quiescence synchronously but drains it after retained thread work", async () => {
     const retained = deferred();
     const health = deferred();
@@ -306,6 +359,23 @@ describe("application runtime", () => {
       "boss-stop",
       "database-close",
     ]);
+  });
+
+  it("uses only the existing shared deadline for notification drain", async () => {
+    vi.useFakeTimers();
+    const setTimer = vi.fn(setTimeout);
+    const fixture = createFixture({
+      drainAuditNotifications: () => new Promise<void>(() => undefined),
+      setTimer,
+    });
+    await fixture.runtime.start();
+    const shutdown = fixture.runtime.shutdown("SIGTERM");
+    const timedOut = expect(shutdown).rejects.toBeInstanceOf(ShutdownTimeoutError);
+    await vi.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS);
+    await timedOut;
+    expect(setTimer).toHaveBeenCalledOnce();
+    expect(fixture.dependencies.destroyDiscord).not.toHaveBeenCalled();
+    expect(fixture.dependencies.closeDatabase).not.toHaveBeenCalled();
   });
 
   it("uses the shared deadline when a physical health probe never drains", async () => {

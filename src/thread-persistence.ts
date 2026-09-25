@@ -3,6 +3,8 @@ import { check, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core
 import { sql } from "drizzle-orm";
 
 import type { DatabaseClient } from "./database.js";
+import type { AuditNotificationPublisher } from "./audit-notification-dispatcher.js";
+import { publishCommittedAudit } from "./audit-notification-publication.js";
 
 export const MANAGED_THREAD_STATES = ["OPEN", "CLOSED"] as const;
 export type ManagedThreadLifecycleState = (typeof MANAGED_THREAD_STATES)[number];
@@ -136,7 +138,10 @@ export function createManagedThreadStore(database: DatabaseClient): ManagedThrea
   };
 }
 
-export function createThreadAuditStore(database: DatabaseClient): ThreadAuditStore {
+export function createThreadAuditStore(
+  database: DatabaseClient,
+  publisher?: AuditNotificationPublisher,
+): ThreadAuditStore {
   return {
     async record(audit) {
       const inserted = await database
@@ -154,6 +159,7 @@ export function createThreadAuditStore(database: DatabaseClient): ThreadAuditSto
         .onConflictDoNothing({ target: threadAudits.id })
         .returning({ id: threadAudits.id });
       if (inserted.length > 0) {
+        publishCommittedAudit(publisher, { source: "THREAD", auditId: audit.id });
         return;
       }
 
@@ -174,6 +180,7 @@ export function createThreadAuditStore(database: DatabaseClient): ThreadAuditSto
       ) {
         throw new ThreadAuditConflictError();
       }
+      publishCommittedAudit(publisher, { source: "THREAD", auditId: audit.id });
     },
   };
 }

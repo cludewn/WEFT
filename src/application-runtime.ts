@@ -42,6 +42,7 @@ export type ApplicationRuntimeDependencies = StartupDependencies & {
   drainHealth: () => Promise<void>;
   quiesce: readonly { name: string; stop: () => void | Promise<void> }[];
   drainThreadLifecycle: () => Promise<void>;
+  drainAuditNotifications: () => Promise<void>;
   stopPgBoss: (remainingMs: number) => Promise<void>;
   destroyDiscord: () => void | Promise<void>;
   closeDatabase: () => Promise<void>;
@@ -250,6 +251,14 @@ export function createApplicationRuntime(
       dependencies.drainThreadLifecycle(),
     );
     if (threadLifecycleFailure !== undefined) failures.push(threadLifecycleFailure.error);
+
+    // Source work and retained lifecycle writes have now finished publishing. Delivery still
+    // needs both Discord and the application database, so drain it before either closes.
+    const notificationFailure = await invokeCleanup(
+      "audit-notifications",
+      dependencies.drainAuditNotifications,
+    );
+    if (notificationFailure !== undefined) failures.push(notificationFailure.error);
 
     const healthFailure = await invokeCleanup("health", dependencies.drainHealth);
     if (healthFailure !== undefined) failures.push(healthFailure.error);

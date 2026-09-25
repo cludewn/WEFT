@@ -5,7 +5,7 @@ import { check, index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
 import { scheduledActions, type ScheduledAction } from "./scheduled-action-persistence.js";
-import type { ThreadFailureCode } from "./thread-lifecycle.js";
+import { THREAD_FAILURE_CODES } from "./thread-lifecycle.js";
 
 export const SCHEDULED_THREAD_CLOSE_AUDIT_EVENTS = [
   "CREATED",
@@ -110,8 +110,13 @@ export type CancelScheduledThreadCloseResult =
  * Claim and transition failures are intentionally excluded: they never complete an execution
  * transition, so they must never produce an execution audit.
  */
+export const SCHEDULED_THREAD_CLOSE_AUDIT_FAILURE_CODES = [
+  ...THREAD_FAILURE_CODES,
+  "THREAD_LIFECYCLE_UNEXPECTED_FAILURE",
+  "EXECUTION_INTERRUPTED",
+] as const;
 export type ScheduledThreadCloseExecutionAuditFailureCode =
-  ThreadFailureCode | "THREAD_LIFECYCLE_UNEXPECTED_FAILURE" | "EXECUTION_INTERRUPTED";
+  (typeof SCHEDULED_THREAD_CLOSE_AUDIT_FAILURE_CODES)[number];
 
 export type CompleteScheduledThreadCloseExecution = {
   scheduledActionId: string;

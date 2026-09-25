@@ -3,6 +3,16 @@ import pino from "pino";
 import { createAuditLogDestinationDiscord } from "./audit-log-destination-discord.js";
 import { createAuditLogDestinationStore } from "./audit-log-destination-persistence.js";
 import { createAuditLogDestinationService } from "./audit-log-destination.js";
+import { createAuditNotificationDiscord } from "./audit-notification-discord.js";
+import { createAuditNotificationDispatcher } from "./audit-notification-dispatcher.js";
+import { createAuditNotificationProjection } from "./audit-notification-projection.js";
+import {
+  publishAuditDestinationChanges,
+  publishManagedMessageAudits,
+  publishRecurringMessageAudits,
+  publishScheduledMessageAudits,
+  publishScheduledThreadCloseAudits,
+} from "./audit-notification-publication.js";
 import { createApplicationRuntime, type ProcessControl } from "./application-runtime.js";
 import { createAutomaticCloseActivityService } from "./automatic-close-activity.js";
 import { createAutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
@@ -76,17 +86,52 @@ async function main(): Promise<void> {
   const pgBoss = createPgBossRuntime(config.database, logger);
   const guildSettings = createGuildSettingsStore(database.client);
   const managedThreads = createManagedThreadStore(database.client);
-  const audits = createThreadAuditStore(database.client);
+  const notificationDispatcher: { current?: ReturnType<typeof createAuditNotificationDispatcher> } =
+    {};
+  const auditPublisher = {
+    publish: (
+      reference: Parameters<ReturnType<typeof createAuditNotificationDispatcher>["publish"]>[0],
+    ) => notificationDispatcher.current?.publish(reference),
+  };
+  const audits = createThreadAuditStore(database.client, auditPublisher);
   const scheduledActions = createScheduledActionStore(database.client);
-  const scheduledThreadCloses = createScheduledThreadCloseStore(database.client);
-  const scheduledMessageStore = createScheduledMessageStore(database.client);
-  const recurringMessageStore = createRecurringMessageStore(database.client);
-  const recurringRuntimeStore = createRecurringRuntimeStore(database.client);
+  const scheduledThreadCloses = publishScheduledThreadCloseAudits(
+    database.client,
+    auditPublisher,
+    createScheduledThreadCloseStore(database.client),
+  );
+  const scheduledMessageStore = publishScheduledMessageAudits(
+    database.client,
+    auditPublisher,
+    createScheduledMessageStore(database.client),
+  );
+  const recurringMessageStore = publishRecurringMessageAudits(
+    database.client,
+    auditPublisher,
+    createRecurringMessageStore(database.client),
+  );
+  const recurringRuntimeStore = createRecurringRuntimeStore(database.client, auditPublisher);
   const automaticCloses = createAutomaticClosePersistenceStore(database.client);
-  const managedMessageStore = createManagedMessageStore(database.client);
+  const managedMessageStore = publishManagedMessageAudits(
+    database.client,
+    auditPublisher,
+    createManagedMessageStore(database.client),
+  );
   const discordRuntime = createDiscordRuntime(logger, { guildSettings, managedThreads, audits });
-  const auditLogDestination = createAuditLogDestinationService(
+  const destinationStore = publishAuditDestinationChanges(
+    database.client,
+    auditPublisher,
     createAuditLogDestinationStore(database.client),
+  );
+  const auditNotifications = createAuditNotificationDispatcher({
+    projection: createAuditNotificationProjection(database.client),
+    readDestination: (guildId) => destinationStore.read(guildId),
+    discord: createAuditNotificationDiscord(discordRuntime.client),
+    logger,
+  });
+  notificationDispatcher.current = auditNotifications;
+  const auditLogDestination = createAuditLogDestinationService(
+    destinationStore,
     createAuditLogDestinationDiscord(discordRuntime.client),
   );
   const managedMessages = createManagedMessageService({
@@ -270,6 +315,7 @@ async function main(): Promise<void> {
       { name: "recurring-message-worker", stop: () => recurringWorker.stop() },
     ],
     drainThreadLifecycle: () => discordRuntime.threadLifecycle.drain(),
+    drainAuditNotifications: () => auditNotifications.drain(),
     stopPgBoss: (remainingMs) => pgBoss.stop(remainingMs),
     destroyDiscord: () => discordRuntime.client.destroy(),
     closeDatabase: () => database.close(),
