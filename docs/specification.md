@@ -207,6 +207,20 @@ UTC
 
 A guild administrator may configure another valid IANA timezone identifier.
 
+The per-guild audit-log destination is disabled by default. `/config audit-log show` reads only
+PostgreSQL state and displays the stored channel ID even if the Discord channel is no longer
+available; a missing settings row is displayed as disabled without creating one. `/config audit-log
+set channel:<channel>` accepts only guild text and announcement channels, re-fetches the current
+channel and bot member, and requires the bot's effective `ViewChannel` and `SendMessages`
+permissions. `/config audit-log disable` uses only PostgreSQL state. All three commands require
+the invoking user's current `ManageGuild` permission. Exact repeated changes leave timestamps and
+audits untouched. Real changes and their dedicated destination-change audits commit atomically.
+
+PostgreSQL remains authoritative for configuration and audit history. Discord validation is a
+point-in-time check. Phase 9B-2A does not send audit notifications; Phase 9B-2B will revalidate the
+channel and permissions at delivery time and send best-effort notifications. The Discord channel
+is never authoritative audit storage.
+
 ### Thread command structure
 
 Thread operations are subcommands of the top-level `/thread` slash command.

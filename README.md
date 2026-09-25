@@ -90,6 +90,16 @@ three retries, and a 60-second startup grace period. The health port is not publ
 A timed-out readiness request leaves any unfinished database query owned by the process until it
 settles or the shared shutdown deadline expires; no second physical health query starts meanwhile.
 
+## Audit-log destination
+
+The optional per-guild destination is disabled by default. An administrator with `ManageGuild`
+can use `/config audit-log show`, `/config audit-log set channel:<channel>`, and `/config audit-log
+disable`. The destination must be a guild text or announcement channel where WEFT currently has
+`ViewChannel` and `SendMessages`. `show` reads the stored ID without changing settings or checking
+Discord; `disable` also works if the channel has been deleted. Discord validation during `set` is
+point-in-time. PostgreSQL stores the authoritative configuration and change audits. This phase
+does not send audit notifications to Discord.
+
 ## Migrations
 
 WEFT-owned Drizzle migrations are not applied automatically when the application starts. Run the required command explicitly with database environment variables available to the process:
