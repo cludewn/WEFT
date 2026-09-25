@@ -97,8 +97,24 @@ can use `/config audit-log show`, `/config audit-log set channel:<channel>`, and
 disable`. The destination must be a guild text or announcement channel where WEFT currently has
 `ViewChannel` and `SendMessages`. `show` reads the stored ID without changing settings or checking
 Discord; `disable` also works if the channel has been deleted. Discord validation during `set` is
-point-in-time. PostgreSQL stores the authoritative configuration and change audits. This phase
-does not send audit notifications to Discord.
+point-in-time. PostgreSQL stores the authoritative configuration and change audits. Newly committed
+audits are also projected as best-effort Discord notifications when a current destination is
+configured; PostgreSQL remains the authoritative audit history.
+
+## Audit notifications
+
+WEFT sends metadata-only, plain-text notifications for newly committed thread, scheduled thread-close,
+managed-message, scheduled-message, recurring-message, and audit-destination audits. Message content,
+embed fields, names, raw errors, and arbitrary before/after values are excluded. Mentions are
+suppressed. Before each send, WEFT reads the current destination from PostgreSQL, force-fetches the
+Discord channel and bot member, and checks the bot's current `ViewChannel` and `SendMessages`
+permissions. Disabling the destination normally sends no notification.
+
+Delivery is best effort and process local. A stable source-and-audit-ID nonce reduces duplicates,
+but ordering and exactly-once delivery are not guaranteed. Failed or ambiguous sends are not retried.
+There is no startup replay or historical backfill; a crash may lose a notification while its
+PostgreSQL audit remains committed. Graceful shutdown drains accepted notification work within the
+existing process-wide deadline before Discord and PostgreSQL close.
 
 ## Migrations
 

@@ -217,9 +217,22 @@ the invoking user's current `ManageGuild` permission. Exact repeated changes lea
 audits untouched. Real changes and their dedicated destination-change audits commit atomically.
 
 PostgreSQL remains authoritative for configuration and audit history. Discord validation is a
-point-in-time check. Phase 9B-2A does not send audit notifications; Phase 9B-2B will revalidate the
-channel and permissions at delivery time and send best-effort notifications. The Discord channel
-is never authoritative audit storage.
+point-in-time check. The Discord channel is never authoritative audit storage.
+
+Newly committed audits from `thread_audits`, `scheduled_thread_close_audits`,
+`managed_message_audits`, `scheduled_message_audits`, `recurring_message_audits`, and
+`audit_log_destination_audits` are eligible for best-effort notification to the currently configured
+destination. Notification projection loads the committed audit by exact source and ID and uses only
+bounded metadata. Message content, embed fields, names, raw errors, and arbitrary before/after text
+are excluded. Notifications use plain text and suppress all mentions. Each attempt reads the current
+destination, force-fetches the channel and bot member, and revalidates the bot's effective
+`ViewChannel` and `SendMessages` permissions. Disabling the destination normally sends no notification.
+
+Notification delivery is process local, asynchronous, and non-authoritative. A stable nonce derived
+from source and audit ID reduces duplicates; it does not guarantee exactly-once delivery. Sends are
+attempted once without retry. There is no replay, backfill, or ordering guarantee. A process crash
+may lose a notification after its PostgreSQL audit commits. Normal graceful shutdown drains accepted
+notification tasks under the existing shared deadline before Discord and PostgreSQL close.
 
 ### Thread command structure
 

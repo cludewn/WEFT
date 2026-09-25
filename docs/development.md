@@ -340,9 +340,11 @@ reconciler, scheduled-thread-close worker poller, scheduled-message worker polle
 message worker poller stop before awaiting any drain. Drain first establishes a source barrier by
 waiting for the active startup step, admitted handlers, active sweeps, and worker callbacks, because
 each can transfer ownership to retained thread-lifecycle work. It then drains that stable retained-
-work set. After those source and retained-work drain stages, health requests and any physical
-health probe drain. Then pg-boss stops and closes its own PostgreSQL resources, Discord is
-destroyed, the application pool closes, and process listeners are removed. Cleanup operations are
+work set. The original thread audit write stays retained through confirmed notification publication
+even when the caller wait expires. Accepted audit-notification tasks drain after the source and
+retained-work barriers while Discord and PostgreSQL remain available. After that, health requests
+and any physical health probe drain. Then pg-boss stops and closes its own PostgreSQL resources,
+Discord is destroyed, the application pool closes, and process listeners are removed. Cleanup operations are
 idempotent.
 
 The first shutdown request creates one 30,000 ms deadline. Every phase uses its remaining budget;
@@ -1334,8 +1336,14 @@ performs no Discord lookup. All commands require the user's `ManageGuild` permis
 Destination changes serialize on the `guild_settings` row and atomically write the setting and a
 dedicated PostgreSQL audit. An exact no-op changes neither timestamp nor audit history. Ambiguous
 write responses are checked through the stable audit ID; a later destination change does not erase
-that historical proof. PostgreSQL remains authoritative. The Discord preflight is point-in-time,
-and Phase 9B-2A sends no notification. Phase 9B-2B will revalidate and deliver best-effort
-notifications.
+that historical proof. PostgreSQL remains authoritative. The configuration-time Discord preflight
+is point-in-time. Phase 9B-2B projects newly committed audits from the six existing audit tables.
+The projection explicitly selects safe metadata, never message content or embed fields. Publication follows successful commit or exact same-ID confirmation;
+recurring operations publish only audit rows actually committed, including gap/skip audits and any
+managed-message audit in a combined transaction. A process-local dispatcher owns asynchronous
+projection, current destination lookup, delivery-time Discord permission checks, one plain-text
+send with mention suppression and a stable nonce, and graceful-shutdown drain. It has no durable
+queue, retry, replay, backfill, or ordering guarantee. PostgreSQL remains authoritative even if a
+notification is lost.
 
 Deferred ideas must not be implemented during these phases without an approved specification change.
