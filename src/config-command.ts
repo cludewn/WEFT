@@ -12,6 +12,7 @@ import type {
   InteractionReplyOptions,
 } from "discord.js";
 
+import type { AuditLogDestinationService } from "./audit-log-destination.js";
 import type {
   AutomaticCloseConfigurationService,
   AutomaticCloseConfigurationView,
@@ -24,6 +25,11 @@ import {
   parseAutoCloseInactivityInput,
   type GuildSettingsStore,
 } from "./guild-settings.js";
+
+const AUDIT_DESTINATION_CHANNEL_TYPES = [
+  ChannelType.GuildText,
+  ChannelType.GuildAnnouncement,
+] as const;
 
 const SUPPORTED_PARENT_CHANNEL_TYPES = [
   ChannelType.GuildText,
@@ -55,6 +61,29 @@ export const configCommandDefinition = new SlashCommandBuilder()
       .setDescription("Set the prefix used for closed thread titles")
       .addStringOption((option) =>
         option.setName("value").setDescription("Prefix from 1 to 20 characters").setRequired(true),
+      ),
+  )
+  .addSubcommandGroup((group) =>
+    group
+      .setName("audit-log")
+      .setDescription("Configure the optional audit log destination")
+      .addSubcommand((subcommand) =>
+        subcommand.setName("show").setDescription("Show the audit log destination"),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("set")
+          .setDescription("Set the audit log destination")
+          .addChannelOption((option) =>
+            option
+              .setName("channel")
+              .setDescription("Text or announcement channel")
+              .setRequired(true)
+              .addChannelTypes(...AUDIT_DESTINATION_CHANNEL_TYPES),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand.setName("disable").setDescription("Disable the audit log destination"),
       ),
   )
   .addSubcommandGroup((group) =>
@@ -163,6 +192,7 @@ export async function handleConfigCommand(
   interaction: ChatInputCommandInteraction,
   store: GuildSettingsStore,
   automaticClose: AutomaticCloseConfigurationService,
+  auditLogDestination: AuditLogDestinationService,
 ): Promise<void> {
   if (!interaction.inGuild()) {
     await interaction.reply(ephemeralReply("This command can only be used in a guild."));
@@ -178,6 +208,11 @@ export async function handleConfigCommand(
 
   const subcommand = interaction.options.getSubcommand();
 
+  if (interaction.options.getSubcommandGroup(false) === "audit-log") {
+    await handleAuditLogSubcommand(interaction, auditLogDestination, subcommand);
+    return;
+  }
+
   if (interaction.options.getSubcommandGroup(false) === "auto-close") {
     await handleAutomaticCloseSubcommand(interaction, automaticClose, subcommand);
     return;
@@ -190,7 +225,7 @@ export async function handleConfigCommand(
     ]);
     await interaction.reply(
       ephemeralReply(
-        `Timezone: ${settings.timezone}\nClosed prefix: ${settings.closedPrefix}\n${formatAutomaticCloseSummary(view)}`,
+        `Timezone: ${settings.timezone}\nClosed prefix: ${settings.closedPrefix}\n${formatAuditLogDestination(settings.auditLogChannelId)}\n${formatAutomaticCloseSummary(view)}`,
       ),
     );
     return;
@@ -318,4 +353,67 @@ function addParentChannelMessage(
     : `Automatic close enabled for <#${parentChannelId}>. ${result.baselinesApplied} active ${
         result.baselinesApplied === 1 ? "thread" : "threads"
       } received a new inactivity baseline.`;
+}
+
+function formatAuditLogDestination(channelId: string | null): string {
+  return channelId === null ? "Audit log: disabled" : `Audit log: <#${channelId}>`;
+}
+
+async function handleAuditLogSubcommand(
+  interaction: ChatInputCommandInteraction,
+  service: AuditLogDestinationService,
+  subcommand: string,
+): Promise<void> {
+  const guildId = interaction.guildId;
+  if (guildId === null) {
+    await interaction.reply(ephemeralReply("This command can only be used in a guild."));
+    return;
+  }
+  if (subcommand === "show") {
+    let channelId: string | null;
+    try {
+      channelId = await service.show(guildId);
+    } catch (error) {
+      try {
+        await interaction.reply(
+          ephemeralReply(
+            "WEFT could not load the audit log configuration. Please try again later.",
+          ),
+        );
+      } catch {
+        // Do not attempt a second response if Discord rejects the first reply.
+      }
+      // Keep the common handler's bounded operational logging after the single reply attempt.
+      throw error;
+    }
+    await interaction.reply(ephemeralReply(formatAuditLogDestination(channelId)));
+    return;
+  }
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (subcommand === "set") {
+    const requestedId = interaction.options.getChannel("channel", true).id;
+    const result = await service.set(guildId, interaction.user.id, requestedId);
+    const message =
+      result.outcome === "VALIDATION_FAILED"
+        ? "WEFT cannot use that channel as an audit log destination. Check its type and WEFT's View Channel and Send Messages permissions."
+        : result.outcome === "UNCONFIRMED"
+          ? "WEFT could not confirm the audit log configuration result. Check the setting before trying again."
+          : result.outcome === "NO_CHANGE"
+            ? `Audit log destination is already <#${requestedId}>.`
+            : `Audit log destination set to <#${requestedId}>.`;
+    await interaction.editReply(editReply(message));
+    return;
+  }
+  if (subcommand === "disable") {
+    const result = await service.disable(guildId, interaction.user.id);
+    const message =
+      result.outcome === "CHANGED"
+        ? "Audit log destination disabled."
+        : result.outcome === "NO_CHANGE"
+          ? "Audit log destination is already disabled."
+          : "WEFT could not confirm the audit log configuration result. Check the setting before trying again.";
+    await interaction.editReply(editReply(message));
+    return;
+  }
+  throw new Error(`Unsupported config audit-log subcommand: ${subcommand}`);
 }

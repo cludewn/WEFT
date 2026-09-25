@@ -2,6 +2,8 @@ import { ChannelType, InteractionContextType, MessageFlags, PermissionFlagsBits 
 import type { ChatInputCommandInteraction } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
+import type { AuditLogDestinationService } from "../../src/audit-log-destination.js";
+
 import type { AutomaticCloseConfigurationService } from "../../src/automatic-close-configuration.js";
 import {
   AUTO_CLOSE_PARENT_DISPLAY_LIMIT,
@@ -21,6 +23,7 @@ const defaultSettings: GuildSettings = {
   guildId: "123456789012345678",
   timezone: DEFAULT_GUILD_TIMEZONE,
   closedPrefix: DEFAULT_CLOSED_PREFIX,
+  auditLogChannelId: null,
   autoCloseInactivitySeconds: DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS,
   autoCloseBotMessagesCountAsActivity: false,
   createdAt: new Date("2026-01-01T00:00:00Z"),
@@ -37,6 +40,7 @@ describe("config command", () => {
       "show",
       "timezone",
       "closed-prefix",
+      "audit-log",
       "auto-close",
     ]);
   });
@@ -44,7 +48,12 @@ describe("config command", () => {
   it("rejects use outside a guild ephemerally", async () => {
     const { interaction, reply } = createInteraction({ inGuild: false });
 
-    await handleConfigCommand(interaction, createStore(), createAutomaticClose());
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      createAutomaticClose(),
+      createAuditDestination(),
+    );
 
     expect(reply).toHaveBeenCalledWith(ephemeral("This command can only be used in a guild."));
   });
@@ -52,7 +61,12 @@ describe("config command", () => {
   it("checks ManageGuild at execution time", async () => {
     const { interaction, reply } = createInteraction({ hasManageGuild: false });
 
-    await handleConfigCommand(interaction, createStore(), createAutomaticClose());
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      createAutomaticClose(),
+      createAuditDestination(),
+    );
 
     expect(reply).toHaveBeenCalledWith(
       ephemeral("You need the Manage Server permission to use this command."),
@@ -63,12 +77,24 @@ describe("config command", () => {
     const store = createStore();
     const { interaction, reply } = createInteraction({ subcommand: "show" });
 
-    await handleConfigCommand(interaction, store, createAutomaticClose());
+    await handleConfigCommand(interaction, store, createAutomaticClose(), createAuditDestination());
 
     expect(store.getOrCreate).toHaveBeenCalledWith(defaultSettings.guildId);
     expect(reply).toHaveBeenCalledWith(
       ephemeral(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nAutomatic close: disabled (no parent channels)",
+        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: disabled\nAutomatic close: disabled (no parent channels)",
+      ),
+    );
+  });
+
+  it("includes a configured audit destination in top-level show", async () => {
+    const settings = { ...defaultSettings, auditLogChannelId: "stored-channel" };
+    const store = createStore({ getOrCreate: vi.fn(() => Promise.resolve(settings)) });
+    const { interaction, reply } = createInteraction({ subcommand: "show" });
+    await handleConfigCommand(interaction, store, createAutomaticClose(), createAuditDestination());
+    expect(reply).toHaveBeenCalledWith(
+      ephemeral(
+        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: <#stored-channel>\nAutomatic close: disabled (no parent channels)",
       ),
     );
   });
@@ -81,8 +107,18 @@ describe("config command", () => {
     });
     const prefixInteraction = createInteraction({ subcommand: "closed-prefix", value: "[DONE]" });
 
-    await handleConfigCommand(timezoneInteraction.interaction, store, createAutomaticClose());
-    await handleConfigCommand(prefixInteraction.interaction, store, createAutomaticClose());
+    await handleConfigCommand(
+      timezoneInteraction.interaction,
+      store,
+      createAutomaticClose(),
+      createAuditDestination(),
+    );
+    await handleConfigCommand(
+      prefixInteraction.interaction,
+      store,
+      createAutomaticClose(),
+      createAuditDestination(),
+    );
 
     expect(store.setTimezone).toHaveBeenCalledWith(defaultSettings.guildId, "Asia/Tokyo");
     expect(store.setClosedPrefix).toHaveBeenCalledWith(defaultSettings.guildId, "[DONE]");
@@ -106,8 +142,14 @@ describe("config command", () => {
       timezoneInteraction.interaction,
       timezoneStore,
       createAutomaticClose(),
+      createAuditDestination(),
     );
-    await handleConfigCommand(prefixInteraction.interaction, prefixStore, createAutomaticClose());
+    await handleConfigCommand(
+      prefixInteraction.interaction,
+      prefixStore,
+      createAutomaticClose(),
+      createAuditDestination(),
+    );
 
     expect(timezoneInteraction.reply).toHaveBeenCalledWith(
       ephemeral("Timezone must be a valid IANA timezone"),
@@ -115,6 +157,154 @@ describe("config command", () => {
     expect(prefixInteraction.reply).toHaveBeenCalledWith(
       ephemeral("Closed prefix must be 1 to 20 characters and contain no control characters"),
     );
+  });
+});
+
+describe("audit log configuration command", () => {
+  it("restricts set to text and announcement channels", () => {
+    const group = configCommandDefinition
+      .toJSON()
+      .options?.find((option) => option.name === "audit-log") as
+      { options?: { name: string; options?: { channel_types?: number[] }[] }[] } | undefined;
+    expect(group?.options?.map((option) => option.name)).toEqual(["show", "set", "disable"]);
+    expect(group?.options?.[1]?.options?.[0]?.channel_types).toEqual([
+      ChannelType.GuildText,
+      ChannelType.GuildAnnouncement,
+    ]);
+  });
+
+  it("shows the stored ID without calling the mutating settings store", async () => {
+    const store = createStore();
+    const destination = createAuditDestination();
+    destination.show = vi.fn(() => Promise.resolve("stale-id"));
+    const { interaction, reply } = createInteraction({ group: "audit-log", subcommand: "show" });
+    await handleConfigCommand(interaction, store, createAutomaticClose(), destination);
+    expect(reply).toHaveBeenCalledWith(ephemeral("Audit log: <#stale-id>"));
+    expect(store.getOrCreate).not.toHaveBeenCalled();
+    expect(destination.show).toHaveBeenCalledWith(defaultSettings.guildId);
+  });
+
+  it("reports disabled for an absent settings row", async () => {
+    const { interaction, reply } = createInteraction({ group: "audit-log", subcommand: "show" });
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      createAutomaticClose(),
+      createAuditDestination(),
+    );
+    expect(reply).toHaveBeenCalledWith(ephemeral("Audit log: disabled"));
+  });
+
+  it("replies once with a bounded ephemeral error when the read fails", async () => {
+    const destination = createAuditDestination();
+    const failure = new Error("private database details must stay hidden");
+    destination.show = vi.fn(() => Promise.reject(failure));
+    const { interaction, reply } = createInteraction({ group: "audit-log", subcommand: "show" });
+    await expect(
+      handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination),
+    ).rejects.toBe(failure);
+    expect(reply).toHaveBeenCalledOnce();
+    expect(reply).toHaveBeenCalledWith(
+      ephemeral("WEFT could not load the audit log configuration. Please try again later."),
+    );
+    expect(JSON.stringify(reply.mock.calls)).not.toContain("private database details");
+  });
+
+  it("does not retry the response when the error reply fails", async () => {
+    const destination = createAuditDestination();
+    const failure = new Error("private database details must stay hidden");
+    destination.show = vi.fn(() => Promise.reject(failure));
+    const { interaction, reply } = createInteraction({ group: "audit-log", subcommand: "show" });
+    reply.mockImplementation(() => {
+      throw new Error("Discord reply failed");
+    });
+    await expect(
+      handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination),
+    ).rejects.toBe(failure);
+    expect(reply).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [{ outcome: "CHANGED", previousChannelId: null }, "Audit log destination set to <#target>."],
+    [{ outcome: "NO_CHANGE" }, "Audit log destination is already <#target>."],
+    [
+      { outcome: "UNCONFIRMED" },
+      "WEFT could not confirm the audit log configuration result. Check the setting before trying again.",
+    ],
+    [
+      { outcome: "VALIDATION_FAILED" },
+      "WEFT cannot use that channel as an audit log destination. Check its type and WEFT's View Channel and Send Messages permissions.",
+    ],
+  ] as const)("maps set result %# to one bounded ephemeral response", async (result, expected) => {
+    const destination = createAuditDestination();
+    destination.set = vi.fn(() => Promise.resolve(result));
+    const { interaction, editReply, deferReply } = createInteraction({
+      group: "audit-log",
+      subcommand: "set",
+      channel: { id: "target", type: ChannelType.GuildText },
+    });
+    await handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination);
+    expect(destination.set).toHaveBeenCalledWith(defaultSettings.guildId, "actor", "target");
+    expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(editReply).toHaveBeenCalledOnce();
+    expect(editReply).toHaveBeenCalledWith({ content: expected, allowedMentions: { parse: [] } });
+  });
+
+  it.each([
+    [{ outcome: "CHANGED", previousChannelId: "old" }, "Audit log destination disabled."],
+    [{ outcome: "NO_CHANGE" }, "Audit log destination is already disabled."],
+    [
+      { outcome: "UNCONFIRMED" },
+      "WEFT could not confirm the audit log configuration result. Check the setting before trying again.",
+    ],
+  ] as const)(
+    "maps disable result %# to one bounded ephemeral response",
+    async (result, expected) => {
+      const destination = createAuditDestination();
+      destination.disable = vi.fn(() => Promise.resolve(result));
+      const { interaction, editReply, deferReply } = createInteraction({
+        group: "audit-log",
+        subcommand: "disable",
+      });
+      await handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination);
+      expect(destination.disable).toHaveBeenCalledWith(defaultSettings.guildId, "actor");
+      expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+      expect(editReply).toHaveBeenCalledOnce();
+      expect(editReply).toHaveBeenCalledWith({ content: expected, allowedMentions: { parse: [] } });
+    },
+  );
+
+  it("sets using only the option ID and reports an unconfirmed result", async () => {
+    const destination = createAuditDestination();
+    destination.set = vi.fn(() => Promise.resolve({ outcome: "UNCONFIRMED" } as const));
+    const { interaction, editReply, deferReply } = createInteraction({
+      group: "audit-log",
+      subcommand: "set",
+      channel: { id: "target", type: ChannelType.GuildText },
+    });
+    await handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination);
+    expect(destination.set).toHaveBeenCalledWith(defaultSettings.guildId, "actor", "target");
+    expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(editReply).toHaveBeenCalledWith({
+      content:
+        "WEFT could not confirm the audit log configuration result. Check the setting before trying again.",
+      allowedMentions: { parse: [] },
+    });
+  });
+
+  it("disables without using the channel option", async () => {
+    const destination = createAuditDestination();
+    destination.disable = vi.fn(() => Promise.resolve({ outcome: "NO_CHANGE" } as const));
+    const { interaction, editReply } = createInteraction({
+      group: "audit-log",
+      subcommand: "disable",
+    });
+    await handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination);
+    expect(destination.disable).toHaveBeenCalledWith(defaultSettings.guildId, "actor");
+    expect(editReply).toHaveBeenCalledWith({
+      content: "Audit log destination is already disabled.",
+      allowedMentions: { parse: [] },
+    });
   });
 });
 
@@ -156,7 +346,7 @@ describe("automatic close configuration command", () => {
     });
     const { interaction, reply } = createInteraction({ group: "auto-close", subcommand: "show" });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose);
+    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
 
     expect(reply).toHaveBeenCalledWith(
       ephemeral(
@@ -178,7 +368,7 @@ describe("automatic close configuration command", () => {
     });
     const { interaction, reply } = createInteraction({ group: "auto-close", subcommand: "show" });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose);
+    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
 
     const content = (reply.mock.calls[0]?.[0] as { content: string }).content;
     expect(content).toContain(`Parent channels (30):`);
@@ -199,11 +389,11 @@ describe("automatic close configuration command", () => {
     });
     const { interaction, reply } = createInteraction({ subcommand: "show" });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose);
+    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
 
     expect(reply).toHaveBeenCalledWith(
       ephemeral(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nAutomatic close: 7d inactivity, 1 parent channel, bot messages counted",
+        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: disabled\nAutomatic close: 7d inactivity, 1 parent channel, bot messages counted",
       ),
     );
   });
@@ -216,7 +406,7 @@ describe("automatic close configuration command", () => {
       value: "12h",
     });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose);
+    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
 
     expect(automaticClose.setInactivitySeconds).toHaveBeenCalledWith(
       defaultSettings.guildId,
@@ -233,7 +423,7 @@ describe("automatic close configuration command", () => {
       value: "1m",
     });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose);
+    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
 
     expect(automaticClose.setInactivitySeconds).not.toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith(
@@ -249,7 +439,12 @@ describe("automatic close configuration command", () => {
       booleanValue: true,
     });
 
-    await handleConfigCommand(enabled.interaction, createStore(), automaticClose);
+    await handleConfigCommand(
+      enabled.interaction,
+      createStore(),
+      automaticClose,
+      createAuditDestination(),
+    );
 
     expect(automaticClose.setBotMessagesCountAsActivity).toHaveBeenCalledWith(
       defaultSettings.guildId,
@@ -268,7 +463,7 @@ describe("automatic close configuration command", () => {
       channel: { id: "999", type: ChannelType.GuildVoice },
     });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose);
+    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
 
     expect(automaticClose.addParentChannel).not.toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith(
@@ -302,7 +497,7 @@ describe("automatic close configuration command", () => {
       channel: { id: "777", type: ChannelType.GuildForum },
     });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose);
+    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
 
     expect(reply).toHaveBeenCalledWith(ephemeral("Enabling automatic close for this channel..."));
     expect(editReply).toHaveBeenCalledWith({
@@ -323,7 +518,7 @@ describe("automatic close configuration command", () => {
       channel: { id: "555", type: ChannelType.GuildText },
     });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose);
+    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
 
     expect(automaticClose.removeParentChannel).toHaveBeenCalledWith(defaultSettings.guildId, "555");
     expect(reply).toHaveBeenCalledWith(ephemeral("Automatic close is not enabled for <#555>."));
@@ -372,13 +567,16 @@ function createInteraction({
   interaction: ChatInputCommandInteraction;
   reply: ReturnType<typeof vi.fn>;
   editReply: ReturnType<typeof vi.fn>;
+  deferReply: ReturnType<typeof vi.fn>;
 } {
   const reply = vi.fn(() => Promise.resolve());
   const editReply = vi.fn(() => Promise.resolve());
+  const deferReply = vi.fn(() => Promise.resolve());
   const interaction = {
     guildId: inGuild ? defaultSettings.guildId : null,
     inGuild: () => inGuild,
     memberPermissions: { has: () => hasManageGuild },
+    user: { id: "actor" },
     options: {
       getSubcommandGroup: () => group,
       getSubcommand: () => subcommand,
@@ -388,9 +586,10 @@ function createInteraction({
     },
     reply,
     editReply,
+    deferReply,
   } as unknown as ChatInputCommandInteraction;
 
-  return { interaction, reply, editReply };
+  return { interaction, reply, editReply, deferReply };
 }
 
 function createAutomaticClose(
@@ -429,4 +628,8 @@ function ephemeral(content: string) {
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   };
+}
+
+function createAuditDestination(): AuditLogDestinationService {
+  return { show: vi.fn(() => Promise.resolve(null)), set: vi.fn(), disable: vi.fn() };
 }

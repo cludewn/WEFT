@@ -2260,6 +2260,7 @@ function createFixture({
     guildId: GUILD_ID,
     timezone: "UTC",
     closedPrefix: prefix,
+    auditLogChannelId: null,
     autoCloseInactivitySeconds: 604_800,
     autoCloseBotMessagesCountAsActivity: false,
     createdAt: new Date("2026-01-01T00:00:00Z"),

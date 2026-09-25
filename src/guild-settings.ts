@@ -19,6 +19,7 @@ export const guildSettings = pgTable(
     guildId: text("guild_id").primaryKey(),
     timezone: text("timezone").notNull().default(DEFAULT_GUILD_TIMEZONE),
     closedPrefix: text("closed_prefix").notNull().default(DEFAULT_CLOSED_PREFIX),
+    auditLogChannelId: text("audit_log_channel_id"),
     autoCloseInactivitySeconds: integer("auto_close_inactivity_seconds")
       .notNull()
       .default(DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS),
@@ -33,6 +34,7 @@ export const guildSettings = pgTable(
       "guild_settings_auto_close_inactivity_seconds_check",
       sql`${table.autoCloseInactivitySeconds} between ${sql.raw(String(MINIMUM_AUTO_CLOSE_INACTIVITY_SECONDS))} and ${sql.raw(String(MAXIMUM_AUTO_CLOSE_INACTIVITY_SECONDS))}`,
     ),
+    check("guild_settings_audit_log_channel_id_nonempty", sql`${table.auditLogChannelId} <> ''`),
   ],
 );
 

@@ -777,6 +777,7 @@ function registerTestCommandHandler(
   registerDiscordCommandHandler(
     client,
     {
+      auditLogDestination: { show: vi.fn(), set: vi.fn(), disable: vi.fn() },
       automaticCloseConfiguration: {
         show: vi.fn(),
         setInactivitySeconds: vi.fn(),
