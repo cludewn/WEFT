@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ChatInputCommandInteraction } from "discord.js";
 
+import { createAuditNotificationDispatcher } from "../../src/audit-notification-dispatcher.js";
 import {
   createApplicationRuntime,
   SHUTDOWN_TIMEOUT_MS,
@@ -1000,6 +1001,7 @@ describe("thread lifecycle", () => {
       startAutomaticCloseRuntime: startupStep,
       quiesce: [],
       drainThreadLifecycle,
+      drainAuditNotifications: startupStep,
       stopPgBoss: startupStep,
       destroyDiscord,
       closeDatabase,
@@ -1079,6 +1081,7 @@ describe("thread lifecycle", () => {
       startAutomaticCloseRuntime: startupStep,
       quiesce: [],
       drainThreadLifecycle: () => fixture.service.drain(),
+      drainAuditNotifications: startupStep,
       stopPgBoss: startupStep,
       destroyDiscord,
       closeDatabase,
@@ -1385,6 +1388,69 @@ describe("thread lifecycle", () => {
     await vi.waitFor(() => expect(fixture.audits).toHaveLength(1));
     expect(fixture.state?.lifecycleState).toBe("CLOSED");
     expect(fixture.managedThreads.saveClosed).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains a timed-out audit write through publication before notification drain owns delivery", async () => {
+    const fixture = createFixture({
+      deadlineMs: 50,
+      threadName: "[CLOSED] Topic",
+      archived: true,
+      state: createManagedState("CLOSED", "[CLOSED]"),
+    });
+    const auditWrite = deferred<void>();
+    const delivery = deferred<"SENT">();
+    const originalRecord = fixture.auditStore.record;
+    const send = vi.fn(() => delivery.promise);
+    const dispatcher = createAuditNotificationDispatcher({
+      projection: {
+        load: vi.fn((reference) =>
+          Promise.resolve({
+            ...reference,
+            guildId: GUILD_ID,
+            threadId: THREAD_ID,
+            event: "CLOSE",
+            outcome: "SUCCESS",
+            actorType: "USER" as const,
+            actorUserId: ACTOR_ID,
+            occurredAt: new Date("2030-01-01T00:00:00.000Z"),
+          }),
+        ),
+      },
+      readDestination: vi.fn(() => Promise.resolve("100000000000000004")),
+      discord: { send },
+      logger: fixture.logger,
+    });
+    fixture.auditStore.record = vi.fn<ThreadAuditStore["record"]>(async (audit) => {
+      await auditWrite.promise;
+      await originalRecord(audit);
+      dispatcher.publish({ source: "THREAD", auditId: audit.id });
+    });
+
+    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
+      ok: false,
+      code: "AUDIT_WRITE_OUTCOME_UNKNOWN",
+    });
+    let threadDrained = false;
+    const threadDrain = fixture.service.drain().then(() => {
+      threadDrained = true;
+    });
+    await Promise.resolve();
+    expect(threadDrained).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+
+    auditWrite.resolve(undefined);
+    await threadDrain;
+    expect(fixture.audits).toHaveLength(1);
+    await vi.waitFor(() => expect(send).toHaveBeenCalledOnce());
+    let notificationDrained = false;
+    const notificationDrain = dispatcher.drain().then(() => {
+      notificationDrained = true;
+    });
+    await Promise.resolve();
+    expect(notificationDrained).toBe(false);
+    delivery.resolve("SENT");
+    await notificationDrain;
+    expect(notificationDrained).toBe(true);
   });
 
   it("does not start another final audit while the raw audit write is pending", async () => {

@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNull } from "drizzle-orm";
 
 import type { DatabaseClient } from "./database.js";
+import type { AuditNotificationPublisher } from "./audit-notification-dispatcher.js";
+import { publishExistingAudits } from "./audit-notification-publication.js";
 import {
   insertManagedMessageCreation,
   managedMessageAudits,
@@ -182,6 +184,7 @@ async function terminalInTransaction(
   transaction: DatabaseTransaction,
   definition: RecurringRuntimeDefinition,
   input: RecurringTerminalInput,
+  gapAuditIds: string[],
 ): Promise<void> {
   const { action, occurrence, recurrence, state } = definition;
   if (occurrence.status !== "EXECUTING" && occurrence.status !== "RETRY_PENDING") {
@@ -246,12 +249,13 @@ async function terminalInTransaction(
       .where(eq(scheduledActions.id, action.id));
     for (let index = 0; index < found.skippedGaps.length; index += 1) {
       const gap = found.skippedGaps[index]!;
+      const gapAuditId = createHash("sha256")
+        .update(
+          `weft:recurring-gap:v1\0${input.auditId}\0${gap.intendedLocalDate}\0${gap.intendedLocalTime}`,
+        )
+        .digest("hex");
       await transaction.insert(recurringMessageAudits).values({
-        id: createHash("sha256")
-          .update(
-            `weft:recurring-gap:v1\0${input.auditId}\0${gap.intendedLocalDate}\0${gap.intendedLocalTime}`,
-          )
-          .digest("hex"),
+        id: gapAuditId,
         scheduledActionId: action.id,
         guildId: action.guildId,
         channelId: action.targetId,
@@ -265,6 +269,7 @@ async function terminalInTransaction(
         occurredAt: input.occurredAt,
         outcome: "SKIPPED",
       });
+      gapAuditIds.push(gapAuditId);
     }
   } else if (action.status !== "CANCELLED") {
     throw new Error("Recurring series has invalid terminal status");
@@ -328,7 +333,16 @@ function terminalAuditMatches(
   );
 }
 
-export function createRecurringRuntimeStore(database: DatabaseClient): RecurringRuntimeStore {
+export function createRecurringRuntimeStore(
+  database: DatabaseClient,
+  publisher?: AuditNotificationPublisher,
+): RecurringRuntimeStore {
+  const publish = async (auditIds: string[], managedAuditId?: string) => {
+    await publishExistingAudits(database, publisher, "RECURRING_MESSAGE", auditIds);
+    if (managedAuditId !== undefined) {
+      await publishExistingAudits(database, publisher, "MANAGED_MESSAGE", [managedAuditId]);
+    }
+  };
   const load = async (occurrenceId: string): Promise<RecurringRuntimeDefinition | undefined> => {
     const [row] = await database
       .select({
@@ -505,6 +519,7 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
   const terminalize = async (
     input: RecurringTerminalInput,
   ): Promise<RecurringRuntimeTransition> => {
+    const gapAuditIds: string[] = [];
     try {
       const committed = await database.transaction(async (transaction) => {
         const definition = await lockedDefinition(transaction, input.occurrenceId);
@@ -513,12 +528,16 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
           !activeStatuses.includes(definition.occurrence.status as (typeof activeStatuses)[number])
         )
           return false;
-        await terminalInTransaction(transaction, definition, input);
+        await terminalInTransaction(transaction, definition, input, gapAuditIds);
         return true;
       });
+      if (committed) await publish([input.auditId, ...gapAuditIds], input.managedMessageAuditId);
       return committed ? "COMMITTED" : "NOT_COMMITTED";
     } catch {
-      return confirmTerminal(input).catch(() => "UNKNOWN");
+      const result = await confirmTerminal(input).catch(() => "UNKNOWN" as const);
+      if (result === "COMMITTED")
+        await publish([input.auditId, ...gapAuditIds], input.managedMessageAuditId);
+      return result;
     }
   };
   return {
@@ -643,6 +662,7 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
       }
     },
     async recordPreSendFailure(input) {
+      const gapAuditIds: string[] = [];
       try {
         const result = await database.transaction(async (transaction) => {
           const definition = await lockedDefinition(transaction, input.occurrenceId);
@@ -660,10 +680,15 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
           if (decision.outcome === "FAIL" || definition.action.status === "CANCELLED") {
             const failureCode =
               decision.outcome === "FAIL" ? decision.failureCode : "CURRENT_STATE_CHECK_FAILED";
-            await terminalInTransaction(transaction, definition, {
-              ...input,
-              failureCode,
-            });
+            await terminalInTransaction(
+              transaction,
+              definition,
+              {
+                ...input,
+                failureCode,
+              },
+              gapAuditIds,
+            );
             return { outcome: "FAILED", failureCode } as const;
           }
           const [updated] = await transaction
@@ -700,6 +725,9 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
             retryCount: decision.retryCount,
           } as const;
         });
+        if (result.outcome === "FAILED" || result.outcome === "RETRY_PENDING") {
+          await publish([input.auditId, ...gapAuditIds]);
+        }
         return result;
       } catch {
         const [audit] = await database
@@ -723,6 +751,7 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
           audit.retryCount !== null &&
           occurrence.retryCount >= audit.retryCount
         ) {
+          await publish([input.auditId, ...gapAuditIds]);
           return {
             outcome: "RETRY_PENDING",
             wakeAt: new Date(audit.occurredAt.getTime() + RECURRING_RETRY_DELAY_MS),
@@ -741,12 +770,14 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
             : audit.nextOccurrenceId === input.nextOccurrenceId) &&
           occurrence.failureCode !== null
         ) {
+          await publish([input.auditId, ...gapAuditIds]);
           return { outcome: "FAILED", failureCode: occurrence.failureCode };
         }
         return { outcome: "UNKNOWN" };
       }
     },
     async expireRetry(input) {
+      const gapAuditIds: string[] = [];
       const terminalInput: RecurringTerminalInput = {
         occurrenceId: input.occurrenceId,
         auditId: input.auditId,
@@ -787,12 +818,15 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
             definition.occurrence.firstAttemptedAt.getTime() + RECURRING_RETRY_LIFETIME_MS;
           const wakeAt = retryAudit.occurredAt.getTime() + RECURRING_RETRY_DELAY_MS;
           if (input.occurredAt.getTime() <= deadline && wakeAt <= deadline) return false;
-          await terminalInTransaction(transaction, definition, terminalInput);
+          await terminalInTransaction(transaction, definition, terminalInput, gapAuditIds);
           return true;
         });
+        if (expired) await publish([input.auditId, ...gapAuditIds]);
         return expired ? "COMMITTED" : "NOT_COMMITTED";
       } catch {
-        return confirmTerminal(terminalInput).catch(() => "UNKNOWN");
+        const result = await confirmTerminal(terminalInput).catch(() => "UNKNOWN" as const);
+        if (result === "COMMITTED") await publish([input.auditId, ...gapAuditIds]);
+        return result;
       }
     },
     terminalize,
@@ -914,6 +948,7 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
             });
           return true;
         });
+        if (changed) await publish([input.auditId, ...expected!.gapIds]);
         return changed ? "COMMITTED" : "NOT_COMMITTED";
       } catch {
         if (expected === undefined) return "UNKNOWN";
@@ -970,7 +1005,8 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
             )
               return "UNKNOWN";
           }
-          return audit?.event === "MISSED_RANGE_SKIPPED" &&
+          const confirmed =
+            audit?.event === "MISSED_RANGE_SKIPPED" &&
             audit.rangeStartOccurrenceId === occurrenceId &&
             audit.selectedNextLocalDate === next?.intendedLocalDate &&
             audit.selectedNextLocalTime?.slice(0, 5) === expected.localTime &&
@@ -982,8 +1018,10 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
               action?.status !== "ACTIVE" ||
               action.executeAt.getTime() === next.scheduledFor.getTime()) &&
             audit.occurredAt.getTime() === at.getTime()
-            ? "COMMITTED"
-            : "UNKNOWN";
+              ? "COMMITTED"
+              : "UNKNOWN";
+          if (confirmed === "COMMITTED") await publish([input.auditId, ...expected.gapIds]);
+          return confirmed;
         } catch {
           return "UNKNOWN";
         }
@@ -1139,6 +1177,7 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
           }
           return true;
         });
+        if (committed) await publish([input.auditId, ...intended!.gaps.map((gap) => gap.id)]);
         return committed ? "COMMITTED" : "NOT_COMMITTED";
       } catch {
         if (intended === undefined) return "UNKNOWN";
@@ -1207,6 +1246,7 @@ export function createRecurringRuntimeStore(database: DatabaseClient): Recurring
               row.terminalAt !== null)
           )
             return "UNKNOWN";
+          await publish([input.auditId, ...intended.gaps.map((gap) => gap.id)]);
           return "COMMITTED";
         } catch {
           return "UNKNOWN";
