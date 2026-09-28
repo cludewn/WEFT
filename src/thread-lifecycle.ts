@@ -26,6 +26,7 @@ export const THREAD_FAILURE_CODES = [
   "BOT_PERMISSION_MISSING",
   "INVALID_THREAD_NAME",
   "DISCORD_FETCH_FAILED",
+  "DISCORD_RECONCILIATION_UNCONFIRMED",
   "DISCORD_RENAME_FAILED",
   "DISCORD_ARCHIVE_FAILED",
   "SETTINGS_READ_FAILED",
@@ -62,6 +63,9 @@ export type ThreadLifecycleDiscord = {
   renameThread: (guildId: string, threadId: string, name: string) => Promise<void>;
   archiveThread: (guildId: string, threadId: string, name: string) => Promise<void>;
   classifyMutationFailure: (error: unknown) => ThreadFailureDisposition;
+  classifyReconciliationReadFailure: (
+    error: unknown,
+  ) => "RETRYABLE" | "CONFIRMED_UNAVAILABLE" | "PERMANENT_UNCONFIRMED";
 };
 
 export type ThreadFailureDisposition = "RETRYABLE" | "PERMANENT";
@@ -806,14 +810,19 @@ export function createThreadLifecycleService(
     intent: DiscordMutationIntent,
     settlement: SettledDiscordMutation & { outcome: "rejected" },
   ): Promise<FinalizationPlan> {
-    const thread = await retryBackgroundBoundary(
+    const thread = await readForReconciliation(
       guildId,
       threadId,
       intent.operation,
       settlement.generation,
-      "thread_fetch",
-      () => discord.fetchThread(guildId, threadId),
     );
+    if (thread === "PERMANENT_UNCONFIRMED") {
+      return {
+        auditOutcome: "FAILURE",
+        failureCode: "DISCORD_RECONCILIATION_UNCONFIRMED",
+        failureDisposition: "PERMANENT",
+      };
+    }
     if (thread === undefined) {
       logger.warn(
         {
@@ -851,6 +860,97 @@ export function createThreadLifecycleService(
     };
   }
 
+  async function readForReconciliation(
+    guildId: string,
+    threadId: string,
+    operation: LifecycleOperation,
+    generation: number,
+  ): Promise<ThreadSnapshot | undefined | "PERMANENT_UNCONFIRMED"> {
+    let retryAttempt = 0;
+    for (;;) {
+      const startedAt = Date.now();
+      logger.debug(
+        {
+          event: "thread_lifecycle_reconciliation_boundary_started",
+          guildId,
+          threadId,
+          operation,
+          generation,
+          boundary: "thread_fetch",
+          retryAttempt,
+        },
+        "Thread lifecycle reconciliation boundary started",
+      );
+      try {
+        const thread = await Promise.resolve().then(() => discord.fetchThread(guildId, threadId));
+        logger.debug(
+          {
+            event: "thread_lifecycle_reconciliation_boundary_completed",
+            guildId,
+            threadId,
+            operation,
+            generation,
+            boundary: "thread_fetch",
+            retryAttempt,
+            durationMs: Date.now() - startedAt,
+          },
+          "Thread lifecycle reconciliation boundary completed",
+        );
+        return thread;
+      } catch (error) {
+        let classification: ReturnType<
+          ThreadLifecycleDiscord["classifyReconciliationReadFailure"]
+        > = "RETRYABLE";
+        try {
+          classification = discord.classifyReconciliationReadFailure(error);
+        } catch {
+          // An unclassified read remains retryable.
+        }
+        logger.warn(
+          {
+            event: "thread_lifecycle_reconciliation_boundary_rejected",
+            guildId,
+            threadId,
+            operation,
+            generation,
+            boundary: "thread_fetch",
+            retryAttempt,
+            readClassification: classification,
+            errorName: error instanceof Error ? error.name : "UnknownError",
+            durationMs: Date.now() - startedAt,
+          },
+          "Thread lifecycle reconciliation boundary rejected",
+        );
+        if (classification === "CONFIRMED_UNAVAILABLE") {
+          return undefined;
+        }
+        if (classification === "PERMANENT_UNCONFIRMED") {
+          return "PERMANENT_UNCONFIRMED";
+        }
+      }
+      retryAttempt += 1;
+      const exponentialDelay = reconciliationRetryBaseMs * 2 ** Math.min(retryAttempt - 1, 30);
+      const retryDelayMs = Math.min(exponentialDelay, reconciliationRetryMaxMs);
+      logger.warn(
+        {
+          event: "thread_lifecycle_reconciliation_retry_scheduled",
+          guildId,
+          threadId,
+          operation,
+          generation,
+          boundary: "thread_fetch",
+          retryAttempt,
+          retryDelayMs,
+        },
+        "Thread lifecycle reconciliation will be retried",
+      );
+      await new Promise<void>((resolve) => {
+        const retryTimer = setTimeout(resolve, retryDelayMs);
+        retryTimer.unref();
+      });
+    }
+  }
+
   function applyManagedFinalState(
     guildId: string,
     threadId: string,
@@ -866,7 +966,7 @@ export function createThreadLifecycleService(
     threadId: string,
     operation: LifecycleOperation,
     generation: number,
-    boundary: "thread_fetch" | "managed_state_write" | "audit_write",
+    boundary: "managed_state_write" | "audit_write",
     rawOperation: () => Promise<T>,
   ): Promise<T> {
     let retryAttempt = 0;

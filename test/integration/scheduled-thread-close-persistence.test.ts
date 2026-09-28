@@ -1054,6 +1054,9 @@ describe("scheduled thread close creation persistence", () => {
       classifyMutationFailure: vi.fn<ThreadLifecycleDiscord["classifyMutationFailure"]>(
         () => "RETRYABLE",
       ),
+      classifyReconciliationReadFailure: vi.fn<
+        ThreadLifecycleDiscord["classifyReconciliationReadFailure"]
+      >(() => "RETRYABLE"),
     };
     const lifecycle = createThreadLifecycleService({
       discord,

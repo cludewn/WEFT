@@ -1646,6 +1646,182 @@ describe("thread lifecycle", () => {
     });
   });
 
+  it("stops a permanent-unconfirmed read, keeps the guard through exact audit retry, and requires a fresh later read", async () => {
+    const fixture = createFixture({
+      deadlineMs: 50,
+      mutationWaitMs: 10,
+      reconciliationRetryBaseMs: 5,
+    });
+    const fetchThread = fixture.discord.fetchThread;
+    let fetchCount = 0;
+    fixture.discord.fetchThread = vi.fn<ThreadLifecycleDiscord["fetchThread"]>(
+      (guildId, threadId) => {
+        fetchCount += 1;
+        return fetchCount === 4
+          ? Promise.reject(new Error("read rejected"))
+          : fetchThread(guildId, threadId);
+      },
+    );
+    fixture.discord.classifyReconciliationReadFailure = vi.fn(
+      () => "PERMANENT_UNCONFIRMED" as const,
+    );
+    fixture.discord.archiveThread = vi.fn(() => Promise.reject(new Error("mutation rejected")));
+
+    const recordAudit = fixture.auditStore.record;
+    const secondAuditResponse = deferred<void>();
+    let auditAttempt = 0;
+    fixture.auditStore.record = vi.fn<ThreadAuditStore["record"]>(async (audit) => {
+      auditAttempt += 1;
+      if (auditAttempt === 1) {
+        await recordAudit(audit);
+        throw new Error("audit response lost");
+      }
+      await secondAuditResponse.promise;
+      await recordAudit(audit);
+    });
+
+    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
+      ok: false,
+      pending: true,
+    });
+    await vi.waitFor(() => expect(fixture.auditStore.record).toHaveBeenCalledTimes(2));
+    expect(fixture.discord.fetchThread).toHaveBeenCalledTimes(4);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    expect(fixture.managedThreads.saveClosed).toHaveBeenCalledOnce();
+    expect(fixture.managedThreads.markOpen).not.toHaveBeenCalled();
+    expect(fixture.state).toMatchObject({
+      lifecycleState: "CLOSED",
+      appliedPrefix: "[CLOSED]",
+    });
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        action: "CLOSE",
+        outcome: "FAILURE",
+        failureCode: "DISCORD_RECONCILIATION_UNCONFIRMED",
+      }),
+    ]);
+    expect(vi.mocked(fixture.auditStore.record).mock.calls[0]?.[0]).toEqual(
+      vi.mocked(fixture.auditStore.record).mock.calls[1]?.[0],
+    );
+
+    let drained = false;
+    const drain = fixture.service.drain().then(() => {
+      drained = true;
+    });
+    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
+      ok: false,
+      pending: true,
+    });
+    expect(fixture.discord.fetchThread).toHaveBeenCalledTimes(4);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    expect(drained).toBe(false);
+
+    secondAuditResponse.resolve();
+    await drain;
+    expect(drained).toBe(true);
+    const callsBeforeLaterClose = fetchCount;
+    fixture.discord.botCanManage = vi.fn(() => Promise.resolve(false));
+    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
+      ok: false,
+      code: "BOT_PERMISSION_MISSING",
+    });
+    expect(fetchCount).toBe(callsBeforeLaterClose + 1);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    expect(fixture.audits.filter((audit) => audit.outcome === "SUCCESS")).toEqual([]);
+
+    fixture.settings.closedPrefix = "[NEW]";
+    fixture.discord.botCanManage = vi.fn(() => Promise.resolve(true));
+    fixture.discord.archiveThread = vi.fn<ThreadLifecycleDiscord["archiveThread"]>(
+      (_guildId, _threadId, name) => {
+        fixture.thread.name = name;
+        fixture.thread.archived = true;
+        return Promise.resolve();
+      },
+    );
+    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(fetchCount).toBe(callsBeforeLaterClose + 4);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledExactlyOnceWith(
+      GUILD_ID,
+      THREAD_ID,
+      "[CLOSED] Topic",
+    );
+  });
+
+  it.each([
+    ["closeAsSystem", "CLOSE"],
+    ["autoCloseAsSystem", "AUTO_CLOSE"],
+  ] as const)("returns permanent-unconfirmed for FINAL %s", async (method, action) => {
+    const fixture = createFixture();
+    const fetchThread = fixture.discord.fetchThread;
+    let fetchCount = 0;
+    fixture.discord.fetchThread = vi.fn<ThreadLifecycleDiscord["fetchThread"]>(
+      (guildId, threadId) => {
+        fetchCount += 1;
+        return fetchCount === 4
+          ? Promise.reject(new Error("read rejected"))
+          : fetchThread(guildId, threadId);
+      },
+    );
+    fixture.discord.classifyReconciliationReadFailure = vi.fn(
+      () => "PERMANENT_UNCONFIRMED" as const,
+    );
+    fixture.discord.archiveThread = vi.fn(() => Promise.reject(new Error("mutation rejected")));
+
+    await expect(fixture.service[method](GUILD_ID, THREAD_ID, "final-audit-id")).resolves.toEqual({
+      outcome: "PERMANENT_FAILURE",
+      code: "DISCORD_RECONCILIATION_UNCONFIRMED",
+    });
+    expect(fixture.discord.fetchThread).toHaveBeenCalledTimes(4);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    expect(fixture.managedThreads.saveClosed).toHaveBeenCalledOnce();
+    expect(fixture.managedThreads.markOpen).not.toHaveBeenCalled();
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        id: "final-audit-id",
+        action,
+        outcome: "FAILURE",
+        failureCode: "DISCORD_RECONCILIATION_UNCONFIRMED",
+      }),
+    ]);
+    await fixture.service.drain();
+  });
+
+  it("keeps confirmed resource unavailability separate from permanent-unconfirmed FINAL failure", async () => {
+    const fixture = createFixture();
+    const fetchThread = fixture.discord.fetchThread;
+    let fetchCount = 0;
+    fixture.discord.fetchThread = vi.fn<ThreadLifecycleDiscord["fetchThread"]>(
+      (guildId, threadId) => {
+        fetchCount += 1;
+        return fetchCount === 4
+          ? Promise.reject(new Error("resource unavailable"))
+          : fetchThread(guildId, threadId);
+      },
+    );
+    fixture.discord.classifyReconciliationReadFailure = vi.fn(
+      () => "CONFIRMED_UNAVAILABLE" as const,
+    );
+    fixture.discord.archiveThread = vi.fn(() => Promise.reject(new Error("mutation rejected")));
+
+    await expect(
+      fixture.service.closeAsSystem(GUILD_ID, THREAD_ID, "unavailable-audit-id"),
+    ).resolves.toEqual({ outcome: "PERMANENT_FAILURE", code: "UNSUPPORTED_CONTEXT" });
+    expect(fixture.discord.fetchThread).toHaveBeenCalledTimes(4);
+    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    expect(fixture.managedThreads.markOpen).not.toHaveBeenCalled();
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        id: "unavailable-audit-id",
+        outcome: "FAILURE",
+        failureCode: "UNSUPPORTED_CONTEXT",
+      }),
+    ]);
+    await fixture.service.drain();
+  });
+
   it("deduplicates the final audit when its first reconciliation response is lost", async () => {
     const fixture = createFixture({
       deadlineMs: 250,
@@ -2359,6 +2535,7 @@ function createFixture({
       return Promise.resolve();
     }),
     classifyMutationFailure: vi.fn(() => "RETRYABLE" as const),
+    classifyReconciliationReadFailure: vi.fn(() => "RETRYABLE" as const),
   };
   const guildSettings = {
     getOrCreate: vi.fn<GuildSettingsStore["getOrCreate"]>(() => {

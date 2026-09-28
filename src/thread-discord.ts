@@ -24,6 +24,19 @@ const supportedTypes = new Set<ChannelType>([
   ChannelType.PrivateThread,
 ]);
 const UNKNOWN_CHANNEL_ERROR_CODE = 10_003;
+const UNKNOWN_GUILD_ERROR_CODE = 10_004;
+const MISSING_ACCESS_ERROR_CODE = 50_001;
+const MISSING_PERMISSIONS_ERROR_CODE = 50_013;
+
+class ThreadDiscordReadError extends Error {
+  constructor(
+    readonly stage: "guild" | "channel",
+    readonly original: unknown,
+  ) {
+    super("Thread Discord read rejected");
+    this.name = "ThreadDiscordReadError";
+  }
+}
 
 export type AutomaticCloseExecutionInspection =
   { outcome: "AVAILABLE"; parentChannelId: string; archived: boolean } | { outcome: "UNAVAILABLE" };
@@ -47,6 +60,45 @@ export function classifyThreadDiscordMutationFailure(error: unknown): ThreadFail
     }
     if (error.status >= 400 && error.status < 500) {
       return "PERMANENT";
+    }
+  }
+  return "RETRYABLE";
+}
+
+export function classifyThreadDiscordReadFailure(
+  error: unknown,
+): "RETRYABLE" | "CONFIRMED_UNAVAILABLE" | "PERMANENT_UNCONFIRMED" {
+  if (!(error instanceof ThreadDiscordReadError)) {
+    return "RETRYABLE";
+  }
+  const original = error.original;
+  if (original instanceof DiscordAPIError || original instanceof HTTPError) {
+    if (
+      original.status === 408 ||
+      original.status === 425 ||
+      original.status === 429 ||
+      original.status >= 500
+    ) {
+      return "RETRYABLE";
+    }
+  }
+  if (original instanceof DiscordAPIError) {
+    if (
+      (error.stage === "channel" && original.code === UNKNOWN_CHANNEL_ERROR_CODE) ||
+      (error.stage === "guild" && original.code === UNKNOWN_GUILD_ERROR_CODE)
+    ) {
+      return "CONFIRMED_UNAVAILABLE";
+    }
+    if (
+      original.code === MISSING_ACCESS_ERROR_CODE ||
+      original.code === MISSING_PERMISSIONS_ERROR_CODE
+    ) {
+      return "PERMANENT_UNCONFIRMED";
+    }
+  }
+  if (original instanceof DiscordAPIError || original instanceof HTTPError) {
+    if (original.status === 401 || original.status === 403) {
+      return "PERMANENT_UNCONFIRMED";
     }
   }
   return "RETRYABLE";
@@ -145,8 +197,18 @@ export function createThreadLifecycleDiscord(client: Client): ThreadLifecycleDis
     guildId: string,
     threadId: string,
   ): Promise<ThreadChannel | undefined> {
-    const guild = await fetchGuild(guildId);
-    const channel = await guild.channels.fetch(threadId, { force: true });
+    let guild: Guild;
+    try {
+      guild = await fetchGuild(guildId);
+    } catch (error) {
+      throw new ThreadDiscordReadError("guild", error);
+    }
+    let channel;
+    try {
+      channel = await guild.channels.fetch(threadId, { force: true });
+    } catch (error) {
+      throw new ThreadDiscordReadError("channel", error);
+    }
     if (channel === null || !channel.isThread() || !isSupportedThreadType(channel.type)) {
       return undefined;
     }
@@ -214,5 +276,6 @@ export function createThreadLifecycleDiscord(client: Client): ThreadLifecycleDis
       });
     },
     classifyMutationFailure: classifyThreadDiscordMutationFailure,
+    classifyReconciliationReadFailure: classifyThreadDiscordReadFailure,
   };
 }
