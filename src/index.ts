@@ -13,6 +13,8 @@ import {
   publishScheduledMessageAudits,
   publishScheduledThreadCloseAudits,
 } from "./audit-notification-publication.js";
+import { createAuditRetentionStore } from "./audit-retention-persistence.js";
+import { createAuditRetentionRuntime } from "./audit-retention-runtime.js";
 import { createApplicationRuntime, type ProcessControl } from "./application-runtime.js";
 import { createAutomaticCloseActivityService } from "./automatic-close-activity.js";
 import { createAutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
@@ -175,6 +177,10 @@ async function main(): Promise<void> {
     executor: automaticCloseExecutor,
     logger,
   });
+  const auditRetentionRuntime = createAuditRetentionRuntime({
+    persistence: createAuditRetentionStore(database.client),
+    logger,
+  });
   const scheduledThreadCloseExecutor = createScheduledThreadCloseExecutor({
     scheduledActions,
     schedules: scheduledThreadCloses,
@@ -293,7 +299,9 @@ async function main(): Promise<void> {
     reconcileAutomaticCloseBaselines: () =>
       automaticCloseBaselineReconciler.reconcileMissingBaselines(),
     startAutomaticCloseRuntime: () => automaticCloseRuntime.start(),
+    startAuditRetentionRuntime: () => auditRetentionRuntime.start(),
     quiesce: [
+      { name: "audit-retention-runtime", stop: () => auditRetentionRuntime.stop() },
       { name: "automatic-close-runtime", stop: () => automaticCloseRuntime.stop() },
       {
         name: "scheduled-message-runtime-reconciler",

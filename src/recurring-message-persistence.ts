@@ -942,6 +942,7 @@ export const recurringMessageAudits = pgTable(
     ),
     index("recurring_message_audits_series_id_idx").on(table.scheduledActionId),
     index("recurring_message_audits_occurrence_id_idx").on(table.occurrenceId),
+    index("recurring_message_audits_retention_idx").on(table.occurredAt, table.id),
   ],
 );
 

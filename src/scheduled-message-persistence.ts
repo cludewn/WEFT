@@ -159,6 +159,7 @@ export const scheduledMessageAudits = pgTable(
         and (char_length(${table.content}) > 0 or ${table.embedTitle} is not null or ${table.embedDescription} is not null or ${table.embedImageUrl} is not null)`,
     ),
     index("scheduled_message_audits_action_id_idx").on(table.scheduledActionId),
+    index("scheduled_message_audits_retention_idx").on(table.occurredAt, table.id),
   ],
 );
 

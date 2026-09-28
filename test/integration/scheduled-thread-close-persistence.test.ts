@@ -1240,6 +1240,7 @@ describe("scheduled thread close creation persistence", () => {
       "scheduled_thread_close_audits_action_id_idx",
       "scheduled_thread_close_audits_guild_thread_created_at_idx",
       "scheduled_thread_close_audits_pkey",
+      "scheduled_thread_close_audits_retention_idx",
     ]);
 
     const foreignKeys = await database.client.execute<{ count: string }>(sql`
