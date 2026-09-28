@@ -336,6 +336,26 @@ because it exceeds the caller wait budget. In this case, WEFT must:
 
 Returning a pending result must not create a failure or outcome-unknown audit.
 
+### Discord REST retry and rate-limit ownership
+
+The runtime Discord Client and standalone command-deployment REST client use `retries: 0`.
+This disables the discord.js automatic retry budget for 5xx responses, `AbortError`
+(including REST request timeout), and `ECONNRESET`. It does not disable discord.js route
+bucket, global rate-limit, or sublimit waiting, including its ordinary 429 wait and retry.
+WEFT does not hard-code Discord bucket limits or add another request queue.
+
+A rate-limit queue wait, REST request timeout, WEFT caller wait budget, and explicit WEFT
+application retry or replay are separate mechanisms. A queued request may outlive a caller
+wait budget without becoming a failed mutation. A 429 may cause discord.js to resend a
+request internally; this is separate from any feature-specific WEFT replay. Existing
+feature contracts own retry, replay, and reconciliation after surfaced failures. The
+stable nonces used for message sends reduce duplicates but do not guarantee exactly-once
+Discord delivery.
+
+Rate-limit telemetry must exclude `RateLimitData.majorParameter`, full request URLs,
+credentials, content, raw errors, and stacks. Optional parsing of discord.js debug output
+must not affect retry decisions or application correctness.
+
 ### Scheduled thread closing
 
 WEFT must support scheduling one future close for a thread.

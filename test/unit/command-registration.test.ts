@@ -1,11 +1,22 @@
 import { Routes } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
-import { registerCommands, selectDeploymentTarget } from "../../src/command-registration.js";
+import {
+  createCommandDeploymentRest,
+  registerCommands,
+  selectDeploymentTarget,
+} from "../../src/command-registration.js";
 import { commandDefinitions } from "../../src/commands.js";
 import { ConfigurationError } from "../../src/config.js";
 
 describe("command deployment", () => {
+  it("uses API v10 and disables automatic REST retries", () => {
+    const rest = createCommandDeploymentRest("test-only-bot-token");
+
+    expect(rest.options.version).toBe("10");
+    expect(rest.options.retries).toBe(0);
+  });
+
   it("selects guild deployment by default", () => {
     expect(selectDeploymentTarget([], "guild-id")).toEqual({
       scope: "guild",
