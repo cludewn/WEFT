@@ -64,6 +64,18 @@ export function createRecurringMessageReconciler({
   };
   const processRetry = async (row: RecurringRuntimeDefinition): Promise<void> => {
     if (row.action.status !== "ACTIVE" || row.occurrence.firstAttemptedAt === null) return;
+    const deadline = row.occurrence.firstAttemptedAt.getTime() + RECURRING_RETRY_LIFETIME_MS;
+    const occurredAt = now();
+    if (occurredAt.getTime() > deadline) {
+      await store.expireRetry({
+        occurrenceId: row.occurrence.id,
+        expectedRetryCount: row.occurrence.retryCount,
+        auditId: randomUUID(),
+        nextOccurrenceId: randomUUID(),
+        occurredAt,
+      });
+      return;
+    }
     const wakeAt = await store.retryWake(row.occurrence.id, row.occurrence.retryCount);
     if (wakeAt === undefined) {
       logger.warn(
@@ -72,8 +84,7 @@ export function createRecurringMessageReconciler({
       );
       return;
     }
-    const deadline = row.occurrence.firstAttemptedAt.getTime() + RECURRING_RETRY_LIFETIME_MS;
-    if (now().getTime() > deadline || wakeAt.getTime() > deadline) {
+    if (wakeAt.getTime() > deadline) {
       await store.expireRetry({
         occurrenceId: row.occurrence.id,
         expectedRetryCount: row.occurrence.retryCount,

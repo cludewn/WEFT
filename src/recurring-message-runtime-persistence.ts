@@ -795,29 +795,32 @@ export function createRecurringRuntimeStore(
             definition.occurrence.firstAttemptedAt === null
           )
             return false;
-          const retryAudits = await transaction
-            .select()
-            .from(recurringMessageAudits)
-            .where(
-              and(
-                eq(recurringMessageAudits.occurrenceId, input.occurrenceId),
-                eq(recurringMessageAudits.event, "OCCURRENCE_RETRY"),
-                eq(recurringMessageAudits.retryCount, input.expectedRetryCount),
-              ),
-            )
-            .limit(2);
-          const retryAudit = retryAudits[0];
-          if (
-            retryAudits.length !== 1 ||
-            retryAudit === undefined ||
-            retryAudit.scheduledActionId !== definition.action.id ||
-            retryAudit.failureCode !== "CURRENT_STATE_CHECK_FAILED"
-          )
-            return false;
           const deadline =
             definition.occurrence.firstAttemptedAt.getTime() + RECURRING_RETRY_LIFETIME_MS;
-          const wakeAt = retryAudit.occurredAt.getTime() + RECURRING_RETRY_DELAY_MS;
-          if (input.occurredAt.getTime() <= deadline && wakeAt <= deadline) return false;
+          const overdue = input.occurredAt.getTime() > deadline;
+          if (!overdue) {
+            const retryAudits = await transaction
+              .select()
+              .from(recurringMessageAudits)
+              .where(
+                and(
+                  eq(recurringMessageAudits.occurrenceId, input.occurrenceId),
+                  eq(recurringMessageAudits.event, "OCCURRENCE_RETRY"),
+                  eq(recurringMessageAudits.retryCount, input.expectedRetryCount),
+                ),
+              )
+              .limit(2);
+            const retryAudit = retryAudits[0];
+            if (
+              retryAudits.length !== 1 ||
+              retryAudit === undefined ||
+              retryAudit.scheduledActionId !== definition.action.id ||
+              retryAudit.failureCode !== "CURRENT_STATE_CHECK_FAILED"
+            )
+              return false;
+            const wakeAt = retryAudit.occurredAt.getTime() + RECURRING_RETRY_DELAY_MS;
+            if (wakeAt <= deadline) return false;
+          }
           await terminalInTransaction(transaction, definition, terminalInput, gapAuditIds);
           return true;
         });

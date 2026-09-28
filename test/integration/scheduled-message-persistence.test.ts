@@ -7,8 +7,9 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { publishScheduledMessageAudits } from "../../src/audit-notification-publication.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
 import { managedMessageAudits, managedMessages } from "../../src/managed-message-persistence.js";
@@ -1222,6 +1223,114 @@ describe("scheduled message persistence", () => {
     ).resolves.toMatchObject({ outcome: "ALREADY_CANCELLED" });
   });
 
+  it("keeps valid already-cancelled state unchanged without historical audit or publication", async () => {
+    const input = creation("cancelled-without-history", {
+      content: "cancelled payload",
+      embed: null,
+    });
+    await store.create(input);
+    const cancellation = {
+      scheduledActionId: input.scheduledActionId,
+      guildId,
+      channelId,
+      actorId,
+      auditId: "cancelled-history",
+      occurredAt,
+    };
+    expect((await store.cancel(cancellation)).outcome).toBe("CANCELLED");
+    await database.client
+      .delete(scheduledMessageAudits)
+      .where(eq(scheduledMessageAudits.id, cancellation.auditId));
+    const beforeActions = await database.client
+      .select()
+      .from(scheduledActions)
+      .where(eq(scheduledActions.id, input.scheduledActionId));
+    const beforeStates = await database.client
+      .select()
+      .from(scheduledMessageStates)
+      .where(eq(scheduledMessageStates.scheduledActionId, input.scheduledActionId));
+    const beforeAudits = await database.client
+      .select()
+      .from(scheduledMessageAudits)
+      .where(eq(scheduledMessageAudits.scheduledActionId, input.scheduledActionId));
+    expect(beforeAudits.some((audit) => audit.event === "CANCELLED")).toBe(false);
+    const publish = vi.fn();
+    const publishingStore = publishScheduledMessageAudits(database.client, { publish }, store);
+    expect(
+      (await publishingStore.cancel({ ...cancellation, auditId: "cancelled-noop-audit" })).outcome,
+    ).toBe("ALREADY_CANCELLED");
+    expect(
+      await database.client
+        .select()
+        .from(scheduledActions)
+        .where(eq(scheduledActions.id, input.scheduledActionId)),
+    ).toEqual(beforeActions);
+    expect(
+      await database.client
+        .select()
+        .from(scheduledMessageStates)
+        .where(eq(scheduledMessageStates.scheduledActionId, input.scheduledActionId)),
+    ).toEqual(beforeStates);
+    expect(
+      await database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(eq(scheduledMessageAudits.scheduledActionId, input.scheduledActionId)),
+    ).toEqual(beforeAudits);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "invalid"])(
+    "does not confirm already-cancelled state with %s message state",
+    async (state) => {
+      const input = creation(`cancelled-${state}-state`, {
+        content: "cancelled payload",
+        embed: null,
+      });
+      await store.create(input);
+      await database.client
+        .update(scheduledActions)
+        .set({ status: "CANCELLED" })
+        .where(eq(scheduledActions.id, input.scheduledActionId));
+      if (state === "missing") {
+        await database.client
+          .delete(scheduledMessageStates)
+          .where(eq(scheduledMessageStates.scheduledActionId, input.scheduledActionId));
+      } else {
+        await database.client
+          .update(scheduledMessageStates)
+          .set({ resultMessageId: "unexpected-message" })
+          .where(eq(scheduledMessageStates.scheduledActionId, input.scheduledActionId));
+      }
+      const before = await database.client
+        .select()
+        .from(scheduledActions)
+        .where(eq(scheduledActions.id, input.scheduledActionId));
+      expect(
+        await store.cancel({
+          scheduledActionId: input.scheduledActionId,
+          guildId,
+          channelId,
+          actorId,
+          auditId: `invalid-cancelled-${state}-audit`,
+          occurredAt,
+        }),
+      ).toEqual({ outcome: "PERSISTENCE_UNCONFIRMED" });
+      expect(
+        await database.client
+          .select()
+          .from(scheduledActions)
+          .where(eq(scheduledActions.id, input.scheduledActionId)),
+      ).toEqual(before);
+      expect(
+        await database.client
+          .select()
+          .from(scheduledMessageAudits)
+          .where(eq(scheduledMessageAudits.id, `invalid-cancelled-${state}-audit`)),
+      ).toHaveLength(0);
+    },
+  );
+
   it.each([
     ["guild", "wrong-guild", channelId],
     ["channel", guildId, "wrong-channel"],
@@ -1325,6 +1434,43 @@ describe("scheduled message persistence", () => {
         occurredAt,
       }),
     ).resolves.toMatchObject({ outcome: "CANCELLED" });
+  });
+
+  it("does not confirm ambiguous new cancellation from CANCELLED state when its own audit is absent", async () => {
+    const input = creation("cancel-response-audit-absent", {
+      content: "expected payload",
+      embed: null,
+    });
+    await store.create(input);
+    const auditId = "cancel-response-audit-absent";
+    const responseLossStore = createScheduledMessageStore(
+      finalizationResponseLossDatabase(new Error("transaction response lost"), async () => {
+        await database.client
+          .delete(scheduledMessageAudits)
+          .where(eq(scheduledMessageAudits.id, auditId));
+      }),
+    );
+    const publish = vi.fn();
+    const publishingStore = publishScheduledMessageAudits(
+      database.client,
+      { publish },
+      responseLossStore,
+    );
+    expect(
+      await publishingStore.cancel({
+        scheduledActionId: input.scheduledActionId,
+        guildId,
+        channelId,
+        actorId,
+        auditId,
+        occurredAt,
+      }),
+    ).toEqual({ outcome: "PERSISTENCE_UNCONFIRMED" });
+    expect(await store.findStatus(input.scheduledActionId, guildId, channelId)).toMatchObject({
+      outcome: "FOUND",
+      schedule: { status: "CANCELLED" },
+    });
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it("rejects cancellation confirmation when an exact payload field does not match", async () => {
