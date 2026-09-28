@@ -1135,7 +1135,12 @@ Cancellation uses a focused transaction scoped by schedule ID, guild, channel, a
 Only `ACTIVE -> CANCELLED` mutates state, and that transition commits with an exact user
 `CANCELLED` audit added by migration 0014. A conditional update linearizes cancellation against the
 execution claim. Ambiguous transaction responses are never retried and use read-only exact
-confirmation. Only after confirmed cancelled state does a focused pg-boss cleanup cancel
+confirmation. The normal locked path validates the scoped one-time message state before returning
+`ALREADY_CANCELLED` from current `CANCELLED` state, without reading historical cancellation audits.
+This no-op updates no rows or timestamps, inserts no audit, and causes no actual audit publication.
+Missing or invalid state remains unconfirmed. The response-loss and defensive zero-row paths retain
+exact audit checks: current `CANCELLED` state alone cannot confirm a newly attempted mutation.
+Only after confirmed cancelled state does a focused pg-boss cleanup cancel
 `created`, `retry`, and `active` delivery; terminal job history is retained, and cleanup failure
 does not reactivate the application schedule.
 
@@ -1282,9 +1287,24 @@ Startup recovery scans bounded pages before recurring workers start, repairs pen
 delivery, and fails orphaned `EXECUTING` occurrences conservatively without resend. Runtime
 reconciliation runs non-overlapping 60-second sweeps for pending and retry work, including missed
 grace and retry expiry. Retry expiry checks `RETRY_PENDING`, its expected retry generation, and
-the matching retry audit inside one series-then-occurrence-locked transaction before failing an
-occurrence; it cannot claim a live resumed `EXECUTING` occurrence. An active series with no
-nonterminal occurrence derives a safe candidate from its current definition effective boundary
+the first-attempt timestamp inside one series-then-occurrence-locked transaction before failing an
+occurrence; it cannot claim a live resumed `EXECUTING` or terminal occurrence, or a newer retry
+generation. The reconciler routes strictly overdue retries to expiry before `retryWake()`. The
+locked expiry path derives the deadline again and, only when the operation time is strictly beyond
+it, does not require the historical retry audit. At or before the inclusive deadline, the matching
+retry audit remains necessary for wake/resume and for expiry when its recorded wake exceeds the
+lifetime. Missing evidence within that window produces the existing warning and conservative
+return without projection or guessed expiry. Normal terminalization, next-state advancement, and
+publication of actual committed terminal/gap audit references remain unchanged. Response-loss
+confirmation still requires the new stable terminal audit and exact occurrence/next state.
+
+Current scheduling rows are authoritative scheduling state; historical audits are audit history.
+Using valid current state for overdue recovery or an already-cancelled no-op does not relax exact
+evidence for a newly attempted mutation or guarantee reconstruction of missing/corrupt state.
+Audit-retention cleanup is not implemented by these compatibility changes.
+
+An active series with no nonterminal occurrence derives a safe candidate from its current definition
+effective boundary
 and latest terminal occurrence history. It never infers an interrupted execution from queue
 absence.
 

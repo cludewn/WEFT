@@ -1535,18 +1535,7 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
           if (!stateIsValid(state, action.status))
             return { outcome: "PERSISTENCE_UNCONFIRMED" } as const;
           if (definition.action.status === "CANCELLED") {
-            const previousAudit = await transaction
-              .select()
-              .from(scheduledMessageAudits)
-              .where(
-                and(
-                  eq(scheduledMessageAudits.scheduledActionId, definition.action.id),
-                  eq(scheduledMessageAudits.event, "CANCELLED"),
-                ),
-              );
-            return previousAudit.some((audit) => cancellationAuditMatches(audit, definition))
-              ? ({ outcome: "ALREADY_CANCELLED", definition } as const)
-              : ({ outcome: "PERSISTENCE_UNCONFIRMED" } as const);
+            return { outcome: "ALREADY_CANCELLED", definition } as const;
           }
           if (definition.action.status !== "ACTIVE") {
             return { outcome: definition.action.status };

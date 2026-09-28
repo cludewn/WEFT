@@ -2,6 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { AuditNotificationPublisher } from "../../src/audit-notification-dispatcher.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
 import { managedMessageAudits, managedMessages } from "../../src/managed-message-persistence.js";
@@ -26,13 +27,14 @@ const recurring = createRecurringMessageStore(first.client);
 const runtime = createRecurringRuntimeStore(first.client);
 const otherRuntime = createRecurringRuntimeStore(second.client);
 
-function responseLossDatabase(): DatabaseClient {
+function responseLossDatabase(afterCommit?: () => Promise<void>): DatabaseClient {
   const transaction = first.client.transaction.bind(first.client);
   return new Proxy(first.client, {
     get(target, property): unknown {
       if (property === "transaction")
         return async (callback: never) => {
           await transaction(callback);
+          await afterCommit?.();
           throw new Error("injected transaction response loss");
         };
       const value: unknown = Reflect.get(target, property, target);
@@ -144,7 +146,10 @@ afterAll(async () => {
   await second.close();
 });
 
-async function claimed(suffix: string) {
+async function claimed(
+  suffix: string,
+  options: { localTime?: string; timezone?: string; effectiveAt?: Date } = {},
+) {
   const created = await recurring.create({
     scheduledActionId: `runtime-series-${suffix}`,
     occurrenceId: `runtime-occurrence-${suffix}`,
@@ -157,10 +162,10 @@ async function claimed(suffix: string) {
     recurrence: {
       frequency: "DAILY",
       weekdayMask: ALL_WEEKDAYS_MASK,
-      localTime: "09:00",
-      timezone: "UTC",
+      localTime: options.localTime ?? "09:00",
+      timezone: options.timezone ?? "UTC",
     },
-    effectiveAt: new Date("2026-01-01T08:00:00.000Z"),
+    effectiveAt: options.effectiveAt ?? new Date("2026-01-01T08:00:00.000Z"),
   });
   if (created.outcome !== "COMMITTED" || created.series.occurrence === null)
     throw new Error("Fixture creation failed");
@@ -194,7 +199,7 @@ async function threeRetries(id: string, firstAt: Date) {
 describe("recurring retry persistence", () => {
   it("atomically completes an occurrence and publishes both committed audits", async () => {
     const { occurrence, firstAt } = await claimed("complete");
-    const publish = vi.fn();
+    const publish = vi.fn<AuditNotificationPublisher["publish"]>();
     const publishingRuntime = createRecurringRuntimeStore(first.client, { publish });
     expect(
       await publishingRuntime.terminalize({
@@ -355,6 +360,269 @@ describe("recurring retry persistence", () => {
       failureCode: "PRE_SEND_RETRY_WINDOW_EXCEEDED",
       retryCount: 1,
     });
+  });
+
+  for (const responseLoss of [false, true]) {
+    for (const gap of [false, true]) {
+      it(`expires without historical retry evidence and publishes committed audits (response loss: ${responseLoss}, DST gap: ${gap})`, async () => {
+        const suffix = `auditless-expiry-${responseLoss}-${gap}`;
+        const { occurrence, firstAt } = await claimed(
+          suffix,
+          gap
+            ? {
+                localTime: "02:30",
+                timezone: "America/New_York",
+                effectiveAt: new Date("2026-03-07T00:00:00.000Z"),
+              }
+            : {},
+        );
+        const retryAuditId = `retry-${suffix}`;
+        await runtime.recordPreSendFailure({
+          occurrenceId: occurrence.id,
+          auditId: retryAuditId,
+          nextOccurrenceId: `unused-${suffix}`,
+          occurredAt: firstAt,
+        });
+        await first.client
+          .delete(recurringMessageAudits)
+          .where(eq(recurringMessageAudits.id, retryAuditId));
+        const publish = vi.fn<AuditNotificationPublisher["publish"]>();
+        const store = createRecurringRuntimeStore(
+          responseLoss ? responseLossDatabase() : first.client,
+          { publish },
+        );
+        const input = {
+          occurrenceId: occurrence.id,
+          expectedRetryCount: 1,
+          auditId: `terminal-${suffix}`,
+          nextOccurrenceId: `next-${suffix}`,
+          occurredAt: new Date(firstAt.getTime() + 15 * 60_000 + 1),
+        };
+        expect(await store.expireRetry(input)).toBe("COMMITTED");
+        const current = await runtime.load(occurrence.id);
+        expect(current?.occurrence).toMatchObject({
+          status: "FAILED",
+          retryCount: 1,
+          failureCode: "PRE_SEND_RETRY_WINDOW_EXCEEDED",
+          terminalAt: input.occurredAt,
+        });
+        const next = await runtime.load(input.nextOccurrenceId);
+        expect(next?.occurrence.status).toBe("PENDING");
+        expect(next?.action.status).toBe("ACTIVE");
+        expect(next?.action.executeAt).toEqual(next?.occurrence.scheduledFor);
+        expect(next?.occurrence.intendedLocalDate).toBe(gap ? "2026-03-09" : "2026-01-02");
+        const audits = await first.client
+          .select()
+          .from(recurringMessageAudits)
+          .where(eq(recurringMessageAudits.scheduledActionId, occurrence.scheduledActionId));
+        expect(audits.some((audit) => audit.event === "OCCURRENCE_RETRY")).toBe(false);
+        expect(audits.find((audit) => audit.id === input.auditId)).toMatchObject({
+          event: "OCCURRENCE_FAILED",
+          failureCode: "PRE_SEND_RETRY_WINDOW_EXCEEDED",
+          occurrenceId: occurrence.id,
+          retryCount: 1,
+          nextOccurrenceId: input.nextOccurrenceId,
+          postSeriesStatus: "ACTIVE",
+        });
+        const committed = audits.filter(
+          (audit) => audit.id === input.auditId || audit.event === "DST_GAP_SKIPPED",
+        );
+        expect(committed).toHaveLength(gap ? 2 : 1);
+        expect(publish.mock.calls.map(([reference]) => reference)).toEqual(
+          expect.arrayContaining(
+            committed.map((audit) => ({ source: "RECURRING_MESSAGE", auditId: audit.id })),
+          ),
+        );
+        expect(publish).toHaveBeenCalledTimes(committed.length);
+      });
+    }
+  }
+
+  it("filters absent gap references after exact overdue expiry confirmation", async () => {
+    const { occurrence, firstAt } = await claimed("expiry-gap-filter", {
+      localTime: "02:30",
+      timezone: "America/New_York",
+      effectiveAt: new Date("2026-03-07T00:00:00.000Z"),
+    });
+    await runtime.recordPreSendFailure({
+      occurrenceId: occurrence.id,
+      auditId: "retry-gap-filter",
+      nextOccurrenceId: "unused-gap-filter",
+      occurredAt: firstAt,
+    });
+    await first.client
+      .delete(recurringMessageAudits)
+      .where(eq(recurringMessageAudits.id, "retry-gap-filter"));
+    const publish = vi.fn<AuditNotificationPublisher["publish"]>();
+    let removedGapIds: string[] = [];
+    const store = createRecurringRuntimeStore(
+      responseLossDatabase(async () => {
+        const gaps = await first.client
+          .select()
+          .from(recurringMessageAudits)
+          .where(
+            and(
+              eq(recurringMessageAudits.scheduledActionId, occurrence.scheduledActionId),
+              eq(recurringMessageAudits.event, "DST_GAP_SKIPPED"),
+            ),
+          );
+        removedGapIds = gaps.map((audit) => audit.id);
+        for (const id of removedGapIds) {
+          await first.client
+            .delete(recurringMessageAudits)
+            .where(eq(recurringMessageAudits.id, id));
+        }
+      }),
+      { publish },
+    );
+    expect(
+      await store.expireRetry({
+        occurrenceId: occurrence.id,
+        expectedRetryCount: 1,
+        auditId: "terminal-gap-filter",
+        nextOccurrenceId: "next-gap-filter",
+        occurredAt: new Date(firstAt.getTime() + 15 * 60_000 + 1),
+      }),
+    ).toBe("COMMITTED");
+    expect(removedGapIds).toHaveLength(1);
+    expect(publish.mock.calls.map(([reference]) => reference)).toEqual([
+      { source: "RECURRING_MESSAGE", auditId: "terminal-gap-filter" },
+    ]);
+  });
+
+  it.each(["EXECUTING", "COMPLETED", "FAILED", "SKIPPED"] as const)(
+    "does not expire a stale retry snapshot when current status is %s and its retry audit is absent",
+    async (status) => {
+      const { occurrence, firstAt } = await claimed(`auditless-stale-${status}`);
+      const retryAuditId = `retry-stale-${status}`;
+      await runtime.recordPreSendFailure({
+        occurrenceId: occurrence.id,
+        auditId: retryAuditId,
+        nextOccurrenceId: `unused-stale-${status}`,
+        occurredAt: firstAt,
+      });
+      if (status === "EXECUTING") {
+        expect(
+          await runtime.resumeRetry(occurrence.id, 1, new Date(firstAt.getTime() + 30_000)),
+        ).toBeDefined();
+      } else {
+        await first.client
+          .update(recurringMessageOccurrences)
+          .set({
+            status,
+            terminalAt: new Date(firstAt.getTime() + 30_000),
+            resultMessageId: status === "COMPLETED" ? "stale-completed-message" : null,
+            failureCode: status === "FAILED" ? "SEND_REJECTED" : null,
+            skipReason: status === "SKIPPED" ? "SERIES_CANCELLED" : null,
+          })
+          .where(eq(recurringMessageOccurrences.id, occurrence.id));
+      }
+      await first.client
+        .delete(recurringMessageAudits)
+        .where(eq(recurringMessageAudits.id, retryAuditId));
+      const before = await runtime.load(occurrence.id);
+      const publish = vi.fn<AuditNotificationPublisher["publish"]>();
+      const store = createRecurringRuntimeStore(first.client, { publish });
+      expect(
+        await store.expireRetry({
+          occurrenceId: occurrence.id,
+          expectedRetryCount: 1,
+          auditId: `terminal-stale-${status}`,
+          nextOccurrenceId: `next-stale-${status}`,
+          occurredAt: new Date(firstAt.getTime() + 15 * 60_000 + 1),
+        }),
+      ).toBe("NOT_COMMITTED");
+      expect(await runtime.load(occurrence.id)).toEqual(before);
+      expect(await runtime.load(`next-stale-${status}`)).toBeUndefined();
+      expect(publish).not.toHaveBeenCalled();
+      expect(
+        await first.client
+          .select()
+          .from(recurringMessageAudits)
+          .where(eq(recurringMessageAudits.id, `terminal-stale-${status}`)),
+      ).toHaveLength(0);
+    },
+  );
+
+  it.each(["missing", "mismatched", "wake beyond deadline"])(
+    "requires recorded retry evidence within the lifetime: %s",
+    async (evidence) => {
+      const { occurrence, firstAt } = await claimed(`within-window-${evidence}`);
+      const auditId = `retry-within-${evidence}`;
+      await runtime.recordPreSendFailure({
+        occurrenceId: occurrence.id,
+        auditId,
+        nextOccurrenceId: `unused-within-${evidence}`,
+        occurredAt: firstAt,
+      });
+      if (evidence === "missing") {
+        await first.client
+          .delete(recurringMessageAudits)
+          .where(eq(recurringMessageAudits.id, auditId));
+      } else {
+        await first.client
+          .update(recurringMessageAudits)
+          .set(
+            evidence === "mismatched"
+              ? { failureCode: "PRE_SEND_RETRY_WINDOW_EXCEEDED" }
+              : { occurredAt: new Date(firstAt.getTime() + 15 * 60_000 - 30_000 + 1) },
+          )
+          .where(eq(recurringMessageAudits.id, auditId));
+      }
+      const deadline = new Date(firstAt.getTime() + 15 * 60_000);
+      expect(await runtime.resumeRetry(occurrence.id, 1, deadline)).toBeUndefined();
+      expect(
+        await runtime.expireRetry({
+          occurrenceId: occurrence.id,
+          expectedRetryCount: 1,
+          auditId: `terminal-within-${evidence}`,
+          nextOccurrenceId: `next-within-${evidence}`,
+          occurredAt: deadline,
+        }),
+      ).toBe(evidence === "wake beyond deadline" ? "COMMITTED" : "NOT_COMMITTED");
+      expect((await runtime.load(occurrence.id))?.occurrence.status).toBe(
+        evidence === "wake beyond deadline" ? "FAILED" : "RETRY_PENDING",
+      );
+    },
+  );
+
+  it.each(["rollback", "unknown"])("does not publish overdue expiry on %s", async (outcome) => {
+    const { occurrence, firstAt } = await claimed(`expiry-${outcome}`);
+    const retryAuditId = `retry-${outcome}`;
+    await runtime.recordPreSendFailure({
+      occurrenceId: occurrence.id,
+      auditId: retryAuditId,
+      nextOccurrenceId: `unused-${outcome}`,
+      occurredAt: firstAt,
+    });
+    await first.client
+      .delete(recurringMessageAudits)
+      .where(eq(recurringMessageAudits.id, retryAuditId));
+    const auditId = `terminal-${outcome}`;
+    const publish = vi.fn<AuditNotificationPublisher["publish"]>();
+    const store = createRecurringRuntimeStore(
+      outcome === "unknown"
+        ? responseLossDatabase(async () => {
+            await first.client
+              .delete(recurringMessageAudits)
+              .where(eq(recurringMessageAudits.id, auditId));
+          })
+        : first.client,
+      { publish },
+    );
+    expect(
+      await store.expireRetry({
+        occurrenceId: occurrence.id,
+        expectedRetryCount: 1,
+        auditId,
+        nextOccurrenceId: outcome === "rollback" ? occurrence.id : `next-${outcome}`,
+        occurredAt: new Date(firstAt.getTime() + 15 * 60_000 + 1),
+      }),
+    ).toBe("UNKNOWN");
+    expect((await runtime.load(occurrence.id))?.occurrence.status).toBe(
+      outcome === "rollback" ? "RETRY_PENDING" : "FAILED",
+    );
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it("fails without increment or retry audit when candidate wake exceeds deadline by 1ms", async () => {
@@ -567,6 +835,14 @@ describe("recurring retry persistence", () => {
       nextOccurrenceId: "unused-stale-expiry-2",
       occurredAt: new Date(firstAt.getTime() + 30_000),
     });
+    await first.client
+      .delete(recurringMessageAudits)
+      .where(
+        and(
+          eq(recurringMessageAudits.occurrenceId, occurrence.id),
+          eq(recurringMessageAudits.event, "OCCURRENCE_RETRY"),
+        ),
+      );
     expect(
       await runtime.expireRetry({
         occurrenceId: occurrence.id,
@@ -581,6 +857,13 @@ describe("recurring retry persistence", () => {
       .from(recurringMessageOccurrences)
       .where(eq(recurringMessageOccurrences.id, occurrence.id));
     expect(current).toMatchObject({ status: "RETRY_PENDING", retryCount: 2 });
+    expect(await runtime.load("stale-expiry-next")).toBeUndefined();
+    expect(
+      await first.client
+        .select()
+        .from(recurringMessageAudits)
+        .where(eq(recurringMessageAudits.id, "stale-expiry-terminal")),
+    ).toHaveLength(0);
   });
 
   it("does not resume a persisted retry after the inclusive lifetime", async () => {

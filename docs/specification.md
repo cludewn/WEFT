@@ -715,9 +715,9 @@ and the updated execution time.
 
 Recurring occurrence execution uses the dedicated `weft-recurring-message-occurrence` pg-boss
 queue with exclusive policy, no built-in retry, and 900-second expiration. Delivery is a timed
-projection. PostgreSQL occurrence state and `OCCURRENCE_RETRY` audit time determine eligibility and
-retry wake time. Delivery generations use retry counts zero through three and a singleton key
-formed from the occurrence ID and generation. Queue state never authorizes execution.
+projection. PostgreSQL occurrence state determines eligibility; within-window retry wake time remains
+backed by the matching `OCCURRENCE_RETRY` audit. Delivery generations use retry counts zero through
+three and a singleton key formed from the occurrence ID and generation. Queue state never authorizes execution.
 
 Initial execution validates authoritative state and payload, performs fresh Discord preflight,
 then claims `PENDING -> EXECUTING`. Only the claim winner may send or record a preflight failure.
@@ -726,6 +726,16 @@ Retry continuation preserves the original claim payload and requires a winning
 retry only if the failure was observed within 15 minutes of the first attempt, the retry budget is
 not exhausted, and the 30-second wake remains within that inclusive deadline. These checks occur
 in that order; only an allowed retry increments the count and inserts one retry audit.
+
+Reconciliation checks the retry lifetime before looking up the historical retry audit. Strictly
+past `first_attempted_at + 15 minutes`, expiry uses the locked authoritative occurrence state,
+requires current `RETRY_PENDING` status and the expected retry generation, and does not require the
+old retry audit. At the deadline or earlier, wake and resume remain audit-backed: missing or
+mismatched evidence cannot establish a wake or justify expiry. A matching recorded wake beyond
+the deadline may still cause expiry within the lifetime. Expiry reuses normal terminalization,
+next-occurrence advancement, and publication of newly committed terminal and DST gap audits.
+Ambiguous expiry still requires exact evidence for its new stable terminal audit and expected
+occurrence and next state; missing historical evidence does not confirm the new mutation.
 
 Discord Create Message uses mention suppression, an occurrence-derived nonce, and at most one
 immediate same-nonce replay after ambiguity. A definite initial rejection is terminal
@@ -813,7 +823,13 @@ One-time cancellation and status are scoped to the current guild and channel and
 They remain available in an archived supported thread and do not require WEFT's current send
 permission. One-time cancellation changes only `ACTIVE` to `CANCELLED`, atomically records a user-attributed
 `CANCELLED` audit, and never overwrites executing or terminal state. Delivery cleanup failure does
-not undo confirmed cancellation. Status is read-only and does not expose the scheduled payload.
+not undo confirmed cancellation. A valid scoped one-time schedule observed already `CANCELLED`
+under the action lock returns `ALREADY_CANCELLED` without historical cancellation evidence. This
+no-op changes no state or timestamps, inserts no audit, and publishes no audit notification.
+Missing or invalid message state remains conservatively unconfirmed. An ambiguous response to a
+new `ACTIVE -> CANCELLED` attempt still requires exact audit evidence; current `CANCELLED` state
+alone does not prove that request committed. Status is read-only and does not expose the scheduled
+payload.
 Completed status includes a canonical Discord message link when the result message ID is present.
 
 For one-time messages, list includes `ACTIVE` and `EXECUTING` rows. The combined list uses the
