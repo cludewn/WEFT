@@ -118,6 +118,21 @@ Introduce an interface or adapter only when it provides meaningful isolation, te
 
 Do not create wrapper interfaces that merely duplicate discord.js without adding a real boundary.
 
+The runtime Client and standalone command-deployment REST instance explicitly configure
+`retries: 0`. In the resolved discord.js REST transport this disables automatic retries
+for 5xx responses, `AbortError` (including REST request timeout), and `ECONNRESET`.
+Keep discord.js route bucket, global rate-limit, and sublimit handling, including ordinary
+429 wait and retry. Do not add fixed Discord bucket limits, a second queue, or a generic
+retry layer. A 429 resend inside discord.js is separate from a WEFT application replay.
+
+Rate-limit queue waiting is distinct from the REST request timeout, a WEFT caller wait
+budget, and feature-specific retry or replay. Queue waiting can outlive a caller budget
+without making the mutation fail; thread lifecycle then retains the raw mutation and
+may return `PENDING`. Feature code continues to own its specified reconciliation and
+application retry behavior after a surfaced failure. Rate-limit logs must exclude
+`majorParameter`, request URLs, credentials, content, and raw errors. Parsed REST debug
+messages are optional telemetry and must not drive control flow.
+
 ### Database access
 
 Keep database queries out of Discord handlers and independent product rules.
