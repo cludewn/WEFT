@@ -32,6 +32,7 @@ const startupSteps = [
   "startRecurringMessageRuntimeReconciliation",
   "reconcileAutomaticCloseBaselines",
   "startAutomaticCloseRuntime",
+  "startAuditRetentionRuntime",
 ] as const satisfies readonly (keyof ApplicationRuntimeDependencies)[];
 
 const partialStartupFailures = [
@@ -44,6 +45,7 @@ const partialStartupFailures = [
   ["worker registration", "startScheduledThreadCloseWorkers", "worker_start"],
   ["reconciler scheduling", "startScheduledThreadCloseRuntimeReconciliation", "reconciler_start"],
   ["automatic-close start", "startAutomaticCloseRuntime", "automatic_close_start"],
+  ["audit retention start", "startAuditRetentionRuntime", "audit_retention_start"],
 ] as const satisfies readonly (readonly [string, (typeof startupSteps)[number], string])[];
 
 function dependencies(): ApplicationRuntimeDependencies {
@@ -69,6 +71,7 @@ function dependencies(): ApplicationRuntimeDependencies {
     startRecurringMessageRuntimeReconciliation: vi.fn(resolved),
     reconcileAutomaticCloseBaselines: vi.fn(resolved),
     startAutomaticCloseRuntime: vi.fn(resolved),
+    startAuditRetentionRuntime: vi.fn(resolved),
     quiesce: [],
     drainThreadLifecycle: vi.fn(resolved),
     drainAuditNotifications: vi.fn(resolved),
@@ -167,6 +170,7 @@ describe("startup serialization", () => {
 
     expect(runtime.getState()).toBe("READY");
     expect(values.startAutomaticCloseRuntime).toHaveBeenCalledOnce();
+    expect(values.startAuditRetentionRuntime).toHaveBeenCalledOnce();
     expect(values.logger.warn).toHaveBeenCalledWith(
       { event: "automatic_close_baseline_reconciliation_failed", errorName: "Error" },
       expect.any(String),

@@ -1,5 +1,5 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
-import { check, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
+import { check, index, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
 import type { ManagedMessagePayload } from "./managed-message-payload.js";
@@ -140,6 +140,7 @@ export const managedMessageAudits = pgTable(
         and ${table.afterEmbedImageUrl} is not distinct from ${table.beforeEmbedImageUrl}
       )`,
     ),
+    index("managed_message_audits_retention_idx").on(table.occurredAt, table.id),
   ],
 );
 

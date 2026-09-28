@@ -1,5 +1,5 @@
 import { and, eq } from "drizzle-orm";
-import { check, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
+import { check, index, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 
 import type { DatabaseClient } from "./database.js";
@@ -66,6 +66,7 @@ export const threadAudits = pgTable(
       "thread_audits_failure_check",
       sql`(${table.outcome} = 'SUCCESS' and ${table.failureCode} is null) or (${table.outcome} = 'FAILURE' and ${table.failureCode} is not null)`,
     ),
+    index("thread_audits_retention_idx").on(table.createdAt, table.id),
   ],
 );
 

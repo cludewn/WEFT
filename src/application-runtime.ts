@@ -35,6 +35,7 @@ type StartupDependencies = {
   startRecurringMessageRuntimeReconciliation: () => Promise<void>;
   reconcileAutomaticCloseBaselines: () => Promise<void>;
   startAutomaticCloseRuntime: () => Promise<void>;
+  startAuditRetentionRuntime: () => Promise<void>;
 };
 
 export type ApplicationRuntimeDependencies = StartupDependencies & {
@@ -379,6 +380,7 @@ export function createApplicationRuntime(
           checkpoint();
         }
         await runStartupStep("automatic_close_start", dependencies.startAutomaticCloseRuntime);
+        await runStartupStep("audit_retention_start", dependencies.startAuditRetentionRuntime);
         checkpoint();
         state = "READY";
         logger.info({ event: "application_ready" }, "Application startup completed");

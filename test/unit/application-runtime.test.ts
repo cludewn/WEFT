@@ -1,6 +1,9 @@
 import type { Logger } from "pino";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { AuditRetentionStore } from "../../src/audit-retention-persistence.js";
+import { createAuditRetentionRuntime } from "../../src/audit-retention-runtime.js";
+
 import {
   createApplicationRuntime,
   type ApplicationRuntimeDependencies,
@@ -56,6 +59,7 @@ function createFixture(overrides: Partial<ApplicationRuntimeDependencies> = {}) 
     startRecurringMessageRuntimeReconciliation: step("recurring-reconciler"),
     reconcileAutomaticCloseBaselines: step("automatic-baseline"),
     startAutomaticCloseRuntime: step("automatic-runtime"),
+    startAuditRetentionRuntime: step("audit-retention-runtime"),
     quiesce: [],
     drainThreadLifecycle: step("thread-drain"),
     drainAuditNotifications: step("audit-drain"),
@@ -110,8 +114,36 @@ describe("application runtime", () => {
       "recurring-reconciler",
       "automatic-baseline",
       "automatic-runtime",
+      "audit-retention-runtime",
       "application_ready",
     ]);
+  });
+
+  it("reaches READY before initial retention backlog drains and closes the database afterward", async () => {
+    const batch = deferred<number>();
+    const persistence: AuditRetentionStore = {
+      deleteExpiredBatch: vi.fn(() => batch.promise),
+    };
+    const retention = createAuditRetentionRuntime({
+      persistence,
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+    const closeDatabase = vi.fn(() => Promise.resolve());
+    const fixture = createFixture({
+      startAuditRetentionRuntime: () => retention.start(),
+      quiesce: [{ name: "audit-retention-runtime", stop: () => retention.stop() }],
+      closeDatabase,
+    });
+    await fixture.runtime.start();
+    expect(fixture.runtime.getState()).toBe("READY");
+    await vi.waitFor(() => expect(persistence.deleteExpiredBatch).toHaveBeenCalledOnce());
+    const shutdown = fixture.runtime.shutdown("SIGTERM");
+    await Promise.resolve();
+    expect(closeDatabase).not.toHaveBeenCalled();
+    batch.resolve(1);
+    await shutdown;
+    expect(persistence.deleteExpiredBatch).toHaveBeenCalledOnce();
+    expect(closeDatabase).toHaveBeenCalledOnce();
   });
 
   it("closes ingress synchronously, quiesces every producer, then drains", async () => {

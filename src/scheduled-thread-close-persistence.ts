@@ -68,6 +68,7 @@ export const scheduledThreadCloseAudits = pgTable(
       sql`(${table.event} = 'REPLACED' and ${table.previousScheduledActionId} is not null and ${table.previousExecuteAt} is not null) or (${table.event} <> 'REPLACED' and ${table.previousScheduledActionId} is null and ${table.previousExecuteAt} is null)`,
     ),
     index("scheduled_thread_close_audits_action_id_idx").on(table.scheduledActionId),
+    index("scheduled_thread_close_audits_retention_idx").on(table.createdAt, table.id),
     index("scheduled_thread_close_audits_guild_thread_created_at_idx").on(
       table.guildId,
       table.threadId,

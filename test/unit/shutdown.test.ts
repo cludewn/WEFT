@@ -28,6 +28,7 @@ function createDependencies(calls: string[], now: () => number): ApplicationRunt
     startRecurringMessageRuntimeReconciliation: step,
     reconcileAutomaticCloseBaselines: step,
     startAutomaticCloseRuntime: step,
+    startAuditRetentionRuntime: step,
     quiesce: [
       {
         name: "workers",
