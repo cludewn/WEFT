@@ -1,14 +1,17 @@
-import { REST } from "discord.js";
 import pino from "pino";
 
-import { registerCommands, selectDeploymentTarget } from "./command-registration.js";
+import {
+  createCommandDeploymentRest,
+  registerCommands,
+  selectDeploymentTarget,
+} from "./command-registration.js";
 import { ConfigurationError, loadDiscordConfig } from "./config.js";
 
 async function main(): Promise<void> {
   const config = loadDiscordConfig();
   const target = selectDeploymentTarget(process.argv.slice(2), config.guildId);
   const logger = pino();
-  const rest = new REST({ version: "10" }).setToken(config.token);
+  const rest = createCommandDeploymentRest(config.token);
 
   await registerCommands(rest, config.applicationId, target);
   logger.info({ event: "commands_deployed", scope: target.scope }, "Discord commands deployed");

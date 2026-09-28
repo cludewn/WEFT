@@ -1,11 +1,13 @@
-import { Routes } from "discord.js";
-
-import type { REST } from "discord.js";
+import { REST, Routes } from "discord.js";
 
 import { commandDefinitions } from "./commands.js";
 import { ConfigurationError } from "./config.js";
 
 export type CommandDeploymentTarget = { scope: "global" } | { scope: "guild"; guildId: string };
+
+export function createCommandDeploymentRest(token: string): REST {
+  return new REST({ version: "10", retries: 0 }).setToken(token);
+}
 
 export function selectDeploymentTarget(
   arguments_: readonly string[],

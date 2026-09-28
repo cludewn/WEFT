@@ -141,7 +141,14 @@ describe("Discord client", () => {
     await client.destroy();
   });
 
-  it("logs public REST rate-limit data without the request URL", async () => {
+  it("disables automatic REST retries on the constructed client", async () => {
+    const client = createDiscordClient(createLogger(), discordDependencies);
+
+    expect(client.rest.options.retries).toBe(0);
+    await client.destroy();
+  });
+
+  it("logs safe REST rate-limit data without the request URL or major parameter", async () => {
     const debug = vi.fn();
     const client = createDiscordClient(
       { debug, warn: vi.fn(), error: vi.fn() } as unknown as Logger,
@@ -151,7 +158,7 @@ describe("Discord client", () => {
       global: false,
       hash: "bucket-hash",
       limit: 5,
-      majorParameter: "thread-id",
+      majorParameter: "super-secret-interaction-token",
       method: "PATCH",
       retryAfter: 1_000,
       route: "/channels/:id",
@@ -168,7 +175,6 @@ describe("Discord client", () => {
         event: "discord_rest_rate_limited",
         method: "PATCH",
         route: "/channels/:id",
-        majorParameter: "thread-id",
         hash: "bucket-hash",
         limit: 5,
         retryAfter: 1_000,
@@ -180,6 +186,7 @@ describe("Discord client", () => {
       "Discord REST rate limited",
     );
     expect(JSON.stringify(debug.mock.calls)).not.toContain(rateLimit.url);
+    expect(JSON.stringify(debug.mock.calls)).not.toContain(rateLimit.majorParameter);
     await client.destroy();
   });
 

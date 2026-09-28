@@ -97,6 +97,7 @@ export function createDiscordRuntime(
     // GuildMessages delivers the message metadata automatic-close activity needs. Message content
     // is never read, so the privileged MessageContent intent stays disabled.
     intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+    rest: { retries: 0 },
   });
   const threadDiscord = createThreadLifecycleDiscord(client);
   const threadLifecycle =
@@ -115,7 +116,6 @@ export function createDiscordRuntime(
         event: "discord_rest_rate_limited",
         method: rateLimit.method,
         route: rateLimit.route,
-        majorParameter: rateLimit.majorParameter,
         hash: rateLimit.hash,
         limit: rateLimit.limit,
         retryAfter: rateLimit.retryAfter,
