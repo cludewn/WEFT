@@ -43,6 +43,94 @@ describe("Discord thread support", () => {
     });
   });
 
+  it.each([
+    ["channel", 10_003, 404, "CONFIRMED_UNAVAILABLE"],
+    ["guild", 10_004, 404, "CONFIRMED_UNAVAILABLE"],
+    ["channel", 50_001, 403, "PERMANENT_UNCONFIRMED"],
+    ["guild", 50_013, 403, "PERMANENT_UNCONFIRMED"],
+    ["guild", 10_003, 404, "RETRYABLE"],
+    ["channel", 10_004, 404, "RETRYABLE"],
+    ["channel", 99_999, 404, "RETRYABLE"],
+    ["channel", 50_001, 503, "RETRYABLE"],
+  ] as const)(
+    "classifies structured %s read code %s and status %s as %s",
+    async (stage, code, status, classification) => {
+      const request = { body: undefined, files: undefined };
+      const error = new DiscordAPIError(
+        { message: "opaque", code },
+        code,
+        status,
+        "GET",
+        "https://discord.invalid",
+        request,
+      );
+      const fetchChannel = vi.fn(() => Promise.reject(error));
+      const fetchGuild = vi.fn(() =>
+        stage === "guild"
+          ? Promise.reject(error)
+          : Promise.resolve({ channels: { fetch: fetchChannel } }),
+      );
+      const discord = createThreadLifecycleDiscord({
+        guilds: { fetch: fetchGuild },
+      } as unknown as Client);
+      const rejected = await discord.fetchThread("guild-id", "thread-id").then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+
+      expect(discord.classifyReconciliationReadFailure(rejected)).toBe(classification);
+      expect(fetchGuild).toHaveBeenCalledOnce();
+      expect(fetchChannel).toHaveBeenCalledTimes(stage === "channel" ? 1 : 0);
+    },
+  );
+
+  it.each([
+    [401, "PERMANENT_UNCONFIRMED"],
+    [403, "PERMANENT_UNCONFIRMED"],
+    [404, "RETRYABLE"],
+    [408, "RETRYABLE"],
+    [425, "RETRYABLE"],
+    [429, "RETRYABLE"],
+    [503, "RETRYABLE"],
+  ] as const)("classifies HTTP %s channel reads as %s", async (status, classification) => {
+    const error = new HTTPError(status, "opaque", "GET", "https://discord.invalid", {
+      body: undefined,
+      files: undefined,
+    });
+    const discord = createThreadLifecycleDiscord({
+      guilds: {
+        fetch: vi.fn(() =>
+          Promise.resolve({ channels: { fetch: vi.fn(() => Promise.reject(error)) } }),
+        ),
+      },
+    } as unknown as Client);
+    const rejected = await discord.fetchThread("guild-id", "thread-id").then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+
+    expect(discord.classifyReconciliationReadFailure(rejected)).toBe(classification);
+  });
+
+  it.each([
+    new Error("Unknown Channel"),
+    Object.assign(new Error("transport"), { code: "ECONNRESET" }),
+    new DOMException("aborted", "AbortError"),
+    Object.assign(new Error("opaque"), { code: 50_001 }),
+  ])("keeps unstructured read failures retryable", async (error) => {
+    const discord = createThreadLifecycleDiscord({
+      guilds: {
+        fetch: vi.fn(() => Promise.reject(error)),
+      },
+    } as unknown as Client);
+    const rejected = await discord.fetchThread("guild-id", "thread-id").then(
+      () => undefined,
+      (failure: unknown) => failure,
+    );
+
+    expect(discord.classifyReconciliationReadFailure(rejected)).toBe("RETRYABLE");
+  });
+
   it("classifies public REST errors without parsing messages", () => {
     const request = { body: undefined, files: undefined };
     expect(

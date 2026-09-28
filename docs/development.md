@@ -721,9 +721,21 @@ and finalization handling, including managed-state and final-audit persistence. 
 response confirms the mutation without an additional Discord fetch. A rejected raw mutation is
 reconciled against current Discord state. Background reconciliation waits for each raw external
 operation to settle before an actual rejection can start a backoff retry; observation deadlines
-must not create overlapping attempts. The final managed state and exactly one success or failure
-audit are persisted before the guard is released. Normal discord.js rate-limit queue waits are not
-failures or unknown outcomes solely because they exceed the caller wait budget.
+must not create overlapping attempts. Confirmed finalization persists the final managed state
+and exactly one success or failure audit before the guard is released. The reconciliation read
+classifies structured Unknown Channel at the channel stage and Unknown Guild at the guild stage as
+confirmed unavailable; access and
+authentication failures remain separate. Retryable or unclassified read failures keep the existing
+backoff. A permanently rejected read with unknown Discord state stops the read loop and finalizes
+one `FAILURE / DISCORD_RECONCILIATION_UNCONFIRMED` audit using the existing audit ID and PostgreSQL
+audit-write retry semantics. This failure means WEFT could not confirm and complete the operation,
+not that the raw mutation was proven unsuccessful. No managed-state write is derived from unknown
+Discord state. The pre-mutation `CLOSED/appliedPrefix` row is management metadata, not proof of
+current Discord archive state; later close attempts retain the stored-prefix selection rule. The
+process-local guard releases only after the exact terminal audit is durably confirmed, and later
+mutation paths still perform fresh Discord reads and permission checks. Normal discord.js
+rate-limit queue waits are not failures or unknown outcomes solely because they exceed the caller
+wait budget.
 
 After both vertical slices, review whether the current physical structure still reflects the actual feature and infrastructure boundaries.
 

@@ -71,24 +71,27 @@ describe("scheduled thread close executor", () => {
     expect(fixture.executionAudits).toHaveLength(1);
   });
 
-  it("fails a permanent failure with its concrete failure code", async () => {
-    const fixture = createFixture({
-      lifecycleResult: { outcome: "PERMANENT_FAILURE", code: "BOT_PERMISSION_MISSING" },
-    });
+  it.each(["BOT_PERMISSION_MISSING", "DISCORD_RECONCILIATION_UNCONFIRMED"] as const)(
+    "fails a permanent failure with concrete code %s",
+    async (code) => {
+      const fixture = createFixture({
+        lifecycleResult: { outcome: "PERMANENT_FAILURE", code },
+      });
 
-    await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toMatchObject({
-      outcome: "PERMANENT_FAILURE",
-      code: "BOT_PERMISSION_MISSING",
-      action: { status: "FAILED" },
-    });
+      await expect(fixture.executor.execute(fixture.action, auditIds)).resolves.toMatchObject({
+        outcome: "PERMANENT_FAILURE",
+        code,
+        action: { status: "FAILED" },
+      });
 
-    expect(fixture.schedules.failExecution).toHaveBeenCalledExactlyOnceWith({
-      scheduledActionId: fixture.action.id,
-      auditId: "execution-audit-id",
-      failureCode: "BOT_PERMISSION_MISSING",
-    });
-    expect(fixture.executionAudits).toHaveLength(1);
-  });
+      expect(fixture.schedules.failExecution).toHaveBeenCalledExactlyOnceWith({
+        scheduledActionId: fixture.action.id,
+        auditId: "execution-audit-id",
+        failureCode: code,
+      });
+      expect(fixture.executionAudits).toHaveLength(1);
+    },
+  );
 
   it("releases an unexpected lifecycle failure as an audited retry", async () => {
     const fixture = createFixture();

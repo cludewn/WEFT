@@ -148,6 +148,7 @@ describe("automatic close execution", () => {
   it.each([
     ["RETRYABLE_FAILURE", "DISCORD_FETCH_FAILED", "RETRYABLE_FAILURE"],
     ["PERMANENT_FAILURE", "THREAD_LOCKED", "ATTEMPT_FAILURE"],
+    ["PERMANENT_FAILURE", "DISCORD_RECONCILIATION_UNCONFIRMED", "ATTEMPT_FAILURE"],
   ] as const)("does not retire a lifecycle %s", async (lifecycleOutcome, code, expectedOutcome) => {
     const fixture = createFixture();
     vi.mocked(fixture.threadLifecycle.autoCloseAsSystem).mockResolvedValueOnce({

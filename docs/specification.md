@@ -331,10 +331,26 @@ because it exceeds the caller wait budget. In this case, WEFT must:
 - reconcile current Discord state after a rejected raw mutation,
 - keep background reconciliation boundaries single-flight and wait for each raw operation to
   settle before retrying it,
-- retry transient reconciliation failures with backoff while retaining the per-thread guard,
-- record the final success or failure audit only after the outcome and managed state are confirmed.
+- retry transient or unclassified reconciliation read failures with backoff while retaining the
+  per-thread guard,
+- distinguish a structured Unknown Channel during the channel read or Unknown Guild during the
+  guild read from access and authentication failures,
+- stop retrying a permanently rejected reconciliation read without replaying the raw mutation or
+  inferring its outcome,
+- record confirmed final success or failure only from sufficient Discord evidence, after any
+  required managed-state write is confirmed.
 
-Returning a pending result must not create a failure or outcome-unknown audit.
+If a reconciliation read is permanently rejected without confirming Discord state, finalization
+instead records one terminal `FAILURE / DISCORD_RECONCILIATION_UNCONFIRMED` audit with its existing
+audit ID. This means WEFT could not confirm and complete the lifecycle operation; it does not prove
+the preceding raw Discord mutation was not applied. Unknown Discord state must not produce a
+guessed managed-state update. The process-local mutation guard releases only after that exact
+terminal audit is durably confirmed. Later same-thread mutations still require fresh Discord
+observation and current permission checks. A pre-mutation `CLOSED/appliedPrefix` row preserves the
+selected management prefix and is not proof that Discord is currently archived. Later close
+attempts may still prefer that stored prefix under the existing selection rule.
+
+Returning a pending result must not itself create a failure or outcome-unknown audit.
 
 ### Discord REST retry and rate-limit ownership
 
