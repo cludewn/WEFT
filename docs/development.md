@@ -1301,7 +1301,7 @@ confirmation still requires the new stable terminal audit and exact occurrence/n
 Current scheduling rows are authoritative scheduling state; historical audits are audit history.
 Using valid current state for overdue recovery or an already-cancelled no-op does not relax exact
 evidence for a newly attempted mutation or guarantee reconstruction of missing/corrupt state.
-Audit-retention cleanup is not implemented by these compatibility changes.
+Issue #72 compatibility changes keep valid current scheduling state independent of historical audits.
 
 An active series with no nonterminal occurrence derives a safe candidate from its current definition
 effective boundary
@@ -1338,7 +1338,7 @@ is complete; Phase 9 remains separate.
 - Review Discord permissions.
 - Implement and validate the optional audit-log destination guild setting.
 - Finalize operational health checks.
-- Implement audit retention.
+- Maintain fixed global audit retention.
 - Document backup and restore procedures.
 - Document migration operations.
 - Review Discord rate-limit behavior.
@@ -1367,3 +1367,11 @@ queue, retry, replay, backfill, or ordering guarantee. PostgreSQL remains author
 notification is lost.
 
 Deferred ideas must not be implemented during these phases without an approved specification change.
+
+### Phase 9B-3: Audit retention
+
+A process-local retention runtime uses the existing application PostgreSQL client. It schedules an initial sweep after startup without waiting for the backlog before READY, then schedules each later sweep 24 hours after the previous one settles. Single-flight ownership prevents overlapping sweeps. Shutdown marks the runtime as stopping, cancels its timer, and drains its current bounded statement through the existing application quiesce phase before the database closes.
+
+Each sweep captures one instant and subtracts exactly 90 * 24 hours. A dedicated persistence boundary deletes only rows with audit timestamps strictly before that cutoff from the six explicit audit tables. Each atomic PostgreSQL statement selects at most 500 IDs ordered by timestamp and ID, deletes those rows, and returns IDs only for counting. The five new timestamp-and-ID indexes support this global query shape; the existing audit-log-destination retention index remains. A source failure is logged with bounded metadata and does not stop other sources or affect readiness.
+
+Audit deletion leaves authoritative schedule, managed-resource, and configuration state untouched. It does not publish audit references or Discord notifications. An already eligible audit may disappear before best-effort notification projection; the existing missing-projection behavior applies. The period is fixed globally for this MVP, cleanup is periodic rather than exact TTL, and per-guild configurability remains unresolved.

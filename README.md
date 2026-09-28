@@ -116,6 +116,12 @@ There is no startup replay or historical backfill; a crash may lose a notificati
 PostgreSQL audit remains committed. Graceful shutdown drains accepted notification work within the
 existing process-wide deadline before Discord and PostgreSQL close.
 
+## Audit retention
+
+WEFT retains audit history for a fixed global period of 90 * 24 hours. Cleanup covers the six existing thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, and audit-log-destination audit tables. An initial sweep is scheduled shortly after runtime startup without blocking readiness; later sweeps start 24 hours after the previous sweep settles. Deletion uses bounded batches, so expiration is periodic rather than an exact TTL.
+
+Cleanup removes audit rows only. Active schedules, managed-resource state, configuration, and recovery state remain intact. Audit deletion creates no audit notification. A cleanup failure does not invalidate application operations; the next sweep retries remaining work. Shutdown drains in-flight cleanup before PostgreSQL closes under the existing process-wide deadline. Per-guild retention configuration is not implemented and remains unresolved.
+
 ## Migrations
 
 WEFT-owned Drizzle migrations are not applied automatically when the application starts. Run the required command explicitly with database environment variables available to the process:

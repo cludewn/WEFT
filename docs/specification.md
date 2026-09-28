@@ -935,11 +935,11 @@ Audit coverage includes:
 - authorization-related configuration changes,
 - failed administrative operations.
 
-The initial default audit retention period is 90 days.
+The initial audit retention period is fixed globally at 90 * 24 hours. A process-local cleanup sweep is scheduled shortly after startup without delaying readiness, then 24 hours after each completed sweep. Every sweep uses one cutoff and deletes rows whose audit timestamp is strictly older than that cutoff, in bounded batches. The six covered sources are thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, and audit-log-destination audits. Cleanup is periodic, not an exact expiration deadline.
 
-Retention cleanup must not delete state required to recover active schedules.
+Retention deletes only audit history. It does not delete or change active schedules, managed resources, configuration, or recovery state, and it creates no audit notifications. A source cleanup failure does not invalidate application operations; outstanding work waits for a later sweep. Shutdown drains an in-flight batch before PostgreSQL closes, subject to the existing process-wide shutdown deadline.
 
-Whether retention is configurable per guild remains unresolved.
+Whether retention is configurable per guild remains unresolved; per-guild retention is not implemented.
 
 ### Message safety
 
