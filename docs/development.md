@@ -467,6 +467,52 @@ Do not mock PostgreSQL when the test is specifically intended to verify PostgreS
 
 The exact test-database mechanism must be selected during project-foundation implementation.
 
+## Production migration operations
+
+Migration generation (`corepack pnpm db:generate`) is a development operation. The
+`corepack pnpm db:migrate` command uses Drizzle Kit from a source checkout with development
+dependencies. A production release instead contains the compiled one-shot `dist/migrate.js` entry
+point and its committed `drizzle/` SQL and journal. It needs only `DATABASE_HOST`, `DATABASE_PORT`,
+`DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD`, and optionally `DATABASE_SSL` (default
+`false`). It does not load `.env` or require Discord, health, or logging settings.
+
+For an initial deployment:
+
+1. Prepare the production environment and obtain or build the WEFT release image.
+2. Make PostgreSQL available. With Compose, start the database using `docker compose up -d postgres`.
+3. Run exactly one WEFT migration process against the database:
+
+   ```sh
+   docker compose run --rm app node dist/migrate.js
+   ```
+
+4. Confirm the command exits successfully before starting WEFT with `docker compose up -d app`.
+5. Check `/health/ready`. Deploy Discord commands separately where required.
+
+For an upgrade:
+
+1. Obtain or build the new WEFT release and review its migration requirements.
+2. Stop the currently running WEFT application. Keep PostgreSQL available.
+3. Run the new release's explicit production migration command shown above.
+4. Confirm migration success. If migration fails, do not start the new application.
+5. Start the new WEFT application and check `/health/ready`.
+6. Deploy Discord commands separately where required.
+
+The migration command never starts the Discord application or pg-boss.
+
+Run at most one WEFT production migration process against a database at a time. Do not start
+concurrent migration runners for the same database. The installed Drizzle migrator has no
+concurrency lock for this operation.
+
+Committed and applied WEFT migration history is append-only. Never rewrite applied migration SQL,
+journal entry ordering, or journal timestamps (`when`). Append a new migration for each schema
+change. The installed migrator records SQL hashes but does not validate applied hashes against
+later file changes; editing history can therefore escape detection. The release's `drizzle/`
+folder must stay coupled to its application image.
+
+Normal `docker compose up` runs `node dist/index.js` and does not apply WEFT migrations. pg-boss
+creates or updates only its own internal `pgboss` schema during normal pg-boss startup.
+
 ## Standard verification
 
 The project must provide these commands:
