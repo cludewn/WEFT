@@ -124,13 +124,12 @@ Cleanup removes audit rows only. Active schedules, managed-resource state, confi
 
 ## Migrations
 
-WEFT-owned Drizzle migrations are not applied automatically when the application starts. Run the required command explicitly with database environment variables available to the process:
-
-```sh
-corepack pnpm db:generate
-corepack pnpm db:check
-corepack pnpm db:migrate
-```
+`corepack pnpm db:generate` creates migration files during development. `corepack pnpm db:check`
+validates them, and `corepack pnpm db:migrate` applies them from a source checkout with development
+dependencies. Production releases include the committed migration history and use the explicit
+`docker compose run --rm app node dist/migrate.js` operation before starting or upgrading WEFT.
+Normal application startup does not apply WEFT migrations. See the
+[production migration procedure](docs/development.md#production-migration-operations).
 
 pg-boss owns a separate `pgboss` schema in the same PostgreSQL database. Its internal schema is
 created and migrated automatically when pg-boss starts; it is not managed by Drizzle. The
