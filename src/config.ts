@@ -71,7 +71,7 @@ export class ConfigurationError extends Error {
 }
 
 export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppConfig {
-  const database = parseDatabaseConfig(environment, productionDatabaseVariables, true);
+  const database = loadDatabaseConfig(environment);
   const discord = loadDiscordConfig(environment);
   const logLevelResult = logLevelSchema.safeParse(environment.LOG_LEVEL);
   const healthPortResult = portSchema.safeParse(environment.HEALTH_PORT ?? "3000");
@@ -89,6 +89,10 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): AppCon
     healthPort: healthPortResult.data,
     logLevel: logLevelResult.data,
   };
+}
+
+export function loadDatabaseConfig(environment: NodeJS.ProcessEnv = process.env): DatabaseConfig {
+  return parseDatabaseConfig(environment, productionDatabaseVariables, true);
 }
 
 export function loadDiscordConfig(environment: NodeJS.ProcessEnv = process.env): DiscordConfig {

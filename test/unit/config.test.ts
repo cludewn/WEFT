@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { ConfigurationError, loadConfig, loadTestDatabaseConfig } from "../../src/config.js";
+import {
+  ConfigurationError,
+  loadConfig,
+  loadDatabaseConfig,
+  loadTestDatabaseConfig,
+} from "../../src/config.js";
 
 const validEnvironment = {
   DATABASE_HOST: "127.0.0.1",
@@ -102,6 +107,46 @@ describe("loadConfig", () => {
         DISCORD_TOKEN: undefined,
       }),
     ).toThrowError(new ConfigurationError(["DISCORD_APPLICATION_ID", "DISCORD_TOKEN"]));
+  });
+});
+
+describe("loadDatabaseConfig", () => {
+  it("loads production database settings without application settings", () => {
+    const databaseOnly = Object.fromEntries(
+      Object.entries(validEnvironment).filter(([name]) => name.startsWith("DATABASE_")),
+    );
+    expect(loadDatabaseConfig(databaseOnly)).toEqual(loadConfig(validEnvironment).database);
+  });
+
+  it("rejects missing or invalid database settings using variable names only", () => {
+    const secret = "secret-value-must-not-appear";
+    const invalid = {
+      ...validEnvironment,
+      DATABASE_HOST: undefined,
+      DATABASE_PORT: "invalid",
+      DATABASE_PASSWORD: secret,
+    };
+    expect(() => loadDatabaseConfig(invalid)).toThrowError(
+      new ConfigurationError(["DATABASE_HOST", "DATABASE_PORT"]),
+    );
+    try {
+      loadDatabaseConfig(invalid);
+    } catch (error) {
+      expect(String(error)).not.toContain(secret);
+    }
+  });
+
+  it("does not validate Discord, health, or logging settings", () => {
+    expect(
+      loadDatabaseConfig({
+        ...validEnvironment,
+        DISCORD_TOKEN: undefined,
+        DISCORD_APPLICATION_ID: undefined,
+        DISCORD_GUILD_ID: undefined,
+        HEALTH_PORT: "invalid",
+        LOG_LEVEL: "invalid",
+      }),
+    ).toEqual(loadConfig(validEnvironment).database);
   });
 });
 
