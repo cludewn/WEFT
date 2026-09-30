@@ -513,6 +513,243 @@ folder must stay coupled to its application image.
 Normal `docker compose up` runs `node dist/index.js` and does not apply WEFT migrations. pg-boss
 creates or updates only its own internal `pgboss` schema during normal pg-boss startup.
 
+## Production backup and restore operations
+
+This procedure runs from the source checkout root against the intended Compose project. It supports
+PostgreSQL 18 and one format: a complete, single-database `pg_dump --format=custom` logical archive.
+The provided `postgres:18-bookworm` container supplies the client utilities; no host PostgreSQL
+client is required. A live copy of the `postgres-data` volume and a plain SQL dump are not supported
+backup procedures. PostgreSQL major-version upgrades and downgrades are outside this procedure.
+
+For a running deployment, gracefully stop WEFT before backup or restore while PostgreSQL remains
+running. Use the 45-second Compose stop grace period to cover WEFT's shared 30-second shutdown
+deadline:
+
+```sh
+stop_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+docker compose stop -t 45 app
+docker compose ps -a app
+docker compose ps postgres
+docker compose logs --since "$stop_started_at" --no-color app | grep 'shutdown_completed'
+```
+
+Confirm that the app process exited with status 0, that `shutdown_completed` belongs to this stop,
+and that PostgreSQL is still running. A successful `docker compose stop` alone does not prove
+graceful completion. If the app was already stopped, confirm its last relevant exit and shutdown
+log instead; if either cannot be established, investigate before proceeding. Keep the app stopped
+through backup creation and inspection, or through restore and its checks. A restore target where
+WEFT has never started follows the separate preflight below.
+
+### Backup and archive inspection
+
+After the stop check, create the backup from the source deployment:
+
+```sh
+(
+  set -e
+  umask 077
+  backup_dir="$HOME/weft-backups"
+  mkdir -p -- "$backup_dir"
+  chmod 700 -- "$backup_dir"
+  partial_file=$(mktemp "$backup_dir/weft-$(date -u +%Y%m%dT%H%M%SZ)-pg18.XXXXXX.partial")
+  archive_file="${partial_file%.partial}.dump"
+  docker compose exec -T postgres sh -c 'exec pg_dump --no-password -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' > "$partial_file"
+  docker compose exec -T postgres pg_restore --list < "$partial_file" > /dev/null
+  mv -- "$partial_file" "$archive_file"
+  printf '%s\n' "$archive_file"
+)
+```
+
+`-T` disables TTY allocation so binary archive bytes are not altered. `pg_dump` stdout goes to the
+host archive; its stderr stays separate. The private `.partial` file is promoted only after dump
+and archive listing succeed. `umask 077` and the private directory restrict access. `--no-password`
+fails instead of opening an interactive password prompt when authentication is unavailable. A
+failed backup does not change the database. Never treat a leftover `.partial` file as a valid
+backup; diagnose the failure, then retry with WEFT stopped or restart the same WEFT release.
+
+For a saved archive, set `backup_file` to its absolute path and inspect its table of contents:
+
+```sh
+backup_file='/absolute/private/path/to/weft-backup.dump'
+test -s "$backup_file"
+docker compose exec -T postgres pg_restore --list < "$backup_file"
+```
+
+Check for `public` and `drizzle` entries, and `pgboss` entries if that schema existed at backup
+time. Listing the table of contents is a lightweight archive check, not proof that every archive
+item can be restored. An actual restore drill is required to test restoreability. Archive listing
+also does not establish that an untrusted archive is safe.
+
+Record the backup's UTC timestamp, source configured database name, PostgreSQL major version,
+source WEFT release/image ID or Git revision, and intended restore target release in the operator's
+existing records. Keep this context with the archive without inventing a new manifest format.
+
+After the archive is promoted and its context recorded, restart the **same WEFT release** with
+`docker compose up -d app`. Run the container-local `/health/ready` command under
+[Verify the database, migrate, then start WEFT](#verify-the-database-migrate-then-start-weft)
+and require HTTP 200 (command exit status 0). Backup does not change database state, so it does
+not require a WEFT migration.
+
+### Restore preflight and clean restore
+
+Restore only an archive from a trusted source. Identify the correct Compose project, configured
+target database and role, source WEFT release, and target WEFT release. A backup from a newer WEFT
+release must not be restored for an older application release; downgrades are unsupported. Review
+external Discord effects since the backup before choosing to restore (see below).
+
+From the target checkout, before any destructive command:
+
+```sh
+backup_file='/absolute/private/path/to/weft-backup.dump'
+test -s "$backup_file"
+docker compose exec -T postgres pg_restore --list < "$backup_file"
+docker compose ps -a app
+docker compose ps postgres
+docker compose exec -T postgres sh -c 'printf "target database: %s; role: %s\n" "$POSTGRES_DB" "$POSTGRES_USER"'
+```
+
+Check every command's result. Confirm the trusted, nonempty archive lists successfully; its source
+and target release context is known; the Compose project, database, and role are correct; and
+PostgreSQL remains running. Then establish **one** of these app states before destructive restore:
+
+- **Previously running or started on this target:** If running, execute the stop block above,
+  including `docker compose stop -t 45 app`. Confirm the app is no longer running, exited with
+  status 0, and logged `shutdown_completed` for **that** stop while PostgreSQL stayed running. If
+  already stopped, confirm its actual last stop and matching completion log. An arbitrary older
+  `shutdown_completed` does not confirm this operation.
+- **Never started on this target:** Confirm that no WEFT app container or process is running against
+  this database. `docker compose ps -a app` may show no container at all. No prior exit status or
+  `shutdown_completed` log is expected. Do not start WEFT merely to create a shutdown log before
+  restore.
+
+An unexpected crash, forced termination, or unknown shutdown history is not the never-started
+case. Investigate its state before restoring; absence of a running process alone is insufficient.
+Do not proceed if any archive, target identity, PostgreSQL, or applicable app-state check is
+uncertain.
+
+The following block destroys and recreates the configured target database. Run it only after the
+preflight succeeds. Stop at the first failure; do not start WEFT with a missing or partial database.
+
+```sh
+(
+  set -e
+  docker compose exec -T postgres sh -c 'exec dropdb --no-password -U "$POSTGRES_USER" --maintenance-db=postgres "$POSTGRES_DB"'
+  docker compose exec -T postgres sh -c 'exec createdb --no-password -U "$POSTGRES_USER" --maintenance-db=postgres --template=template0 --owner="$POSTGRES_USER" "$POSTGRES_DB"'
+  docker compose exec -T postgres sh -c 'exec pg_restore --no-password -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --no-privileges --single-transaction' < "$backup_file"
+)
+```
+
+This clean recreation restores into the configured `POSTGRES_DB` / `DATABASE_NAME`, rather than
+the source database name embedded in the archive. Do not merge archive objects into an existing
+database or use `pg_restore --clean --create`: with `--create`, `-d` names the management database,
+while the archive determines the actual restored database name. `dropdb` does not force-disconnect
+other sessions. If connections remain, let it fail and investigate; do not add `--force`.
+
+`--no-owner` skips restoration of source role ownership, so the restore user owns the objects it
+creates. `--no-privileges` skips source `GRANT` and `REVOKE` entries. This fits the provided
+single-user Compose deployment, where the configured PostgreSQL user can use the restored objects.
+A single-database archive does not contain cluster-global role definitions. Backup requires read
+access to the source database and objects. Clean restore requires target database ownership or
+equivalent administrative ability to drop it, `CREATEDB`-equivalent ability, and permission to
+create the restored schemas and objects. Normal pg-boss startup still needs `CREATE` capability on
+the configured database. An external PostgreSQL deployment needs equivalent database-level
+administrative capability and ownership preparation; restricted users may not be able to run these
+commands.
+
+`--single-transaction` makes the restore atomic within the newly created database and, in
+PostgreSQL 18, implies `--exit-on-error`. A restore error makes the command exit nonzero. Do not
+continue to migration or application startup after any failed command; investigate the cause.
+The transaction does not undo the preceding database drop and creation. For a large database, the
+long-running transaction can impose lock and resource costs.
+
+### Verify the database, migrate, then start WEFT
+
+After successful restore, run this database-level check before migration:
+
+```sh
+docker compose exec -T postgres sh -c 'exec psql -X -v ON_ERROR_STOP=1 --no-password -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+select current_database(), current_user;
+select count(*) as guild_settings_rows from public.guild_settings;
+select count(*) as drizzle_migration_rows from drizzle.__drizzle_migrations;
+select to_regclass('pgboss.version') as pgboss_version_table;
+SQL
+```
+
+`ON_ERROR_STOP=1` makes any failed SQL statement fail the command. Check the database and role,
+representative WEFT rows against values recorded before backup when available, and the Drizzle
+history without assuming a fixed migration count. If `pgboss` existed at backup time, expect
+`pgboss.version` and, when useful, inspect it with
+`select count(*) from pgboss.version;`. The complete database archive includes its existing
+schema and state. Do not clear or recreate pg-boss state or manage it with Drizzle.
+
+Before app startup, run the target release's explicit WEFT migrations, even when restoring to the
+same release:
+
+```sh
+docker compose run --rm app node dist/migrate.js
+```
+
+For the same release this should be a successful no-op. A newer target release applies its
+committed pending migrations to the restored database. Confirm migration success and rerun the
+database-level check above to inspect the resulting target schema. Run only one migration process.
+The migration command does not connect to Discord or start pg-boss. Normal pg-boss startup later
+owns its own internal migration and compatibility behavior.
+
+Only after restore, database verification, and target-release migration all succeed:
+
+```sh
+docker compose up -d app
+docker compose exec -T app node -e "fetch('http://127.0.0.1:' + process.env.HEALTH_PORT + '/health/ready').then(r => process.exit(r.status === 200 ? 0 : 1)).catch(() => process.exit(1))"
+```
+
+Then review normal startup recovery, reconciliation, and failure logs. Readiness confirms current
+application conditions, not Discord-state consistency.
+
+### Discord-state boundary and artifact handling
+
+Restore moves PostgreSQL state back to the backup time; it does not roll back Discord or create an
+atomic PostgreSQL-plus-Discord snapshot. A message may already have been sent, a thread closed,
+opened, or renamed, a message deleted, permissions changed, or a channel deleted after the backup.
+In particular, a one-time or recurring scheduled message sent after the backup can become a
+delivery candidate again when an older database state is restored. Before restore, identify those
+external effects and evaluate replay and duplicate-effect risk. Fresh Discord reads, permission
+revalidation, reconciliation, idempotency checks, stable nonces, and conservative handling of
+ambiguous outcomes reduce risk, but do not guarantee exactly-once recovery or prevent every
+duplicate external effect. Restore does not undo external effects.
+
+Treat the archive as production data. It can contain guild configuration, Discord identifiers,
+managed-message metadata, scheduled and recurring message content, audit history, retry and
+delivery state, and pg-boss internal state. Store it in a private directory with access control
+equivalent to production data. Do not commit it to the repository or write it to application logs.
+
+### Disposable restore drill
+
+An archive table-of-contents check is insufficient. Periodically perform an actual clean restore
+in an isolated, disposable PostgreSQL 18 Compose project with its own database volume, private
+archive location, and credentials created solely for the drill. Use only disposable data and never
+point the drill at the normal development or production database. Do not start the Discord app.
+
+1. Create a uniquely named Compose project and a private, drill-only environment file for the
+   existing Compose settings. Confirm its project name, database, and role before any drop. Start
+   only PostgreSQL with `docker compose up -d postgres` in that project.
+2. Apply the explicit migration command shown above. Seed recognizable WEFT-owned data and, when
+   testing pg-boss recovery, initialize
+   pg-boss using its own library without starting Discord. Record representative row counts.
+3. With the app stopped, run the backup block above using that project's Compose invocation. List
+   the resulting archive and note whether its table of contents contains `pgboss`.
+4. Run the clean drop/create/restore block above against that same disposable project and archive.
+   Compare WEFT-owned data, Drizzle history, pg-boss state when present, and object ownership and
+   usability by the configured role. Run the same-release migration command again and confirm it
+   succeeds without applying new migrations. Start and stop pg-boss through its library to check
+   that its restored internal state remains usable; do not start Discord.
+5. Exercise a restore failure with an invalid archive and confirm a nonzero exit without starting
+   the app. Remove the unique drill project and its volume, private archive, and temporary
+   credentials after recording the results.
+
+Use the same backup and restore commands as production, substituting only the isolated Compose
+project invocation and private backup path. An actual restore drill establishes more than archive
+inspection, but still cannot prove future application readiness or Discord-state consistency.
+
 ## Standard verification
 
 The project must provide these commands:
