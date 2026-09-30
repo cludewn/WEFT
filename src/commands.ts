@@ -1,4 +1,4 @@
-import { MessageFlags, SlashCommandBuilder } from "discord.js";
+import { InteractionContextType, MessageFlags, SlashCommandBuilder } from "discord.js";
 
 import type { ChatInputCommandInteraction } from "discord.js";
 import type { Logger } from "pino";
@@ -16,7 +16,10 @@ import { handleThreadCommand, threadCommandDefinition } from "./thread-command.j
 import type { ThreadLifecycleService } from "./thread-lifecycle.js";
 
 export const commandDefinitions = [
-  new SlashCommandBuilder().setName("ping").setDescription("Check whether WEFT is responding"),
+  new SlashCommandBuilder()
+    .setName("ping")
+    .setDescription("Check whether WEFT is responding")
+    .setContexts(InteractionContextType.Guild),
   configCommandDefinition,
   threadCommandDefinition,
   messageCommandDefinition,

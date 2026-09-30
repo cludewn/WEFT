@@ -118,6 +118,27 @@ Introduce an interface or adapter only when it provides meaningful isolation, te
 
 Do not create wrapper interfaces that merely duplicate discord.js without adding a real boundary.
 
+WEFT supports Guild Install only because its management operations require a guild bot member.
+The installation permission set is an upper bound, not authorization for every channel. Discord
+channel and thread overwrites determine the bot's effective permissions; WEFT checks those at the
+Discord boundary. Human command defaults may be overridden by server administrators, so runtime
+authorization still checks `ManageGuild` for `/config`, `ManageThreads` for `/thread`, and
+`ManageMessages` for `/message` slash and modal actions. `/ping` remains unrestricted within a guild.
+
+Thread lifecycle checks force-fetch the actor and bot members. discord.js 14.27.0 calculates a
+thread's effective permissions through its cached parent channel, so checks refresh the parent
+channel before using `thread.permissionsFor`. Thread message-send preflight does the same and
+requires `SendMessagesInThreads`; ordinary text and announcement sends require `SendMessages`.
+Individual managed-message GETs require `ViewChannel` and `ReadMessageHistory`; an unreadable
+read-back after an ambiguous edit cannot confirm either success or failure. These checks are
+point-in-time: Discord may reject the subsequent read or mutation if permissions change again.
+
+The runtime uses only the `Guilds` and `GuildMessages` Gateway intents. Automatic-close activity
+tracking uses message metadata, not message content. Single member REST fetches require no
+`GuildMembers` Gateway intent; presence and message-content intents are also unnecessary. Command
+registration is a separate guild or global deployment operation, not part of normal runtime
+startup. See the README for the operator installation procedure and command-deployment commands.
+
 The runtime Client and standalone command-deployment REST instance explicitly configure
 `retries: 0`. In the resolved discord.js REST transport this disables automatic retries
 for 5xx responses, `AbortError` (including REST request timeout), and `ECONNRESET`.

@@ -9,6 +9,8 @@ import {
 
 import type { Client, Guild, ThreadChannel } from "discord.js";
 
+import { refreshThreadParent } from "./discord-thread-parent.js";
+
 import type { AutoCloseDiscord } from "./automatic-close-configuration.js";
 import type { AutomaticCloseThreadMaintenanceDiscord } from "./automatic-close-thread-maintenance.js";
 import type {
@@ -147,6 +149,7 @@ export function createAutomaticCloseThreadMaintenanceDiscord(
       }
 
       const member = await channel.guild.members.fetch({ user: actorId, force: true });
+      if (!(await refreshThreadParent(channel))) throw new Error("Thread parent unavailable");
       return {
         parentChannelId: channel.parentId,
         actorCanManage: channel.permissionsFor(member).has(PermissionFlagsBits.ManageThreads),
@@ -236,7 +239,8 @@ export function createThreadLifecycleDiscord(client: Client): ThreadLifecycleDis
     thread: ThreadChannel,
     memberId: string,
   ): Promise<boolean> {
-    const member = await thread.guild.members.fetch(memberId);
+    const member = await thread.guild.members.fetch({ user: memberId, force: true });
+    if (!(await refreshThreadParent(thread))) return false;
     const permissions = thread.permissionsFor(member);
     return permissions.has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageThreads]);
   }

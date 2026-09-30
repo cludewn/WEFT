@@ -13,6 +13,53 @@ import {
 } from "../../src/thread-discord.js";
 
 describe("Discord thread support", () => {
+  it.each([true, false])(
+    "force-fetches members and parent before lifecycle checks when refreshed permission is %s",
+    async (allowedAfterRefresh) => {
+      const parent = { id: "parent-id" };
+      const fetchMember = vi.fn(({ user }: { user: string }) => Promise.resolve({ id: user }));
+      let parentPermission = true;
+      const fetchParent = vi.fn((id: string, options: unknown) => {
+        expect(id).toBe("parent-id");
+        expect(options).toEqual({ force: true });
+        parentPermission = allowedAfterRefresh;
+        return Promise.resolve(parent);
+      });
+      const permissionsFor = vi.fn(() => ({ has: () => parentPermission }));
+      const guild = {
+        channels: { fetch: vi.fn() },
+        members: { fetch: fetchMember },
+      };
+      const thread = {
+        id: "thread-id",
+        guildId: "guild-id",
+        type: ChannelType.PublicThread,
+        parentId: "parent-id",
+        parent,
+        guild,
+        isThread: () => true,
+        permissionsFor,
+      };
+      guild.channels.fetch.mockImplementation((id: string, options: unknown) =>
+        id === "thread-id" ? Promise.resolve(thread) : fetchParent(id, options),
+      );
+      const discord = createThreadLifecycleDiscord({
+        guilds: { fetch: vi.fn(() => Promise.resolve(guild)) },
+        user: { id: "bot-id" },
+      } as unknown as Client);
+
+      await expect(discord.actorCanManage("guild-id", "thread-id", "actor-id")).resolves.toBe(
+        allowedAfterRefresh,
+      );
+      await expect(discord.botCanManage("guild-id", "thread-id")).resolves.toBe(
+        allowedAfterRefresh,
+      );
+      expect(fetchMember).toHaveBeenCalledWith({ user: "actor-id", force: true });
+      expect(fetchMember).toHaveBeenCalledWith({ user: "bot-id", force: true });
+      expect(fetchParent).toHaveBeenCalledTimes(2);
+      expect(permissionsFor).toHaveBeenCalledTimes(2);
+    },
+  );
   it("supports public, private, announcement, and forum-post thread types", () => {
     expect(isSupportedThreadType(ChannelType.PublicThread)).toBe(true);
     expect(isSupportedThreadType(ChannelType.PrivateThread)).toBe(true);
@@ -224,6 +271,30 @@ describe("automatic close thread maintenance inspection", () => {
     );
   });
 
+  it("rejects maintenance when a refreshed parent overwrite removes ManageThreads", async () => {
+    const fixture = createMaintenanceClient({ parentCanManageAfterFetch: false });
+    await expect(
+      createAutomaticCloseThreadMaintenanceDiscord(fixture.client).inspectThread(
+        "guild-id",
+        "thread-id",
+        "actor-id",
+      ),
+    ).resolves.toEqual({ parentChannelId: "parent-id", actorCanManage: false });
+    expect(fixture.fetchParent).toHaveBeenCalledExactlyOnceWith("parent-id", { force: true });
+  });
+
+  it("does not authorize maintenance from stale permissions after parent refresh fails", async () => {
+    const fixture = createMaintenanceClient({ parentFetchFailure: new Error("offline") });
+    await expect(
+      createAutomaticCloseThreadMaintenanceDiscord(fixture.client).inspectThread(
+        "guild-id",
+        "thread-id",
+        "actor-id",
+      ),
+    ).rejects.toThrow("offline");
+    expect(fixture.permissionsFor).not.toHaveBeenCalled();
+  });
+
   it.each([
     [true, false],
     [false, true],
@@ -325,23 +396,40 @@ function createMaintenanceClient(
     parentId?: string | null;
     isThread?: () => boolean;
     canManage?: boolean;
+    parentCanManageAfterFetch?: boolean;
+    parentFetchFailure?: Error;
     archived?: boolean;
     locked?: boolean;
     clientUser?: { id: string } | null;
   } = {},
 ) {
+  let parentRef = { id: "parent-id" };
+  let parentRefreshed = false;
+  const fetchParent = vi.fn(() => {
+    if (overrides.parentFetchFailure) return Promise.reject(overrides.parentFetchFailure);
+    parentRef = { id: "parent-id" };
+    parentRefreshed = true;
+    return Promise.resolve(parentRef);
+  });
   const fetchMember = vi.fn(() => Promise.resolve({ id: "actor-id" }));
-  const permissionHas = vi.fn(() => overrides.canManage ?? true);
+  const permissionHas = vi.fn(() =>
+    parentRefreshed && overrides.parentCanManageAfterFetch !== undefined
+      ? overrides.parentCanManageAfterFetch
+      : (overrides.canManage ?? true),
+  );
   const permissionsFor = vi.fn(() => ({ has: permissionHas }));
   const channel = {
     id: "thread-id",
     type: overrides.type ?? ChannelType.PublicThread,
     guildId: overrides.guildId ?? "guild-id",
     parentId: overrides.parentId === undefined ? "parent-id" : overrides.parentId,
+    get parent() {
+      return parentRef;
+    },
     archived: overrides.archived ?? false,
     locked: overrides.locked ?? false,
     isThread: overrides.isThread ?? (() => true),
-    guild: { members: { fetch: fetchMember } },
+    guild: { members: { fetch: fetchMember }, channels: { fetch: fetchParent } },
     permissionsFor,
   };
   const fetchChannel = vi.fn(() => Promise.resolve(channel));
@@ -349,7 +437,7 @@ function createMaintenanceClient(
     channels: { fetch: fetchChannel },
     user: overrides.clientUser ?? null,
   } as unknown as Client;
-  return { client, fetchChannel, fetchMember, permissionsFor, permissionHas };
+  return { client, fetchChannel, fetchParent, fetchMember, permissionsFor, permissionHas };
 }
 
 function createExecutionClientWithResult(channel: null) {

@@ -175,6 +175,18 @@ describe("managed-message edit Discord boundary", () => {
     });
   });
 
+  it("does not fetch or edit without ReadMessageHistory", async () => {
+    const fixture = createFixture({ botCanReadHistory: false });
+    await expect(
+      createManagedMessageDiscord(fixture.client).editManagedMessage(input),
+    ).resolves.toEqual({
+      outcome: "FAILURE",
+      code: "BOT_PERMISSION_MISSING",
+    });
+    expect(fixture.fetchMessage).not.toHaveBeenCalled();
+    expect(fixture.edit).not.toHaveBeenCalled();
+  });
+
   it("blocks Discord/managed content mismatch without PATCH", async () => {
     const fixture = createFixture({ oldContent: "manual Discord change" });
     await expect(
@@ -199,6 +211,10 @@ describe("managed-message edit Discord boundary", () => {
       embeds: [],
       allowedMentions: { parse: [] },
     });
+    expect(fixture.permissionChecks).toContainEqual([
+      PermissionFlagsBits.ViewChannel,
+      PermissionFlagsBits.ReadMessageHistory,
+    ]);
   });
 
   it("adds, removes, and clears content with a complete explicit payload PATCH", async () => {
@@ -374,6 +390,34 @@ describe("managed-message edit Discord boundary", () => {
     expect(unreadable.edit).toHaveBeenCalledOnce();
   });
 
+  it("keeps an ambiguous edit unconfirmed when history permission is lost", async () => {
+    const fixture = createFixture({
+      editFailure: new Error("transport"),
+      botCanReadHistoryAfterEdit: false,
+    });
+    await expect(
+      createManagedMessageDiscord(fixture.client).editManagedMessage(input),
+    ).resolves.toEqual({
+      outcome: "FAILURE",
+      code: "EDIT_UNCONFIRMED",
+    });
+    expect(fixture.fetchMessage).toHaveBeenCalledOnce();
+    expect(fixture.edit).toHaveBeenCalledOnce();
+  });
+
+  it("does not infer deletion from a failed ambiguous read-back", async () => {
+    const fixture = createFixture({
+      editFailure: new Error("transport"),
+      reconcileFailure: unknownMessageError(),
+    });
+    await expect(
+      createManagedMessageDiscord(fixture.client).editManagedMessage(input),
+    ).resolves.toEqual({
+      outcome: "FAILURE",
+      code: "EDIT_UNCONFIRMED",
+    });
+  });
+
   it("keeps a mixed content/embed ambiguous result unconfirmed without a second PATCH", async () => {
     const fixture = createFixture({
       editFailure: new Error("transport"),
@@ -472,6 +516,22 @@ describe("managed-message edit Discord boundary", () => {
       embeds: [],
       allowedMentions: { parse: [] },
     });
+  });
+
+  it("does not fetch or restore without ReadMessageHistory", async () => {
+    const fixture = createFixture({ botCanReadHistory: false });
+    await expect(
+      createManagedMessageDiscord(fixture.client).restoreManagedMessage({
+        guildId: input.guildId,
+        channelId: input.channelId,
+        messageId: input.messageId,
+        expectedPayload: input.previousPayload,
+        expectedEditedAt: firstEditedAt,
+        restorePayload: input.previousPayload,
+      }),
+    ).resolves.toEqual({ outcome: "PRECONDITION_FAILED" });
+    expect(fixture.fetchMessage).not.toHaveBeenCalled();
+    expect(fixture.edit).not.toHaveBeenCalled();
   });
 
   it("restores the complete previous embed-only payload and confirms the returned projection", async () => {
@@ -623,6 +683,8 @@ function createFixture(
     archived?: boolean;
     actorCanManage?: boolean;
     botCanView?: boolean;
+    botCanReadHistory?: boolean;
+    botCanReadHistoryAfterEdit?: boolean;
     botCanEmbed?: boolean;
     authorId?: string;
     messageId?: string;
@@ -646,17 +708,32 @@ function createFixture(
     ChannelType.AnnouncementThread,
   ].includes(type);
   const fetchMember = vi.fn(({ user }: { user: string }) => Promise.resolve({ id: user }));
+  let edited = false;
+  const permissionChecks: unknown[] = [];
   const permissionsFor = vi.fn((member: { id: string }) => ({
     has: (permission: unknown) => {
+      permissionChecks.push(permission);
       if (member.id === input.actorUserId && permission === PermissionFlagsBits.ManageMessages) {
         return overrides.actorCanManage ?? true;
       }
       if (permission === PermissionFlagsBits.EmbedLinks) return overrides.botCanEmbed ?? true;
+      if (
+        Array.isArray(permission) &&
+        permission.includes(PermissionFlagsBits.ReadMessageHistory)
+      ) {
+        return (
+          ((edited ? overrides.botCanReadHistoryAfterEdit : undefined) ??
+            overrides.botCanReadHistory ??
+            true) &&
+          (overrides.botCanView ?? true)
+        );
+      }
       return overrides.botCanView ?? true;
     },
   }));
-  const edit = vi.fn((): Promise<Message> =>
-    overrides.editFailure === undefined
+  const edit = vi.fn((): Promise<Message> => {
+    edited = true;
+    return overrides.editFailure === undefined
       ? Promise.resolve(
           message({
             content: overrides.newContent ?? input.payload.content,
@@ -666,8 +743,8 @@ function createFixture(
             ...overrides,
           }),
         )
-      : Promise.reject(overrides.editFailure),
-  );
+      : Promise.reject(overrides.editFailure);
+  });
   const original = message({
     content: overrides.oldContent ?? input.previousPayload.content,
     embeds: overrides.oldEmbeds ?? [],
@@ -717,7 +794,7 @@ function createFixture(
     user: { id: "bot-id" },
     channels: { fetch: fetchChannel },
   } as unknown as Client;
-  return { client, fetchChannel, fetchMember, fetchMessage, edit };
+  return { client, fetchChannel, fetchMember, fetchMessage, edit, permissionChecks };
 }
 
 function message(inputOverrides: {

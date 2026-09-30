@@ -1,4 +1,4 @@
-import { MessageFlags } from "discord.js";
+import { InteractionContextType, MessageFlags, PermissionFlagsBits } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ChatInputCommandInteraction } from "discord.js";
@@ -33,6 +33,19 @@ describe("Discord commands", () => {
     expect(commandDefinitions).toHaveLength(4);
     expect(commandDefinitions[0]?.name).toBe("ping");
     expect(commandDefinitions[0]?.description).toBe("Check whether WEFT is responding");
+  });
+
+  it("restricts every command to guild context while preserving human permission defaults", () => {
+    const defaults = new Map([
+      ["ping", undefined],
+      ["config", PermissionFlagsBits.ManageGuild.toString()],
+      ["thread", PermissionFlagsBits.ManageThreads.toString()],
+      ["message", PermissionFlagsBits.ManageMessages.toString()],
+    ]);
+    for (const command of commandDefinitions) {
+      expect(command.contexts).toEqual([InteractionContextType.Guild]);
+      expect(command.default_member_permissions ?? undefined).toBe(defaults.get(command.name));
+    }
   });
 
   it("routes /message without changing existing command behavior", async () => {

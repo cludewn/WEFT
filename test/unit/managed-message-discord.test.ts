@@ -56,6 +56,19 @@ describe("managed message Discord boundary", () => {
     });
     expect(fixture.fetchChannel).toHaveBeenCalledExactlyOnceWith("channel-id", { force: true });
     expect(fixture.fetchMember).toHaveBeenCalledTimes(2);
+    if (type === ChannelType.GuildText || type === ChannelType.GuildAnnouncement) {
+      expect(fixture.fetchParent).not.toHaveBeenCalled();
+      expect(fixture.permissionChecks).toContainEqual([
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessages,
+      ]);
+    } else {
+      expect(fixture.fetchParent).toHaveBeenCalledExactlyOnceWith("parent-id", { force: true });
+      expect(fixture.permissionChecks).toContainEqual([
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.SendMessagesInThreads,
+      ]);
+    }
     expect(fixture.send).toHaveBeenCalledExactlyOnceWith({
       content: sendInput.payload.content,
       allowedMentions: { parse: [] },
@@ -118,6 +131,35 @@ describe("managed message Discord boundary", () => {
       code: "BOT_PERMISSION_MISSING",
     });
     expect(fixture.join).not.toHaveBeenCalled();
+    expect(fixture.send).not.toHaveBeenCalled();
+  });
+
+  it("uses refreshed parent overwrites for thread sends", async () => {
+    const fixture = createFixture({
+      type: ChannelType.PublicThread,
+      parentCanSendAfterFetch: false,
+    });
+    await expect(
+      createManagedMessageDiscord(fixture.client).sendManagedMessage(sendInput),
+    ).resolves.toEqual({
+      outcome: "FAILURE",
+      code: "BOT_PERMISSION_MISSING",
+    });
+    expect(fixture.fetchParent).toHaveBeenCalledExactlyOnceWith("parent-id", { force: true });
+    expect(fixture.send).not.toHaveBeenCalled();
+  });
+
+  it("does not use stale parent permissions when refresh fails", async () => {
+    const fixture = createFixture({
+      type: ChannelType.PublicThread,
+      parentFetchFailure: new Error("offline"),
+    });
+    await expect(
+      createManagedMessageDiscord(fixture.client).sendManagedMessage(sendInput),
+    ).resolves.toEqual({
+      outcome: "FAILURE",
+      code: "CURRENT_STATE_CHECK_FAILED",
+    });
     expect(fixture.send).not.toHaveBeenCalled();
   });
 
@@ -325,6 +367,8 @@ function createFixture(
     actorCanManage?: boolean;
     botCanSend?: boolean;
     botCanEmbed?: boolean;
+    parentCanSendAfterFetch?: boolean;
+    parentFetchFailure?: Error;
     sendable?: boolean;
     sendFailure?: Error;
     returnedContent?: string;
@@ -332,6 +376,14 @@ function createFixture(
   } = {},
 ) {
   const type = overrides.type ?? ChannelType.GuildText;
+  let parentRef = { id: "parent-id" };
+  let parentRefreshed = false;
+  const fetchParent = vi.fn(() => {
+    if (overrides.parentFetchFailure) return Promise.reject(overrides.parentFetchFailure);
+    parentRef = { id: "parent-id" };
+    parentRefreshed = true;
+    return Promise.resolve(parentRef);
+  });
   const permissionChecks: unknown[] = [];
   const fetchMember = vi.fn(({ user }: { user: string }) => Promise.resolve({ id: user }));
   const permissionsFor = vi.fn((member: { id: string }) => ({
@@ -339,6 +391,9 @@ function createFixture(
       permissionChecks.push(permission);
       if (member.id === "actor-id") return overrides.actorCanManage ?? true;
       if (permission === PermissionFlagsBits.EmbedLinks) return overrides.botCanEmbed ?? true;
+      if (parentRefreshed && overrides.parentCanSendAfterFetch !== undefined) {
+        return overrides.parentCanSendAfterFetch;
+      }
       return overrides.botCanSend ?? true;
     },
   }));
@@ -364,11 +419,15 @@ function createFixture(
   const channel = {
     id: "channel-id",
     type,
+    parentId: "parent-id",
+    get parent() {
+      return parentRef;
+    },
     guildId: overrides.guildId ?? "guild-id",
     archived: overrides.archived === undefined ? false : overrides.archived,
     sendable: overrides.sendable ?? true,
     isThread: () => thread,
-    guild: { members: { fetch: fetchMember } },
+    guild: { members: { fetch: fetchMember }, channels: { fetch: fetchParent } },
     permissionsFor,
     send,
     join,
@@ -379,7 +438,16 @@ function createFixture(
     user: { id: "bot-id" },
     rest: { delete: vi.fn() },
   } as unknown as Client;
-  return { client, fetchChannel, fetchMember, permissionsFor, permissionChecks, send, join };
+  return {
+    client,
+    fetchChannel,
+    fetchMember,
+    fetchParent,
+    permissionsFor,
+    permissionChecks,
+    send,
+    join,
+  };
 }
 
 function richEmbed(data: Record<string, unknown>): Embed {

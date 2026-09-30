@@ -15,6 +15,7 @@ import {
   projectManagedMessagePayload,
 } from "./managed-message-discord.js";
 import type { ManagedMessagePayload } from "./managed-message-payload.js";
+import { refreshThreadParent } from "./discord-thread-parent.js";
 
 const UNKNOWN_MESSAGE_ERROR_CODE = 10_008;
 
@@ -267,6 +268,13 @@ export function createScheduledMessageDiscord(
         return { outcome: "FAILURE", code: "ARCHIVED_THREAD" };
       if (client.user === null) return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
 
+      try {
+        if (isThreadTarget(channel) && !(await refreshThreadParent(channel))) {
+          return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
+        }
+      } catch (error) {
+        return creationFailure(classifyChannelFetchFailure(error));
+      }
       let actor;
       try {
         actor = await channel.guild.members.fetch({ user: input.actorUserId, force: true });
@@ -317,6 +325,13 @@ export function createScheduledMessageDiscord(
         return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED", retryable: true };
       }
 
+      try {
+        if (isThreadTarget(channel) && !(await refreshThreadParent(channel))) {
+          return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED", retryable: true };
+        }
+      } catch (error) {
+        return classifyChannelFetchFailure(error);
+      }
       try {
         const bot = await channel.guild.members.fetch({ user: client.user.id, force: true });
         const permissions = channel.permissionsFor(bot);
