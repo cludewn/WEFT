@@ -18,8 +18,18 @@ function fixture(
     botCanSend?: boolean;
     botCanEmbed?: boolean;
     actorCanManage?: boolean;
+    parentCanSendAfterFetch?: boolean;
+    parentFetchFailure?: Error;
   } = {},
 ) {
+  let parentRef = { id: "parent-id" };
+  let parentRefreshed = false;
+  const fetchParent = vi.fn(() => {
+    if (options.parentFetchFailure) return Promise.reject(options.parentFetchFailure);
+    parentRef = { id: "parent-id" };
+    parentRefreshed = true;
+    return Promise.resolve(parentRef);
+  });
   const fetchMember = vi.fn((input: { user: string }) => Promise.resolve({ id: input.user }));
   const permissionChecks: bigint[] = [];
   const permissionsFor = vi.fn((member: { id: string }) => ({
@@ -29,6 +39,9 @@ function fixture(
       if (values.includes(PermissionFlagsBits.ManageMessages))
         return member.id === "actor-id" && (options.actorCanManage ?? true);
       if (values.includes(PermissionFlagsBits.EmbedLinks)) return options.botCanEmbed ?? true;
+      if (parentRefreshed && options.parentCanSendAfterFetch !== undefined) {
+        return options.parentCanSendAfterFetch;
+      }
       return options.botCanSend ?? true;
     },
   }));
@@ -52,11 +65,15 @@ function fixture(
   ].includes(type);
   const channel = {
     type,
+    parentId: "parent-id",
+    get parent() {
+      return parentRef;
+    },
     guildId: options.guildId ?? "guild-id",
     archived: options.archived ?? false,
     sendable: true,
     isThread: () => thread,
-    guild: { members: { fetch: fetchMember } },
+    guild: { members: { fetch: fetchMember }, channels: { fetch: fetchParent } },
     permissionsFor,
     send,
   };
@@ -66,7 +83,7 @@ function fixture(
     channels: { fetch: fetchChannel },
     rest: { delete: vi.fn(() => Promise.resolve()) },
   } as unknown as Client;
-  return { client, fetchChannel, fetchMember, permissionChecks, send };
+  return { client, fetchChannel, fetchMember, fetchParent, permissionChecks, send };
 }
 
 function discordApiError(code: number, status: number): DiscordAPIError {
@@ -136,6 +153,19 @@ describe("scheduled message Discord boundary", () => {
     ).resolves.toEqual({ outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" });
   });
 
+  it("uses refreshed parent overwrites for thread creation authorization", async () => {
+    const f = fixture({ type: ChannelType.PublicThread, parentCanSendAfterFetch: false });
+    await expect(
+      createScheduledMessageDiscord(f.client).authorizeCreation({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        payload: { content: "text", embed: null },
+      }),
+    ).resolves.toEqual({ outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" });
+    expect(f.fetchParent).toHaveBeenCalledExactlyOnceWith("parent-id", { force: true });
+  });
+
   it.each([
     ChannelType.GuildText,
     ChannelType.GuildAnnouncement,
@@ -152,6 +182,14 @@ describe("scheduled message Discord boundary", () => {
     expect(result).toMatchObject({ outcome: "READY" });
     expect(f.fetchChannel).toHaveBeenCalledWith("channel-id", { force: true });
     expect(f.fetchMember).toHaveBeenCalledExactlyOnceWith({ user: "bot-id", force: true });
+    if (type === ChannelType.GuildText || type === ChannelType.GuildAnnouncement) {
+      expect(f.fetchParent).not.toHaveBeenCalled();
+      expect(f.permissionChecks).toContain(PermissionFlagsBits.SendMessages);
+      expect(f.permissionChecks).not.toContain(PermissionFlagsBits.SendMessagesInThreads);
+    } else {
+      expect(f.fetchParent).toHaveBeenCalledExactlyOnceWith("parent-id", { force: true });
+      expect(f.permissionChecks).toContain(PermissionFlagsBits.SendMessagesInThreads);
+    }
   });
 
   it("distinguishes guild mismatch, archived thread, and missing bot permission", async () => {
@@ -189,6 +227,31 @@ describe("scheduled message Discord boundary", () => {
       code: "BOT_PERMISSION_MISSING",
       retryable: false,
     });
+  });
+
+  it("uses refreshed parent overwrites for scheduled and recurring thread sends", async () => {
+    const f = fixture({ type: ChannelType.PublicThread, parentCanSendAfterFetch: false });
+    await expect(
+      createScheduledMessageDiscord(f.client).preflight({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        payload: { content: "text", embed: null },
+      }),
+    ).resolves.toEqual({ outcome: "FAILURE", code: "BOT_PERMISSION_MISSING", retryable: false });
+    expect(f.fetchParent).toHaveBeenCalledExactlyOnceWith("parent-id", { force: true });
+    expect(f.send).not.toHaveBeenCalled();
+  });
+
+  it("does not preflight from stale thread permissions if the parent refresh fails", async () => {
+    const f = fixture({ type: ChannelType.PublicThread, parentFetchFailure: new Error("offline") });
+    await expect(
+      createScheduledMessageDiscord(f.client).preflight({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        payload: { content: "text", embed: null },
+      }),
+    ).resolves.toEqual({ outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED", retryable: true });
+    expect(f.send).not.toHaveBeenCalled();
   });
 
   it("distinguishes unsupported targets from transient current-state failures", async () => {

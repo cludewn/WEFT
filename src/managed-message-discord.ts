@@ -20,6 +20,8 @@ import type {
   Message,
 } from "discord.js";
 
+import { refreshThreadParent } from "./discord-thread-parent.js";
+
 import {
   managedMessagePayloadsEqual,
   validateManagedMessagePayload,
@@ -289,6 +291,9 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
       if (client.user === null) return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
 
       try {
+        if (isThreadTarget(channel) && !(await refreshThreadParent(channel))) {
+          return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
+        }
         const [actor, bot] = await Promise.all([
           channel.guild.members.fetch({ user: input.actorUserId, force: true }),
           channel.guild.members.fetch({ user: client.user.id, force: true }),
@@ -374,6 +379,9 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
 
       let bot: GuildMember;
       try {
+        if (isThreadTarget(channel) && !(await refreshThreadParent(channel))) {
+          return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
+        }
         const [actor, fetchedBot] = await Promise.all([
           channel.guild.members.fetch({ user: input.actorUserId, force: true }),
           channel.guild.members.fetch({ user: client.user.id, force: true }),
@@ -382,7 +390,11 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
         if (!channel.permissionsFor(actor).has(PermissionFlagsBits.ManageMessages)) {
           return { outcome: "FAILURE", code: "ACTOR_PERMISSION_MISSING" };
         }
-        if (!channel.permissionsFor(fetchedBot).has(PermissionFlagsBits.ViewChannel)) {
+        if (
+          !channel
+            .permissionsFor(fetchedBot)
+            .has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
+        ) {
           return { outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" };
         }
       } catch {
@@ -445,15 +457,27 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
 
       let reconciled: Message;
       try {
+        if (isThreadTarget(channel) && !(await refreshThreadParent(channel))) {
+          return { outcome: "FAILURE", code: "EDIT_UNCONFIRMED" };
+        }
+        const refreshedBot = await channel.guild.members.fetch({
+          user: client.user.id,
+          force: true,
+        });
+        if (
+          !channel
+            .permissionsFor(refreshedBot)
+            .has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
+        ) {
+          return { outcome: "FAILURE", code: "EDIT_UNCONFIRMED" };
+        }
         reconciled = await channel.messages.fetch({
           message: input.messageId,
           force: true,
           cache: false,
         });
-      } catch (error) {
-        return isUnknownMessage(error)
-          ? { outcome: "DELETED" }
-          : { outcome: "FAILURE", code: "EDIT_UNCONFIRMED" };
+      } catch {
+        return { outcome: "FAILURE", code: "EDIT_UNCONFIRMED" };
       }
       if (!hasExpectedMessageIdentity(reconciled, input, client.user.id)) {
         return { outcome: "FAILURE", code: "EDIT_UNCONFIRMED" };
@@ -495,10 +519,16 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
         return { outcome: "PRECONDITION_FAILED" };
       }
       try {
+        if (isThreadTarget(channel) && !(await refreshThreadParent(channel))) {
+          return { outcome: "PRECONDITION_FAILED" };
+        }
         const bot = await channel.guild.members.fetch({ user: client.user.id, force: true });
         const permissions = channel.permissionsFor(bot);
         if (
-          !permissions.has(PermissionFlagsBits.ViewChannel) ||
+          !permissions.has([
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.ReadMessageHistory,
+          ]) ||
           (input.restorePayload.embed !== null && !permissions.has(PermissionFlagsBits.EmbedLinks))
         ) {
           return { outcome: "PRECONDITION_FAILED" };

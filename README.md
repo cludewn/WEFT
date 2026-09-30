@@ -21,29 +21,50 @@ Install dependencies through the pnpm version pinned in `package.json`:
 corepack pnpm install --frozen-lockfile
 ```
 
-Copy `.env.example` to `.env` for local Docker Compose use, then replace the example passwords and Discord placeholders. Normal application startup requires `DISCORD_TOKEN` and `DISCORD_APPLICATION_ID`. Deploying commands to the default development guild also requires `DISCORD_GUILD_ID`. Do not commit `.env` files.
+1. Create or select a Discord application and bot in the Developer Portal. Record the **Discord
+   Application ID** (not the Bot User ID) and obtain the bot token securely.
+2. Under **Installation**, support **Guild Install** only; User Install is unsupported. Use the
+   **Discord Provided Link** and set **Default Install Settings** for Guild Install to the `bot`
+   and `applications.commands` scopes. Although bot authorization includes application commands,
+   select both scopes to make the intended installation explicit.
+3. Select these bot permissions for full WEFT functionality: **View Channels**, **Manage Threads**,
+   **Send Messages**, **Send Messages in Threads**, **Read Message History**, and **Embed Links**.
+   Do not grant Administrator. The Developer Portal's **Server Members Intent**, **Presence Intent**,
+   and **Message Content Intent** are unnecessary and can remain disabled.
+4. Install the application into each target guild using the generated link. Installation grants a
+   maximum permission set; channel and thread overwrites can reduce WEFT's effective permissions,
+   causing runtime checks to reject an operation. Private thread access also depends on Discord
+   visibility rules: WEFT does not automatically join private threads. Sending to an archived
+   thread does not automatically unarchive it.
+5. Configure WEFT from `.env.example`, prepare PostgreSQL, and run the explicit production migration
+   described below before startup. Deploy application commands separately as described below.
+6. Start WEFT, verify `GET /health/ready`, then run `/ping` in the guild.
+
+Copy `.env.example` to `.env` for local Docker Compose use, then replace the example passwords and Discord placeholders. Normal application startup requires the bot token and Discord Application ID. `DISCORD_GUILD_ID` selects only the default guild command deployment target; it does not restrict runtime to one guild and is unnecessary for global command deployment or normal startup. Do not commit `.env` files.
 
 Commands run directly on the host do not load `.env` automatically. Provide the same variables through the local shell or environment-management tool before running the application, Drizzle Kit, or PostgreSQL integration tests.
 
 ## Environment variables
 
-| Name                     | Required               | Description                                                            |
-| ------------------------ | ---------------------- | ---------------------------------------------------------------------- |
-| `DATABASE_HOST`          | Yes                    | PostgreSQL host                                                        |
-| `DATABASE_PORT`          | Yes                    | PostgreSQL port between 1 and 65535                                    |
-| `DATABASE_NAME`          | Yes                    | PostgreSQL database name                                               |
-| `DATABASE_USER`          | Yes                    | PostgreSQL user                                                        |
-| `DATABASE_PASSWORD`      | Yes                    | PostgreSQL password                                                    |
-| `DATABASE_SSL`           | No                     | Set to `true` to require certificate-verified TLS; defaults to `false` |
-| `LOG_LEVEL`              | No                     | Pino log level; defaults to `info`                                     |
-| `HEALTH_PORT`            | No                     | Local health listener port; defaults to `3000`                         |
-| `DISCORD_TOKEN`          | Yes                    | Discord bot token; never logged or format-validated                    |
-| `DISCORD_APPLICATION_ID` | Yes                    | Discord application ID                                                 |
-| `DISCORD_GUILD_ID`       | For command deployment | Development guild used by the default command deployment mode          |
+| Name                     | Required                             | Description                                                                    |
+| ------------------------ | ------------------------------------ | ------------------------------------------------------------------------------ |
+| `DATABASE_HOST`          | Yes                                  | PostgreSQL host                                                                |
+| `DATABASE_PORT`          | Yes                                  | PostgreSQL port between 1 and 65535                                            |
+| `DATABASE_NAME`          | Yes                                  | PostgreSQL database name                                                       |
+| `DATABASE_USER`          | Yes                                  | PostgreSQL user                                                                |
+| `DATABASE_PASSWORD`      | Yes                                  | PostgreSQL password                                                            |
+| `DATABASE_SSL`           | No                                   | Set to `true` to require certificate-verified TLS; defaults to `false`         |
+| `LOG_LEVEL`              | No                                   | Pino log level; defaults to `info`                                             |
+| `HEALTH_PORT`            | No                                   | Local health listener port; defaults to `3000`                                 |
+| `DISCORD_TOKEN`          | Yes                                  | Discord bot token; never logged or format-validated                            |
+| `DISCORD_APPLICATION_ID` | Yes                                  | Discord application ID                                                         |
+| `DISCORD_GUILD_ID`       | For default guild command deployment | Guild targeted by the default deployment mode; not a runtime guild restriction |
 
 ## Discord commands
 
-Normal application startup does not register application commands. Deploy commands explicitly to the configured development guild:
+Guild installation, application-command registration, and runtime startup are separate operations.
+Normal runtime startup (`node dist/index.js`) does not register application commands. Deploy commands
+explicitly to the configured development guild:
 
 ```sh
 corepack pnpm commands:deploy
