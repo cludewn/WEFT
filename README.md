@@ -137,6 +137,11 @@ configured database user must have the `CREATE` privilege on the database for th
 pg-boss uses the existing `DATABASE_*` settings and owns a connection pool separate from WEFT's
 application database pool.
 
+## Backup and restore
+
+See the [PostgreSQL 18 backup and restore procedure](docs/development.md#production-backup-and-restore-operations)
+for the supported archive format, safe restore order, and disposable restore drill.
+
 ## Development
 
 Start the application from TypeScript:
