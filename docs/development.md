@@ -771,6 +771,179 @@ Use the same backup and restore commands as production, substituting only the is
 project invocation and private backup path. An actual restore drill establishes more than archive
 inspection, but still cannot prove future application readiness or Discord-state consistency.
 
+## Runtime dependency and license review
+
+Repeat this review before a release and after a lockfile update. Review the locked versions
+and the packages actually distributed after `pnpm prune --prod`, including optional packages
+and duplicate versions. Do not infer the production closure from direct dependencies alone.
+Review each direct runtime dependency's current production use, Node.js compatibility,
+deprecation/support status, and upstream release information before changing it.
+
+### Production dependency closure
+
+From the source checkout root, build the existing pruned build stage and the final runtime image
+without application secrets or an environment file:
+
+```sh
+docker build --target build -t weft:dependency-review-build .
+docker build -t weft:dependency-review .
+docker run --rm --entrypoint corepack weft:dependency-review-build pnpm --version
+docker run --rm --entrypoint corepack weft:dependency-review-build pnpm list --prod --depth Infinity --json
+docker run --rm --entrypoint corepack weft:dependency-review-build pnpm licenses list --prod --json
+```
+
+The build stage has Corepack enabled and retains the lockfile; these commands were verified with
+the pinned pnpm 11.20.0. Use the build stage for package-manager inspection, then cross-check
+against the final image's physical package directories. Do not add development tools to the
+runtime image to perform the review. Source-checkout command deployment uses development tooling;
+the compiled migration runner uses production dependencies.
+
+The following final-image inspection lists each physically installed package and its root license
+material candidates. A README is only sufficient when it contains the required complete notice;
+a license name or link alone is not a license text. Inspect candidate contents and any additional
+license/NOTICE files below each package root before concluding that material is complete.
+
+```sh
+docker run --rm -i --entrypoint node weft:dependency-review --input-type=module <<'JS'
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+const packages = [];
+const store = '/app/node_modules/.pnpm';
+for (const entry of readdirSync(store, { withFileTypes: true })) {
+  if (!entry.isDirectory() || entry.name === 'node_modules') continue;
+  const modules = join(store, entry.name, 'node_modules');
+  for (const child of readdirSync(modules, { withFileTypes: true })) {
+    if (!child.isDirectory()) continue;
+    const roots = child.name.startsWith('@')
+      ? readdirSync(join(modules, child.name), { withFileTypes: true })
+          .filter(item => item.isDirectory())
+          .map(item => join(modules, child.name, item.name))
+      : [join(modules, child.name)];
+    for (const root of roots) {
+      const metadata = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+      packages.push({
+        name: metadata.name,
+        version: metadata.version,
+        license: metadata.license ?? 'UNKNOWN',
+        root,
+        candidates: readdirSync(root).filter(name => /license|copying|notice|readme/i.test(name)),
+      });
+    }
+  }
+}
+packages.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
+console.log(JSON.stringify(packages, null, 2));
+console.log(JSON.stringify({
+  packageVersions: new Set(packages.map(item => `${item.name}@${item.version}`)).size,
+  packageNames: new Set(packages.map(item => item.name)).size,
+}));
+JS
+```
+
+The 2026-09-30 Issue #85 review found 63 package versions across 61 names. Counts are a dated
+cross-check, not a permanent requirement. Investigate discrepancies against the current lockfile
+and prune result. Check for unintended development-only tools; legitimate transitive packages
+must still be included in the inventory. Resolve UNKNOWN, UNLICENSED, custom/non-SPDX, copyleft,
+`SEE LICENSE IN ...`, and multiple-license expressions from authoritative upstream evidence.
+
+### Production security audit
+
+Run the production audit against that same lockfile and record its exit status and every advisory:
+
+```sh
+docker run --rm --entrypoint corepack weft:dependency-review-build pnpm audit --prod
+```
+
+This is the container equivalent of `corepack pnpm audit --prod` from a configured source checkout.
+Audit data changes over time. An audit with findings is not a passing or clean audit. Investigate
+new findings; an unresolved Critical or High finding blocks release unless a technically justified
+exception covers the current execution path. Do not suppress findings with audit ignore settings,
+severity filtering, overrides, or package patches.
+
+### Current undici technical exception
+
+Review date: **2026-09-30**. The locked runtime contains **undici 6.28.0**, **discord.js 14.27.0**,
+**@discordjs/ws 1.2.3**, **@discordjs/util 1.2.0**, and **@discordjs/rest 2.6.3**. The final image's
+observed Node.js version was **24.21.0**. The production audit reported the following three
+advisories and exited with status **1**:
+
+| Advisory                                                                 | Severity | Vulnerable facility                   |
+| ------------------------------------------------------------------------ | -------- | ------------------------------------- |
+| [GHSA-rfgv-xxqx-mfg5](https://github.com/advisories/GHSA-rfgv-xxqx-mfg5) | High     | WebSocket unrequested subprotocol DoS |
+| [GHSA-3wwx-pv8p-q78v](https://github.com/advisories/GHSA-3wwx-pv8p-q78v) | Moderate | WebSocket permessage-deflate DoS      |
+| [GHSA-r53p-7pc4-xj5r](https://github.com/advisories/GHSA-r53p-7pc4-xj5r) | Low      | Retry interceptor response splitting  |
+
+The advisories exist, and installed undici 6.28.0 is within their affected ranges. Undici 6.28.1
+contains the fixes. Issue #85 retains the locked version under the following execution-path
+exception; it does not declare the package unaffected or the audit clean:
+
+- On the observed Node.js runtime, `@discordjs/util.shouldUseGlobalFetchAndWebSocket()` returns
+  `false`. `@discordjs/ws` therefore uses `ws` for the Discord Gateway, without exercising Undici
+  WebSocket or the global WebSocket implementation implicated by the two WebSocket advisories.
+- `@discordjs/rest` uses the Undici HTTP request path. The response-splitting advisory requires
+  Undici `interceptors.retry()`, which the current Discord.js and WEFT paths do not use. Discord.js
+  REST retries and WEFT application retries are separate from this Undici interceptor.
+
+Re-evaluate the exception whenever the lockfile, discord.js, @discordjs/ws, @discordjs/util, undici,
+Node base image/runtime behavior, Gateway WebSocket implementation path, or Undici retry-interceptor
+usage changes. Re-run the audit, inspect the installed transport implementation and WEFT callers,
+and test the global-transport selector on the actual final Node runtime. The selector can be checked
+without connecting to Discord:
+
+```sh
+docker run --rm --entrypoint node weft:dependency-review --input-type=module -e '
+import { createRequire } from "node:module";
+const appRequire = createRequire("/app/package.json");
+const discordRequire = createRequire(appRequire.resolve("discord.js"));
+console.log(process.version);
+console.log(discordRequire("@discordjs/util").shouldUseGlobalFetchAndWebSocket());
+'
+```
+
+### License material and Docker verification
+
+Verify the final distribution, not only the source checkout:
+
+- Preserve WEFT's root `LICENSE` and compare it with `/app/LICENSE` in the final image.
+- Maintain `THIRD_PARTY_LICENSES.md` manually for missing runtime license text only. Update its
+  package versions and version-specific authoritative source references together, and compare
+  the included text exactly with upstream LICENSE/COPYING files, including copyright notices.
+  Sapphire's identical MIT text is included once for its two listed packages. Drizzle's text is
+  from its matching release tag. Re-check upstream and installed NOTICE files on updates; preserve
+  relevant existing content and never invent a NOTICE.
+- Compare `/app/THIRD_PARTY_LICENSES.md` with the repository document. Preserve existing package
+  LICENSE, COPYING, `license-mit`, complete README notices, and relevant NOTICE material under
+  `/app/node_modules/.pnpm`; the supplemental document does not replace those files.
+- Keep `/usr/local/LICENSE` and the npm/Corepack license material supplied by the Node image.
+  Preserve Debian `/usr/share/doc/*/copyright`. Node and Debian license material stays in the base
+  image; do not duplicate it into WEFT's npm license document or strip it from the image.
+
+Inspect file contents and ownership inside the final image, and confirm the expected runtime
+artifacts and non-root command:
+
+```sh
+docker run --rm --entrypoint sh weft:dependency-review -c '
+test -f /app/LICENSE && test -f /app/THIRD_PARTY_LICENSES.md &&
+test -f /app/package.json && test -d /app/dist && test -d /app/drizzle &&
+test -d /app/node_modules && test -f /app/dist/migrate.js &&
+test -f /usr/local/LICENSE &&
+find /usr/share/doc -name copyright -type f -print
+'
+docker image inspect weft:dependency-review --format '{{.Config.User}} {{json .Config.Cmd}}'
+docker run --rm --entrypoint node weft:dependency-review --input-type=module -e '
+await import("./dist/migrate.js");
+console.log("Migration runner module dependencies resolved without running migrations");
+'
+```
+
+Require a successful image build, `USER node`, and `CMD ["node", "dist/index.js"]`. Verify that
+top-level TypeScript, tsx, Vitest, ESLint, and Drizzle Kit tools were not added to the runtime image.
+The import check resolves the compiled migration runner's modules without invoking its CLI or
+accessing a database. Ordinary standard verification still applies. License documents and
+Dockerfile license COPY changes alone require neither external PostgreSQL integration nor live
+Discord verification; executable or dependency-classification changes require the normal gates.
+
 ## Standard verification
 
 The project must provide these commands:

@@ -197,3 +197,6 @@ corepack pnpm test:integration
 ## License
 
 WEFT is licensed under the [MIT License](./LICENSE).
+
+The [third-party license document](./THIRD_PARTY_LICENSES.md) supplements the license material
+required in distribution artifacts.
