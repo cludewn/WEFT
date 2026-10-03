@@ -94,9 +94,11 @@ export function createDiscordRuntime(
   threadLifecycleOverride?: ReturnType<typeof createThreadLifecycleService>,
 ): DiscordRuntime {
   const client = new Client({
-    // GuildMessages delivers the message metadata automatic-close activity needs. Message content
-    // is never read, so the privileged MessageContent intent stays disabled.
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
     rest: { retries: 0 },
   });
   const threadDiscord = createThreadLifecycleDiscord(client);

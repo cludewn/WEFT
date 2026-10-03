@@ -131,13 +131,13 @@ describe("Discord client", () => {
     await runtime.client.destroy();
   });
 
-  it("requests the Guilds and GuildMessages gateway intents without MessageContent", async () => {
+  it("requests only Guilds, GuildMessages and MessageContent gateway intents", async () => {
     const client = createDiscordClient(createLogger(), discordDependencies);
 
     expect(client.options.intents.bitfield).toBe(
-      GatewayIntentBits.Guilds | GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.Guilds | GatewayIntentBits.GuildMessages | GatewayIntentBits.MessageContent,
     );
-    expect(client.options.intents.has(GatewayIntentBits.MessageContent)).toBe(false);
+    expect(client.options.intents.has(GatewayIntentBits.MessageContent)).toBe(true);
     await client.destroy();
   });
 
@@ -784,6 +784,7 @@ function registerTestCommandHandler(
   registerDiscordCommandHandler(
     client,
     {
+      linkPreview: { show: vi.fn(), set: vi.fn() },
       auditLogDestination: { show: vi.fn(), set: vi.fn(), disable: vi.fn() },
       automaticCloseConfiguration: {
         show: vi.fn(),

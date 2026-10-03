@@ -7,6 +7,7 @@ export const baseDrizzleConfig = {
     "./src/audit-log-destination-persistence.ts",
     "./src/automatic-close-persistence.ts",
     "./src/guild-settings.ts",
+    "./src/link-preview-persistence.ts",
     "./src/managed-message-persistence.ts",
     "./src/recurring-message-persistence.ts",
     "./src/scheduled-action-persistence.ts",

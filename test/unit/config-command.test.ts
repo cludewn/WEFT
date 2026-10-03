@@ -1,3 +1,4 @@
+import { createLinkPreviewConfiguration } from "../../src/link-preview-configuration.js";
 import { ChannelType, InteractionContextType, MessageFlags, PermissionFlagsBits } from "discord.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
@@ -24,6 +25,7 @@ const defaultSettings: GuildSettings = {
   timezone: DEFAULT_GUILD_TIMEZONE,
   closedPrefix: DEFAULT_CLOSED_PREFIX,
   auditLogChannelId: null,
+  linkPreviewMode: "hybrid",
   autoCloseInactivitySeconds: DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS,
   autoCloseBotMessagesCountAsActivity: false,
   createdAt: new Date("2026-01-01T00:00:00Z"),
@@ -40,6 +42,7 @@ describe("config command", () => {
       "show",
       "timezone",
       "closed-prefix",
+      "link-preview",
       "audit-log",
       "auto-close",
     ]);
@@ -53,6 +56,7 @@ describe("config command", () => {
       createStore(),
       createAutomaticClose(),
       createAuditDestination(),
+      createPreviewConfig(),
     );
 
     expect(reply).toHaveBeenCalledWith(ephemeral("This command can only be used in a guild."));
@@ -66,6 +70,7 @@ describe("config command", () => {
       createStore(),
       createAutomaticClose(),
       createAuditDestination(),
+      createPreviewConfig(),
     );
 
     expect(reply).toHaveBeenCalledWith(
@@ -77,12 +82,18 @@ describe("config command", () => {
     const store = createStore();
     const { interaction, reply } = createInteraction({ subcommand: "show" });
 
-    await handleConfigCommand(interaction, store, createAutomaticClose(), createAuditDestination());
+    await handleConfigCommand(
+      interaction,
+      store,
+      createAutomaticClose(),
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
 
     expect(store.getOrCreate).toHaveBeenCalledWith(defaultSettings.guildId);
     expect(reply).toHaveBeenCalledWith(
       ephemeral(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: disabled\nAutomatic close: disabled (no parent channels)",
+        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: disabled\nAutomatic close: disabled (no parent channels)\nLink preview mode: hybrid",
       ),
     );
   });
@@ -91,10 +102,16 @@ describe("config command", () => {
     const settings = { ...defaultSettings, auditLogChannelId: "stored-channel" };
     const store = createStore({ getOrCreate: vi.fn(() => Promise.resolve(settings)) });
     const { interaction, reply } = createInteraction({ subcommand: "show" });
-    await handleConfigCommand(interaction, store, createAutomaticClose(), createAuditDestination());
+    await handleConfigCommand(
+      interaction,
+      store,
+      createAutomaticClose(),
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
     expect(reply).toHaveBeenCalledWith(
       ephemeral(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: <#stored-channel>\nAutomatic close: disabled (no parent channels)",
+        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: <#stored-channel>\nAutomatic close: disabled (no parent channels)\nLink preview mode: hybrid",
       ),
     );
   });
@@ -112,12 +129,14 @@ describe("config command", () => {
       store,
       createAutomaticClose(),
       createAuditDestination(),
+      createPreviewConfig(),
     );
     await handleConfigCommand(
       prefixInteraction.interaction,
       store,
       createAutomaticClose(),
       createAuditDestination(),
+      createPreviewConfig(),
     );
 
     expect(store.setTimezone).toHaveBeenCalledWith(defaultSettings.guildId, "Asia/Tokyo");
@@ -143,12 +162,14 @@ describe("config command", () => {
       timezoneStore,
       createAutomaticClose(),
       createAuditDestination(),
+      createPreviewConfig(),
     );
     await handleConfigCommand(
       prefixInteraction.interaction,
       prefixStore,
       createAutomaticClose(),
       createAuditDestination(),
+      createPreviewConfig(),
     );
 
     expect(timezoneInteraction.reply).toHaveBeenCalledWith(
@@ -178,7 +199,13 @@ describe("audit log configuration command", () => {
     const destination = createAuditDestination();
     destination.show = vi.fn(() => Promise.resolve("stale-id"));
     const { interaction, reply } = createInteraction({ group: "audit-log", subcommand: "show" });
-    await handleConfigCommand(interaction, store, createAutomaticClose(), destination);
+    await handleConfigCommand(
+      interaction,
+      store,
+      createAutomaticClose(),
+      destination,
+      createPreviewConfig(),
+    );
     expect(reply).toHaveBeenCalledWith(ephemeral("Audit log: <#stale-id>"));
     expect(store.getOrCreate).not.toHaveBeenCalled();
     expect(destination.show).toHaveBeenCalledWith(defaultSettings.guildId);
@@ -191,6 +218,7 @@ describe("audit log configuration command", () => {
       createStore(),
       createAutomaticClose(),
       createAuditDestination(),
+      createPreviewConfig(),
     );
     expect(reply).toHaveBeenCalledWith(ephemeral("Audit log: disabled"));
   });
@@ -201,7 +229,13 @@ describe("audit log configuration command", () => {
     destination.show = vi.fn(() => Promise.reject(failure));
     const { interaction, reply } = createInteraction({ group: "audit-log", subcommand: "show" });
     await expect(
-      handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination),
+      handleConfigCommand(
+        interaction,
+        createStore(),
+        createAutomaticClose(),
+        destination,
+        createPreviewConfig(),
+      ),
     ).rejects.toBe(failure);
     expect(reply).toHaveBeenCalledOnce();
     expect(reply).toHaveBeenCalledWith(
@@ -219,7 +253,13 @@ describe("audit log configuration command", () => {
       throw new Error("Discord reply failed");
     });
     await expect(
-      handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination),
+      handleConfigCommand(
+        interaction,
+        createStore(),
+        createAutomaticClose(),
+        destination,
+        createPreviewConfig(),
+      ),
     ).rejects.toBe(failure);
     expect(reply).toHaveBeenCalledOnce();
   });
@@ -243,7 +283,13 @@ describe("audit log configuration command", () => {
       subcommand: "set",
       channel: { id: "target", type: ChannelType.GuildText },
     });
-    await handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination);
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      createAutomaticClose(),
+      destination,
+      createPreviewConfig(),
+    );
     expect(destination.set).toHaveBeenCalledWith(defaultSettings.guildId, "actor", "target");
     expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
     expect(editReply).toHaveBeenCalledOnce();
@@ -266,7 +312,13 @@ describe("audit log configuration command", () => {
         group: "audit-log",
         subcommand: "disable",
       });
-      await handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination);
+      await handleConfigCommand(
+        interaction,
+        createStore(),
+        createAutomaticClose(),
+        destination,
+        createPreviewConfig(),
+      );
       expect(destination.disable).toHaveBeenCalledWith(defaultSettings.guildId, "actor");
       expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
       expect(editReply).toHaveBeenCalledOnce();
@@ -282,7 +334,13 @@ describe("audit log configuration command", () => {
       subcommand: "set",
       channel: { id: "target", type: ChannelType.GuildText },
     });
-    await handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination);
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      createAutomaticClose(),
+      destination,
+      createPreviewConfig(),
+    );
     expect(destination.set).toHaveBeenCalledWith(defaultSettings.guildId, "actor", "target");
     expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
     expect(editReply).toHaveBeenCalledWith({
@@ -299,7 +357,13 @@ describe("audit log configuration command", () => {
       group: "audit-log",
       subcommand: "disable",
     });
-    await handleConfigCommand(interaction, createStore(), createAutomaticClose(), destination);
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      createAutomaticClose(),
+      destination,
+      createPreviewConfig(),
+    );
     expect(destination.disable).toHaveBeenCalledWith(defaultSettings.guildId, "actor");
     expect(editReply).toHaveBeenCalledWith({
       content: "Audit log destination is already disabled.",
@@ -346,7 +410,13 @@ describe("automatic close configuration command", () => {
     });
     const { interaction, reply } = createInteraction({ group: "auto-close", subcommand: "show" });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      automaticClose,
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
 
     expect(reply).toHaveBeenCalledWith(
       ephemeral(
@@ -368,7 +438,13 @@ describe("automatic close configuration command", () => {
     });
     const { interaction, reply } = createInteraction({ group: "auto-close", subcommand: "show" });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      automaticClose,
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
 
     const content = (reply.mock.calls[0]?.[0] as { content: string }).content;
     expect(content).toContain(`Parent channels (30):`);
@@ -389,11 +465,17 @@ describe("automatic close configuration command", () => {
     });
     const { interaction, reply } = createInteraction({ subcommand: "show" });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      automaticClose,
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
 
     expect(reply).toHaveBeenCalledWith(
       ephemeral(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: disabled\nAutomatic close: 7d inactivity, 1 parent channel, bot messages counted",
+        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: disabled\nAutomatic close: 7d inactivity, 1 parent channel, bot messages counted\nLink preview mode: hybrid",
       ),
     );
   });
@@ -406,7 +488,13 @@ describe("automatic close configuration command", () => {
       value: "12h",
     });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      automaticClose,
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
 
     expect(automaticClose.setInactivitySeconds).toHaveBeenCalledWith(
       defaultSettings.guildId,
@@ -423,7 +511,13 @@ describe("automatic close configuration command", () => {
       value: "1m",
     });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      automaticClose,
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
 
     expect(automaticClose.setInactivitySeconds).not.toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith(
@@ -444,6 +538,7 @@ describe("automatic close configuration command", () => {
       createStore(),
       automaticClose,
       createAuditDestination(),
+      createPreviewConfig(),
     );
 
     expect(automaticClose.setBotMessagesCountAsActivity).toHaveBeenCalledWith(
@@ -463,7 +558,13 @@ describe("automatic close configuration command", () => {
       channel: { id: "999", type: ChannelType.GuildVoice },
     });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      automaticClose,
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
 
     expect(automaticClose.addParentChannel).not.toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith(
@@ -497,7 +598,13 @@ describe("automatic close configuration command", () => {
       channel: { id: "777", type: ChannelType.GuildForum },
     });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      automaticClose,
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
 
     expect(reply).toHaveBeenCalledWith(ephemeral("Enabling automatic close for this channel..."));
     expect(editReply).toHaveBeenCalledWith({
@@ -518,7 +625,13 @@ describe("automatic close configuration command", () => {
       channel: { id: "555", type: ChannelType.GuildText },
     });
 
-    await handleConfigCommand(interaction, createStore(), automaticClose, createAuditDestination());
+    await handleConfigCommand(
+      interaction,
+      createStore(),
+      automaticClose,
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
 
     expect(automaticClose.removeParentChannel).toHaveBeenCalledWith(defaultSettings.guildId, "555");
     expect(reply).toHaveBeenCalledWith(ephemeral("Automatic close is not enabled for <#555>."));
@@ -633,3 +746,89 @@ function ephemeral(content: string) {
 function createAuditDestination(): AuditLogDestinationService {
   return { show: vi.fn(() => Promise.resolve(null)), set: vi.fn(), disable: vi.fn() };
 }
+
+function createPreviewConfig() {
+  return {
+    show: vi.fn(() => Promise.resolve("hybrid" as const)),
+    set: vi.fn(() => Promise.resolve({ outcome: "NO_CHANGE" as const })),
+  };
+}
+
+describe("link preview configuration commands", () => {
+  it.each([{ inGuild: false }, { hasManageGuild: false }])(
+    "rejects unauthorized calls before storage",
+    async (patch) => {
+      const service = createPreviewConfig();
+      const f = createInteraction({ group: "link-preview", ...patch });
+      await handleConfigCommand(
+        f.interaction,
+        createStore(),
+        createAutomaticClose(),
+        createAuditDestination(),
+        service,
+      );
+      expect(service.show).not.toHaveBeenCalled();
+      expect(service.set).not.toHaveBeenCalled();
+      expect(f.reply).toHaveBeenCalled();
+    },
+  );
+  it("shows without creating settings and rejects invalid input before persistence", async () => {
+    const store = createStore();
+    const read = vi.fn(() => Promise.resolve("hybrid" as const));
+    const change = vi.fn();
+    const service = createLinkPreviewConfiguration({ read, change });
+    const f = createInteraction({ group: "link-preview" });
+    await handleConfigCommand(
+      f.interaction,
+      store,
+      createAutomaticClose(),
+      createAuditDestination(),
+      service,
+    );
+    expect(store.getOrCreate).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledOnce();
+    expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(f.editReply).toHaveBeenCalledWith({
+      content: "Link preview mode: hybrid",
+      allowedMentions: { parse: [] },
+    });
+    const invalid = createInteraction({
+      group: "link-preview",
+      subcommand: "mode",
+      value: "invalid",
+    });
+    await handleConfigCommand(
+      invalid.interaction,
+      store,
+      createAutomaticClose(),
+      createAuditDestination(),
+      service,
+    );
+    expect(change).not.toHaveBeenCalled();
+  });
+  it.each(["hybrid", "public-only", "button-only", "off"])(
+    "sets %s with a stable audit input",
+    async (mode) => {
+      const change = vi.fn(() => Promise.resolve({ outcome: "NO_CHANGE" as const }));
+      const service = createLinkPreviewConfiguration({
+        read: () => Promise.resolve("hybrid"),
+        change,
+      });
+      const f = createInteraction({ group: "link-preview", subcommand: "mode", value: mode });
+      await handleConfigCommand(
+        f.interaction,
+        createStore(),
+        createAutomaticClose(),
+        createAuditDestination(),
+        service,
+      );
+      expect(change.mock.calls[0]).toMatchObject([
+        { guildId: defaultSettings.guildId, actorUserId: "actor", newMode: mode },
+      ]);
+      expect(f.editReply).toHaveBeenCalledWith({
+        content: `Link preview mode: ${mode} (unchanged)`,
+        allowedMentions: { parse: [] },
+      });
+    },
+  );
+});

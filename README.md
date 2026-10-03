@@ -29,8 +29,9 @@ corepack pnpm install --frozen-lockfile
    select both scopes to make the intended installation explicit.
 3. Select these bot permissions for full WEFT functionality: **View Channels**, **Manage Threads**,
    **Send Messages**, **Send Messages in Threads**, **Read Message History**, and **Embed Links**.
-   Do not grant Administrator. The Developer Portal's **Server Members Intent**, **Presence Intent**,
-   and **Message Content Intent** are unnecessary and can remain disabled.
+   Do not grant Administrator. Enable **Message Content Intent** under **Bot → Privileged Gateway
+   Intents** in the Developer Portal for message-link detection. **Server Members Intent** and
+   **Presence Intent** remain unnecessary and should stay disabled.
 4. Install the application into each target guild using the generated link. Installation grants a
    maximum permission set; channel and thread overwrites can reduce WEFT's effective permissions,
    causing runtime checks to reject an operation. Private thread access also depends on Discord
@@ -111,6 +112,44 @@ three retries, and a 60-second startup grace period. The health port is not publ
 A timed-out readiness request leaves any unfinished database query owned by the process until it
 settles or the shared shutdown deadline expires; no second physical health query starts meanwhile.
 
+## Message-link previews
+
+WEFT displays up to three preview/button items from distinct same-guild Discord message links in
+new human messages, examining a bounded set of candidates.
+Configure the persistent mode with `/config link-preview show` and `/config link-preview mode
+value:<hybrid|public-only|button-only|off>`. These commands require Manage Server; `/config show`
+also displays the mode. The default is `hybrid`.
+
+- `hybrid`: automatically preview conservatively proven public targets; otherwise show a generic
+  Preview button. Confirmed age-restricted targets are omitted.
+- `public-only`: preview only proven public targets.
+- `button-only`: post generic buttons without looking up targets until clicked.
+- `off`: disable detection output and existing buttons. Existing buttons also fail in `public-only`.
+
+Buttons check the clicking user's current access and return previews ephemerally. Age-restricted
+channels and threads with age-restricted direct parents are unsupported, including for owners and
+administrators. Unconfirmed access or age state returns the same generic failure as a missing message.
+Previews are point-in-time copies; subsequent permission changes, message edits and deletions do not
+update or remove them. There is no preview history or monitoring. Source messages receive at most one
+reply containing public AUTO embeds followed by Secondary Preview buttons, without helper explanation
+text. A single distinct supported link uses `Preview`; multiple links use `Preview N` according to
+their source appearance order, including public and omitted links in the count.
+In public-only, non-public candidates do not consume visible slots. `+N more` counts eligible items
+beyond the three visible slots plus supported-looking links beyond the examination budget. Examined
+non-public candidates in public-only and confirmed age-restricted candidates are excluded from this
+count. Unexamined links are counted locally without confirming target existence or access.
+Buttons and overflow text disclose no protected target metadata. Authorized previews show
+actual channel or parent/thread names and a timestamp, without preview labels or omission counts.
+AUTO embeds have no Open original button; every successful button-triggered ephemeral preview has
+one. Mentions are suppressed, text spoilers are omitted and only the first eligible image is shown.
+WEFT never explicitly joins, leaves, modifies, unlocks or unarchives source threads to create a
+preview. Archived or locked sources receive no preview reply. Sending to an active public,
+announcement or forum-post thread may add WEFT as a member through Discord's normal send behavior.
+Private source threads require fresh existing bot membership, even with ManageThreads or Administrator.
+
+Message Content Intent is a separate Developer Portal requirement; the existing six bot permissions
+are unchanged. Selecting `off` does not dynamically remove the Client's Gateway intent.
+
 ## Audit-log destination
 
 The optional per-guild destination is disabled by default. An administrator with `ManageGuild`
@@ -125,7 +164,7 @@ configured; PostgreSQL remains the authoritative audit history.
 ## Audit notifications
 
 WEFT sends metadata-only, plain-text notifications for newly committed thread, scheduled thread-close,
-managed-message, scheduled-message, recurring-message, and audit-destination audits. Message content,
+managed-message, scheduled-message, recurring-message, audit-destination, and link-preview mode audits. Message content,
 embed fields, names, raw errors, and arbitrary before/after values are excluded. Mentions are
 suppressed. Before each send, WEFT reads the current destination from PostgreSQL, force-fetches the
 Discord channel and bot member, and checks the bot's current `ViewChannel` and `SendMessages`
@@ -139,7 +178,7 @@ existing process-wide deadline before Discord and PostgreSQL close.
 
 ## Audit retention
 
-WEFT retains audit history for a fixed global period of 90 * 24 hours. Cleanup covers the six existing thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, and audit-log-destination audit tables. An initial sweep is scheduled shortly after runtime startup without blocking readiness; later sweeps start 24 hours after the previous sweep settles. Deletion uses bounded batches, so expiration is periodic rather than an exact TTL.
+WEFT retains audit history for a fixed global period of 90 * 24 hours. Cleanup covers the seven thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, audit-log-destination, and link-preview mode audit tables. An initial sweep is scheduled shortly after runtime startup without blocking readiness; later sweeps start 24 hours after the previous sweep settles. Deletion uses bounded batches, so expiration is periodic rather than an exact TTL.
 
 Cleanup removes audit rows only. Active schedules, managed-resource state, configuration, and recovery state remain intact. Audit deletion creates no audit notification. A cleanup failure does not invalidate application operations; the next sweep retries remaining work. Shutdown drains in-flight cleanup before PostgreSQL closes under the existing process-wide deadline. Per-guild retention configuration is not implemented and remains unresolved.
 

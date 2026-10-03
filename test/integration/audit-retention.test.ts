@@ -1,3 +1,4 @@
+import { linkPreviewAudits } from "../../src/link-preview-persistence.js";
 import { randomUUID } from "node:crypto";
 
 import { asc, eq, inArray, sql } from "drizzle-orm";
@@ -45,6 +46,11 @@ const newId = () => randomUUID();
 // including rows left by an interrupted previous test run.
 async function isolatedTimes(): Promise<{ cutoff: Date; old: Date; recent: Date }> {
   const oldestRows = await Promise.all([
+    database.client
+      .select({ at: linkPreviewAudits.occurredAt })
+      .from(linkPreviewAudits)
+      .orderBy(asc(linkPreviewAudits.occurredAt))
+      .limit(1),
     database.client
       .select({ at: threadAudits.createdAt })
       .from(threadAudits)
@@ -142,6 +148,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   try {
+    await database.client.delete(linkPreviewAudits).where(eq(linkPreviewAudits.guildId, guildId));
     await database.client
       .delete(auditLogDestinationAudits)
       .where(eq(auditLogDestinationAudits.guildId, guildId));
@@ -184,6 +191,17 @@ afterAll(async () => {
 
 async function insertAudit(source: AuditRetentionSource, id: string, at: Date) {
   switch (source) {
+    case "link_preview_audits":
+      await database.client.insert(linkPreviewAudits).values({
+        id,
+        guildId,
+        actorUserId: "actor",
+        previousMode: "hybrid",
+        newMode: "off",
+        occurredAt: at,
+        outcome: "SUCCESS",
+      });
+      break;
     case "thread_audits":
       await database.client.insert(threadAudits).values({
         id,

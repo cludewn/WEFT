@@ -2505,6 +2505,7 @@ function createFixture({
     timezone: "UTC",
     closedPrefix: prefix,
     auditLogChannelId: null,
+    linkPreviewMode: "hybrid",
     autoCloseInactivitySeconds: 604_800,
     autoCloseBotMessagesCountAsActivity: false,
     createdAt: new Date("2026-01-01T00:00:00Z"),

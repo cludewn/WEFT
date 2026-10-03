@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 
+import { linkPreviewAudits } from "./link-preview-persistence.js";
 import { auditLogDestinationAudits } from "./audit-log-destination-persistence.js";
 import type { AuditNotificationRecord, AuditReference } from "./audit-notification-format.js";
 import type { DatabaseClient } from "./database.js";
@@ -37,6 +38,21 @@ export function createAuditNotificationProjection(database: DatabaseClient) {
   return {
     async load(reference: AuditReference): Promise<AuditNotificationRecord | undefined> {
       switch (reference.source) {
+        case "LINK_PREVIEW": {
+          const [row] = await database
+            .select({
+              guildId: linkPreviewAudits.guildId,
+              actorUserId: linkPreviewAudits.actorUserId,
+              previousMode: linkPreviewAudits.previousMode,
+              newMode: linkPreviewAudits.newMode,
+              outcome: linkPreviewAudits.outcome,
+              occurredAt: linkPreviewAudits.occurredAt,
+            })
+            .from(linkPreviewAudits)
+            .where(eq(linkPreviewAudits.id, reference.auditId))
+            .limit(1);
+          return row && { ...reference, ...row, actorType: "USER", event: "MODE_CHANGED" };
+        }
         case "THREAD": {
           const [row] = await database
             .select({

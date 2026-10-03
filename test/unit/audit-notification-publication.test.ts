@@ -34,6 +34,7 @@ function fixture(committed: Record<AuditSource, string[]>) {
           scheduled_message_audits: "SCHEDULED_MESSAGE",
           recurring_message_audits: "RECURRING_MESSAGE",
           audit_log_destination_audits: "AUDIT_LOG_DESTINATION",
+          link_preview_audits: "LINK_PREVIEW",
         };
         selectedSource = names[getTableName(table)];
         return this;
@@ -51,6 +52,7 @@ const empty: Record<AuditSource, string[]> = {
   SCHEDULED_MESSAGE: [],
   RECURRING_MESSAGE: [],
   AUDIT_LOG_DESTINATION: [],
+  LINK_PREVIEW: [],
 };
 const id = "11111111-1111-4111-8111-111111111111";
 const gap = "22222222-2222-4222-8222-222222222222";

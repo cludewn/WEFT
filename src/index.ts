@@ -1,5 +1,10 @@
 import pino from "pino";
 
+import { createLinkPreviewConfiguration } from "./link-preview-configuration.js";
+import { createLinkPreviewStore } from "./link-preview-persistence.js";
+import { createLinkPreviewService } from "./link-preview.js";
+import { createLinkPreviewDiscord, registerLinkPreviewHandlers } from "./link-preview-discord.js";
+
 import { createAuditLogDestinationDiscord } from "./audit-log-destination-discord.js";
 import { createAuditLogDestinationStore } from "./audit-log-destination-persistence.js";
 import { createAuditLogDestinationService } from "./audit-log-destination.js";
@@ -8,6 +13,7 @@ import { createAuditNotificationDispatcher } from "./audit-notification-dispatch
 import { createAuditNotificationProjection } from "./audit-notification-projection.js";
 import {
   publishAuditDestinationChanges,
+  publishLinkPreviewChanges,
   publishManagedMessageAudits,
   publishRecurringMessageAudits,
   publishScheduledMessageAudits,
@@ -136,6 +142,27 @@ async function main(): Promise<void> {
     destinationStore,
     createAuditLogDestinationDiscord(discordRuntime.client),
   );
+  const linkPreviewStore = publishLinkPreviewChanges(
+    database.client,
+    auditPublisher,
+    createLinkPreviewStore(database.client),
+  );
+  const linkPreview = createLinkPreviewConfiguration(linkPreviewStore);
+  const linkPreviews = createLinkPreviewService({
+    readMode: linkPreviewStore.read,
+    discord: createLinkPreviewDiscord(discordRuntime.client),
+    log: (source, code) =>
+      logger.debug(
+        {
+          event: "link_preview",
+          guildId: source.guildId,
+          channelId: source.channelId,
+          messageId: source.messageId,
+          code,
+        },
+        "Link preview outcome",
+      ),
+  });
   const managedMessages = createManagedMessageService({
     discord: createManagedMessageDiscord(discordRuntime.client),
     store: managedMessageStore,
@@ -331,6 +358,7 @@ async function main(): Promise<void> {
     processControl,
   });
 
+  registerLinkPreviewHandlers(discordRuntime.client, linkPreviews, logger, runtime.ingress);
   registerThreadLifecycleEventHandler(
     discordRuntime.client,
     discordRuntime.threadLifecycle,
@@ -353,6 +381,7 @@ async function main(): Promise<void> {
     discordRuntime.client,
     {
       auditLogDestination,
+      linkPreview,
       automaticCloseConfiguration,
       automaticCloseMaintenance,
       guildSettings,
