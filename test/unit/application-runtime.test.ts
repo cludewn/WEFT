@@ -1,3 +1,12 @@
+import { EventEmitter } from "node:events";
+import { Events, ChannelType, PermissionFlagsBits as P } from "discord.js";
+import type { Client } from "discord.js";
+import {
+  createLinkPreviewDiscord,
+  registerLinkPreviewHandlers,
+} from "../../src/link-preview-discord.js";
+import { createLinkPreviewService } from "../../src/link-preview.js";
+import type { LinkPreviewBoundary } from "../../src/link-preview.js";
 import type { Logger } from "pino";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -518,4 +527,216 @@ describe("application runtime", () => {
       '{"event":"fatal_runtime_failure","logging":"failed"}\n',
     );
   });
+});
+
+describe("link preview ingress and shutdown ownership", () => {
+  it.each(["state", "membership"] as const)(
+    "drains the actual final source %s fetch and its send",
+    async (stage) => {
+      const f = createFixture();
+      const gate = deferred();
+      const sourceRoute = stage === "state" ? "/channels/14" : "/channels/14/thread-members/8";
+      const sourceChannel = {
+        id: "14",
+        guild_id: "1",
+        name: "source",
+        type: stage === "membership" ? ChannelType.PrivateThread : ChannelType.PublicThread,
+        parent_id: "16",
+        thread_metadata: { archived: false, locked: false },
+      };
+      const data = new Map<string, unknown>([
+        ["/channels/14", sourceChannel],
+        [
+          "/channels/16",
+          {
+            id: "16",
+            guild_id: "1",
+            name: "parent",
+            type: ChannelType.GuildText,
+            permission_overwrites: [],
+          },
+        ],
+        ["/channels/14/thread-members/8", { id: "14", user_id: "8" }],
+        ["/guilds/1", { id: "1", owner_id: "10" }],
+        [
+          "/guilds/1/roles",
+          [
+            {
+              id: "1",
+              permissions: (
+                P.ViewChannel |
+                P.ReadMessageHistory |
+                P.EmbedLinks |
+                P.SendMessagesInThreads
+              ).toString(),
+            },
+          ],
+        ],
+        ["/guilds/1/members/8", { user: { id: "8" }, roles: [] }],
+      ]);
+      let stageReads = 0;
+      const get = vi.fn(async (route: string) => {
+        if (route === sourceRoute && ++stageReads === 2) await gate.promise;
+        if (!data.has(route)) throw new Error("Unexpected request");
+        return data.get(route);
+      });
+      const post = vi.fn(() => {
+        expect(f.dependencies.destroyDiscord).not.toHaveBeenCalled();
+        return Promise.resolve({});
+      });
+      const client = Object.assign(new EventEmitter(), {
+        user: { id: "8" },
+        application: { id: "11" },
+        rest: { get, post },
+      });
+      const readMode = vi.fn(() => Promise.resolve("button-only" as const));
+      registerLinkPreviewHandlers(
+        client as unknown as Client,
+        createLinkPreviewService({
+          readMode,
+          discord: createLinkPreviewDiscord(client as unknown as Client),
+          log: vi.fn(),
+        }),
+        { debug: vi.fn() },
+        f.runtime.ingress,
+      );
+      const message = {
+        inGuild: () => true,
+        author: { id: "9", bot: false },
+        webhookId: null,
+        system: false,
+        type: 0,
+        guildId: "1",
+        channelId: "14",
+        id: "15",
+        content: "https://discord.com/channels/1/2/3",
+        channel: { type: sourceChannel.type },
+      };
+      await f.runtime.start();
+      client.emit(Events.MessageCreate, message);
+      await vi.waitFor(() => expect(stageReads).toBe(2));
+      expect(post).not.toHaveBeenCalled();
+      const shutdown = f.runtime.shutdown("test");
+      client.emit(Events.MessageCreate, message);
+      expect(readMode).toHaveBeenCalledOnce();
+      expect(f.dependencies.destroyDiscord).not.toHaveBeenCalled();
+      expect(f.dependencies.closeDatabase).not.toHaveBeenCalled();
+      gate.resolve();
+      await shutdown;
+      expect(post).toHaveBeenCalledOnce();
+      expect(get.mock.calls.filter(([route]) => route === sourceRoute)).toHaveLength(2);
+      expect(
+        get.mock.calls.filter(([route]) => route === "/channels/14/thread-members/8"),
+      ).toHaveLength(stage === "membership" ? 2 : 0);
+      expect(f.dependencies.destroyDiscord).toHaveBeenCalledOnce();
+      expect(f.dependencies.closeDatabase).toHaveBeenCalledOnce();
+    },
+  );
+  it.each(["fetch", "send", "mixed", "edit"] as const)(
+    "owns a slow %s and rejects work outside READY",
+    async (stage) => {
+      const f = createFixture();
+      const gate = deferred();
+      const client = Object.assign(new EventEmitter(), {
+        user: { id: "8" },
+        application: { id: "11" },
+      });
+      const message = {
+        inGuild: () => true,
+        author: { id: "9", bot: false },
+        webhookId: null,
+        system: false,
+        type: 0,
+        guildId: "1",
+        channelId: "4",
+        id: "5",
+        content:
+          "https://discord.com/channels/1/2/3" +
+          (stage === "mixed" ? " https://discord.com/channels/1/2/6" : ""),
+        channel: { type: ChannelType.GuildText },
+      };
+      const value = {
+        author: "author",
+        content: "text",
+        timestamp: "2026-01-01T00:00:00Z",
+        attachments: [],
+        forwarded: false,
+      };
+      const fetchMessage = vi.fn(async () => {
+        if (stage === "fetch") await gate.promise;
+        return value;
+      });
+      const send = vi.fn<LinkPreviewBoundary["send"]>(async () => {
+        if (stage === "send" || stage === "mixed") await gate.promise;
+      });
+      const readMode = vi.fn(() => Promise.resolve("hybrid" as const));
+      const authorize = vi.fn(() => Promise.resolve({ location: "#source" }));
+      const service = createLinkPreviewService({
+        readMode,
+        discord: {
+          sourceSendable: () => Promise.resolve(true),
+          classify: (targets) =>
+            Promise.resolve(
+              targets.map((target) =>
+                target.messageId === "6"
+                  ? { state: "RESTRICTED" as const }
+                  : { state: "PUBLIC" as const, location: "#source" },
+              ),
+            ),
+          authorize,
+          fetchMessage,
+          send,
+        },
+        log: vi.fn(),
+      });
+      const deferReply = vi.fn(() => Promise.resolve());
+      const editReply = vi.fn(() => (stage === "edit" ? gate.promise : Promise.resolve()));
+      const button = {
+        isButton: () => true,
+        customId: "lp:1:1:2:3",
+        inGuild: () => true,
+        guildId: "1",
+        applicationId: "11",
+        client,
+        user: { id: "9" },
+        message: { author: { id: "8" }, webhookId: null },
+        deferReply,
+        editReply,
+      };
+      registerLinkPreviewHandlers(
+        client as unknown as Client,
+        service,
+        { debug: vi.fn() },
+        f.runtime.ingress,
+      );
+      const emit = () => {
+        if (stage === "edit") client.emit(Events.InteractionCreate, button);
+        else client.emit(Events.MessageCreate, message);
+      };
+      emit();
+      expect(readMode).not.toHaveBeenCalled();
+      expect(deferReply).not.toHaveBeenCalled();
+      await f.runtime.start();
+      emit();
+      const pending = stage === "fetch" ? fetchMessage : stage === "edit" ? editReply : send;
+      await vi.waitFor(() => expect(pending).toHaveBeenCalledOnce());
+      if (stage === "mixed") {
+        expect(send.mock.calls[0]![1].embeds).toHaveLength(1);
+        expect(send.mock.calls[0]![1].helpers).toEqual([
+          { target: { guildId: "1", channelId: "2", messageId: "6" }, ordinal: 2 },
+        ]);
+      }
+      const shutdown = f.runtime.shutdown("test");
+      emit();
+      expect(readMode).toHaveBeenCalledOnce();
+      expect(f.dependencies.destroyDiscord).not.toHaveBeenCalled();
+      expect(f.dependencies.closeDatabase).not.toHaveBeenCalled();
+      gate.resolve();
+      await shutdown;
+      expect(f.dependencies.closeDatabase).toHaveBeenCalledOnce();
+      emit();
+      expect(readMode).toHaveBeenCalledOnce();
+      if (stage === "edit") expect(deferReply).toHaveBeenCalledOnce();
+    },
+  );
 });

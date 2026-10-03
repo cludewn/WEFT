@@ -1,5 +1,6 @@
 import { InteractionContextType, MessageFlags, SlashCommandBuilder } from "discord.js";
 
+import type { LinkPreviewConfiguration } from "./link-preview-configuration.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import type { Logger } from "pino";
 
@@ -26,6 +27,7 @@ export const commandDefinitions = [
 ].map((command) => command.toJSON());
 
 export type CommandDependencies = {
+  linkPreview: LinkPreviewConfiguration;
   auditLogDestination: AuditLogDestinationService;
   automaticCloseConfiguration: AutomaticCloseConfigurationService;
   automaticCloseMaintenance: AutomaticCloseThreadMaintenanceService;
@@ -52,6 +54,7 @@ export async function handleCommand(
       dependencies.guildSettings,
       dependencies.automaticCloseConfiguration,
       dependencies.auditLogDestination,
+      dependencies.linkPreview,
     );
     return true;
   }

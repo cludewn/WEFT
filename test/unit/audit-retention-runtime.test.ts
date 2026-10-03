@@ -35,7 +35,7 @@ function fixture(now = () => new Date("2030-04-01T12:00:00.000Z")) {
 afterEach(() => vi.useRealTimers());
 
 describe("audit retention runtime", () => {
-  it("shares one fixed 90-day cutoff across all six sources and every batch", async () => {
+  it("shares one fixed 90-day cutoff across all seven sources and every batch", async () => {
     const current = new Date("2030-04-01T12:00:00.000Z");
     const now = vi.fn(() => current);
     const { runtime, persistence } = fixture(now);
@@ -48,7 +48,7 @@ describe("audit retention runtime", () => {
     await runtime.sweepOnce();
     expect(now).toHaveBeenCalledOnce();
     expect([...calls.keys()]).toEqual([...AUDIT_RETENTION_SOURCES]);
-    expect([...calls.values()]).toEqual(Array(6).fill(2));
+    expect([...calls.values()]).toEqual(Array(7).fill(2));
     const cutoff = new Date(current.getTime() - AUDIT_RETENTION_DURATION_MS);
     for (const [source, actualCutoff, limit] of vi.mocked(persistence.deleteExpiredBatch).mock
       .calls) {
@@ -79,7 +79,7 @@ describe("audit retention runtime", () => {
     );
     expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain("private SQL");
     await runtime.sweepOnce();
-    expect(persistence.deleteExpiredBatch).toHaveBeenCalledTimes(12);
+    expect(persistence.deleteExpiredBatch).toHaveBeenCalledTimes(14);
   });
 
   it("starts asynchronously, shares in-flight work, and waits 24 hours after settlement", async () => {
@@ -99,9 +99,9 @@ describe("audit retention runtime", () => {
     pending.resolve(0);
     await first;
     await vi.advanceTimersByTimeAsync(AUDIT_RETENTION_SWEEP_INTERVAL_MS - 1);
-    expect(persistence.deleteExpiredBatch).toHaveBeenCalledTimes(6);
+    expect(persistence.deleteExpiredBatch).toHaveBeenCalledTimes(7);
     await vi.advanceTimersByTimeAsync(1);
-    expect(persistence.deleteExpiredBatch).toHaveBeenCalledTimes(12);
+    expect(persistence.deleteExpiredBatch).toHaveBeenCalledTimes(14);
     await runtime.stop();
   });
 

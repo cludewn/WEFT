@@ -6,7 +6,8 @@ export type AuditSource =
   | "MANAGED_MESSAGE"
   | "SCHEDULED_MESSAGE"
   | "RECURRING_MESSAGE"
-  | "AUDIT_LOG_DESTINATION";
+  | "AUDIT_LOG_DESTINATION"
+  | "LINK_PREVIEW";
 
 export type AuditReference = Readonly<{ source: AuditSource; auditId: string }>;
 
@@ -26,6 +27,8 @@ export type AuditNotificationRecord = AuditReference & {
   skipReason?: string;
   previousDestinationId?: string;
   newDestinationId?: string;
+  previousMode?: string;
+  newMode?: string;
 };
 
 const safeIdentifier = /^[A-Za-z0-9_-]{1,64}$/;
@@ -48,6 +51,8 @@ export function formatAuditNotification(
     ["Skip reason", record.skipReason],
     ["Previous destination ID", record.previousDestinationId],
     ["New destination ID", record.newDestinationId],
+    ["Previous mode", record.previousMode],
+    ["New mode", record.newMode],
     ["Audit ID", record.auditId],
   ];
   if (

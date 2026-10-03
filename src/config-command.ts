@@ -12,6 +12,8 @@ import type {
   InteractionReplyOptions,
 } from "discord.js";
 
+import type { LinkPreviewConfiguration } from "./link-preview-configuration.js";
+import { LINK_PREVIEW_MODES } from "./link-preview.js";
 import type { AuditLogDestinationService } from "./audit-log-destination.js";
 import type {
   AutomaticCloseConfigurationService,
@@ -61,6 +63,26 @@ export const configCommandDefinition = new SlashCommandBuilder()
       .setDescription("Set the prefix used for closed thread titles")
       .addStringOption((option) =>
         option.setName("value").setDescription("Prefix from 1 to 20 characters").setRequired(true),
+      ),
+  )
+  .addSubcommandGroup((group) =>
+    group
+      .setName("link-preview")
+      .setDescription("Configure message link previews")
+      .addSubcommand((sub) =>
+        sub.setName("show").setDescription("Show the message link preview mode"),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName("mode")
+          .setDescription("Set the message link preview mode")
+          .addStringOption((option) =>
+            option
+              .setName("value")
+              .setDescription("Preview mode")
+              .setRequired(true)
+              .addChoices(...LINK_PREVIEW_MODES.map((value) => ({ name: value, value }))),
+          ),
       ),
   )
   .addSubcommandGroup((group) =>
@@ -193,6 +215,7 @@ export async function handleConfigCommand(
   store: GuildSettingsStore,
   automaticClose: AutomaticCloseConfigurationService,
   auditLogDestination: AuditLogDestinationService,
+  linkPreview: LinkPreviewConfiguration,
 ): Promise<void> {
   if (!interaction.inGuild()) {
     await interaction.reply(ephemeralReply("This command can only be used in a guild."));
@@ -207,6 +230,28 @@ export async function handleConfigCommand(
   }
 
   const subcommand = interaction.options.getSubcommand();
+  if (interaction.options.getSubcommandGroup(false) === "link-preview") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    let response: string;
+    try {
+      if (subcommand === "show") {
+        response = `Link preview mode: ${await linkPreview.show(interaction.guildId)}`;
+      } else {
+        const value = interaction.options.getString("value", true);
+        const result = await linkPreview.set(interaction.guildId, interaction.user.id, value);
+        response =
+          result.outcome === "INVALID"
+            ? "Choose hybrid, public-only, button-only, or off."
+            : result.outcome === "UNCONFIRMED"
+              ? "WEFT could not confirm the preview mode change. Check the setting before trying again."
+              : `Link preview mode: ${value}${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+      }
+    } catch {
+      response = "WEFT could not load the preview configuration.";
+    }
+    await interaction.editReply(editReply(response));
+    return;
+  }
 
   if (interaction.options.getSubcommandGroup(false) === "audit-log") {
     await handleAuditLogSubcommand(interaction, auditLogDestination, subcommand);
@@ -225,7 +270,7 @@ export async function handleConfigCommand(
     ]);
     await interaction.reply(
       ephemeralReply(
-        `Timezone: ${settings.timezone}\nClosed prefix: ${settings.closedPrefix}\n${formatAuditLogDestination(settings.auditLogChannelId)}\n${formatAutomaticCloseSummary(view)}`,
+        `Timezone: ${settings.timezone}\nClosed prefix: ${settings.closedPrefix}\n${formatAuditLogDestination(settings.auditLogChannelId)}\n${formatAutomaticCloseSummary(view)}\nLink preview mode: ${settings.linkPreviewMode}`,
       ),
     );
     return;

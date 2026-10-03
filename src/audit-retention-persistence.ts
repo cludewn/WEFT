@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 
+import { linkPreviewAudits } from "./link-preview-persistence.js";
 import { auditLogDestinationAudits } from "./audit-log-destination-persistence.js";
 import type { DatabaseClient } from "./database.js";
 import { managedMessageAudits } from "./managed-message-persistence.js";
@@ -15,6 +16,7 @@ export const AUDIT_RETENTION_SOURCES = [
   "scheduled_message_audits",
   "recurring_message_audits",
   "audit_log_destination_audits",
+  "link_preview_audits",
 ] as const;
 
 export type AuditRetentionSource = (typeof AUDIT_RETENTION_SOURCES)[number];
@@ -39,6 +41,12 @@ export function createAuditRetentionStore(database: DatabaseClient): AuditRetent
 
       const target = (() => {
         switch (source) {
+          case "link_preview_audits":
+            return {
+              table: linkPreviewAudits,
+              timestamp: linkPreviewAudits.occurredAt,
+              id: linkPreviewAudits.id,
+            };
           case "thread_audits":
             return { table: threadAudits, timestamp: threadAudits.createdAt, id: threadAudits.id };
           case "scheduled_thread_close_audits":

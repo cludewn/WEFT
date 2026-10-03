@@ -133,9 +133,9 @@ Individual managed-message GETs require `ViewChannel` and `ReadMessageHistory`; 
 read-back after an ambiguous edit cannot confirm either success or failure. These checks are
 point-in-time: Discord may reject the subsequent read or mutation if permissions change again.
 
-The runtime uses only the `Guilds` and `GuildMessages` Gateway intents. Automatic-close activity
-tracking uses message metadata, not message content. Single member REST fetches require no
-`GuildMembers` Gateway intent; presence and message-content intents are also unnecessary. Command
+The runtime uses only `Guilds`, `GuildMessages` and `MessageContent` Gateway intents. Automatic-close
+activity tracking uses message metadata; link-preview detection reads content. Single member REST
+fetches require no `GuildMembers` Gateway intent; presence intent is also unnecessary. Command
 registration is a separate guild or global deployment operation, not part of normal runtime
 startup. See the README for the operator installation procedure and command-deployment commands.
 
@@ -1861,7 +1861,7 @@ Destination changes serialize on the `guild_settings` row and atomically write t
 dedicated PostgreSQL audit. An exact no-op changes neither timestamp nor audit history. Ambiguous
 write responses are checked through the stable audit ID; a later destination change does not erase
 that historical proof. PostgreSQL remains authoritative. The configuration-time Discord preflight
-is point-in-time. Phase 9B-2B projects newly committed audits from the six existing audit tables.
+is point-in-time. Phase 9B-2B projects newly committed audits from the seven current audit tables.
 The projection explicitly selects safe metadata, never message content or embed fields. Publication follows successful commit or exact same-ID confirmation;
 recurring operations publish only audit rows actually committed, including gap/skip audits and any
 managed-message audit in a combined transaction. A process-local dispatcher owns asynchronous
@@ -1876,6 +1876,105 @@ Deferred ideas must not be implemented during these phases without an approved s
 
 A process-local retention runtime uses the existing application PostgreSQL client. It schedules an initial sweep after startup without waiting for the backlog before READY, then schedules each later sweep 24 hours after the previous one settles. Single-flight ownership prevents overlapping sweeps. Shutdown marks the runtime as stopping, cancels its timer, and drains its current bounded statement through the existing application quiesce phase before the database closes.
 
-Each sweep captures one instant and subtracts exactly 90 * 24 hours. A dedicated persistence boundary deletes only rows with audit timestamps strictly before that cutoff from the six explicit audit tables. Each atomic PostgreSQL statement selects at most 500 IDs ordered by timestamp and ID, deletes those rows, and returns IDs only for counting. The five new timestamp-and-ID indexes support this global query shape; the existing audit-log-destination retention index remains. A source failure is logged with bounded metadata and does not stop other sources or affect readiness.
+Each sweep captures one instant and subtracts exactly 90 * 24 hours. A dedicated persistence boundary deletes only rows with audit timestamps strictly before that cutoff from the seven explicit audit tables. Each atomic PostgreSQL statement selects at most 500 IDs ordered by timestamp and ID, deletes those rows, and returns IDs only for counting. The five new timestamp-and-ID indexes support this global query shape; the existing audit-log-destination retention index remains. A source failure is logged with bounded metadata and does not stop other sources or affect readiness.
 
 Audit deletion leaves authoritative schedule, managed-resource, and configuration state untouched. It does not publish audit references or Discord notifications. An already eligible audit may disappear before best-effort notification projection; the existing missing-projection behavior applies. The period is fixed globally for this MVP, cleanup is periodic rather than exact TTL, and per-guild configurability remains unresolved.
+
+## Message-link preview implementation
+
+`link-preview.ts` contains link/ID grammar, bounded pure rendering and application orchestration.
+`link-preview-permissions.ts` validates fresh raw DTOs and computes conservative public proof and
+individual effective permissions. `link-preview-discord.ts` owns raw REST calls and global button
+routing; no collectors, timers, target cache or scheduler are used. Existing automatic-close handlers
+remain separate. Both new handlers enter through `runtime.ingress.run()` and retain their promises
+through all fetches, sends and ephemeral edits under the existing shared 30-second shutdown deadline.
+
+Raw channel and role reads preserve missing/invalid fields as unconfirmed instead of accepting
+cached discord.js defaults. For threads, refresh the direct parent and validate the type/guild/parent
+relationship. Age state must be explicit `nsfw: false` on that parent or direct target. Category state
+is not a second permission layer. Public proof checks everyone's view/history grants and every
+non-everyone overwrite deny; the bot's own read access is a separate condition. Click authorization
+uses fresh guild/roles and individual Get Guild Member calls, plus Get Thread Member for private
+threads unless effective ManageThreads permits access. No GuildMembers intent or enumeration is used.
+
+Within each fresh observation boundary, independent channel, guild, role and individual member reads
+run concurrently. Guild/role/member reads are shared across the bounded AUTO batch; channel and direct
+parent reads are deduplicated by ID in a map that is discarded after that observation. Initial and
+final observations never share authority. Private-thread user/bot membership reads also run
+concurrently after fresh effective permissions are known. Wait for all parallel siblings to settle
+even when one fails, retaining shutdown ownership and failing closed. Candidate message/identity
+reads run concurrently across targets, but all finish before final public proof. No stale discord.js
+cache is used as authority or as a preliminary hint.
+
+Keep the early source-sendability preflight to avoid unnecessary target work. After payload
+preparation, concurrently perform a separate fresh source observation and the final target proof;
+await all siblings before immediately creating the one reply. Every public output, including
+button-only helpers and overflow-only replies, uses this final source guard. Revalidate source
+identity, guild, supported type, current bot view/history/embed/send permissions and thread state.
+Source threads must have explicit `archived: false` and `locked: false`, with a fresh valid parent
+relation. Private sources additionally require fresh existing bot membership from Get Thread Member,
+regardless of ManageThreads or Administrator. Missing, invalid or failed membership observations
+suppress private-source replies. Public, announcement and forum-post sources do not require existing
+membership and perform no source Get Thread Member lookup. Their normal Create Message may cause
+Discord to add WEFT as a member; that implicit membership change is allowed only for public sources.
+Never explicitly join, leave, modify, unarchive or unlock a source thread to create a preview.
+Each observation discards its membership map; no cached authority crosses from preflight to final
+checks. The final observation and Create Message are not atomic, so a later
+Discord state change can still race the send. All added REST work remains awaited within ingress.
+
+Local parsing collects all distinct supported same-guild candidates and their source ordinals.
+Separate feature constants bound visible items (`MAX_VISIBLE_ITEMS = 3`) and examined candidates
+(`MAX_CANDIDATES_EXAMINED = 6`). Classify only the first six candidates as one concurrent fresh batch.
+Prepare their initially safe-public messages concurrently, then freshly revalidate every prepared
+candidate before selecting the first three final eligible items in source order. Preparing standby
+candidates allows slot filling after final revocation without any content reads after final proof.
+Message/identity reads are bounded by six; shared fresh guild/role/member/parent reads retain their
+observation-local deduplication. Never fetch a seventh candidate just to compute overflow.
+
+Compute overflow as eligible examined items minus displayed items, plus unexamined candidate count.
+Public-only excludes every examined restricted/uncertain/age-ineligible or failed-message candidate;
+hybrid includes generic fallbacks but excludes confirmed age-ineligible candidates. Button-only counts
+syntactic candidates without target investigation, sends at most three buttons, and counts the rest
+as overflow. Off has no output or target reads. Preserve full-source candidate count for deciding
+`Preview` versus `Preview N`, even when only one button is finally visible. Nonzero overflow is plain
+`+N more` message content; zero overflow leaves content absent. Overflow-only replies are allowed for
+unexamined links and convey no target facts.
+
+Prepare every AUTO candidate's content, identity and bounded embed before starting the final
+observation batch. Drop protected payloads whose fresh proof or age eligibility failed; hybrid may
+replace a restricted/unconfirmed result with an ID-only helper. Immediately call Create Message after
+synchronous assembly. Ephemeral content likewise receives a final authorization/age observation.
+Reads and sends are not atomic; no later permission/edit/delete monitoring is implied. Keep all
+protected names, content, avatars, attachment URLs/names, raw embeds, errors, stacks and interaction
+tokens out of logs. Log only selected IDs and bounded codes. In particular, ambiguous Create Message
+ends with `SEND_UNCONFIRMED`; no application resend. The source-derived SHA-256 nonce is domain
+separated and versioned, bounded to 25 characters, stable across restart and sent with
+`enforce_nonce: true`. Immediately after final proof, send at most one reply combining public embeds
+and generic Secondary Preview buttons. Attempt it once; never retry an ambiguous send. The reply has no
+helper explanation text. A single distinct supported link uses `Preview`; multiple links use `Preview N`
+according to source appearance order, including public and omitted targets. Legacy components follow
+all embeds rather than appearing between them. Footer location comes only from successful final
+fresh observations. Public AUTO targets have no Open original component; authorized button previews
+always include Open original, regardless of target classification.
+
+Migration 0019 extends guild settings with a constrained default-hybrid mode and adds the seventh
+audit source, `link_preview_audits`. A row lock serializes setters; mode, timestamp and audit commit
+in one transaction. A stable audit ID provides exact historical confirmation after response loss.
+No-op writes do not change timestamps or insert audits. Show/detection reads never create settings.
+Notification projection selects only administrative mode metadata; retention uses `(occurred_at, id)`.
+No preview or click payload/history is persisted.
+
+After ordinary Node 24 verification, the maintainer must run `weft-integration` with dedicated test
+PostgreSQL settings. Codex must not read those settings or run the secret-dependent suite. Integration
+coverage includes the 0018-to-0019 upgrade, preservation of existing values/timestamps, constraints,
+no-op behavior, concurrent setters, rollback, exact audit confirmation, publication and retention.
+
+A user-run live Discord gate is also required before pre-commit approval: verify all modes, safe-public
+AUTO, restricted helpers, authorized/unauthorized and revoked clicks, private/public/forum threads,
+age-restricted targets and parents, deleted messages, multiple links, identity/avatar/image rendering,
+Open original, mention suppression and no recursive output. Test permission/age changes after helper
+creation. Neither PostgreSQL nor live Discord verification is implied by passing unit tests.
+
+Discord reference contracts: [permissions](https://docs.discord.com/developers/topics/permissions),
+[channel/thread resources](https://docs.discord.com/developers/resources/channel), and
+[message creation](https://docs.discord.com/developers/resources/message).

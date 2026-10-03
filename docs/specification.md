@@ -220,8 +220,8 @@ PostgreSQL remains authoritative for configuration and audit history. Discord va
 point-in-time check. The Discord channel is never authoritative audit storage.
 
 Newly committed audits from `thread_audits`, `scheduled_thread_close_audits`,
-`managed_message_audits`, `scheduled_message_audits`, `recurring_message_audits`, and
-`audit_log_destination_audits` are eligible for best-effort notification to the currently configured
+`managed_message_audits`, `scheduled_message_audits`, `recurring_message_audits`,
+`audit_log_destination_audits`, and `link_preview_audits` are eligible for best-effort notification to the currently configured
 destination. Notification projection loads the committed audit by exact source and ID and uses only
 bounded metadata. Message content, embed fields, names, raw errors, and arbitrary before/after text
 are excluded. Notifications use plain text and suppress all mentions. Each attempt reads the current
@@ -233,6 +233,125 @@ from source and audit ID reduces duplicates; it does not guarantee exactly-once 
 attempted once without retry. There is no replay, backfill, or ordering guarantee. A process crash
 may lose a notification after its PostgreSQL audit commits. Normal graceful shutdown drains accepted
 notification tasks under the existing shared deadline before Discord and PostgreSQL close.
+
+### Permission-aware message-link previews
+
+New ordinary human guild messages of type DEFAULT or REPLY may trigger previews in guild text,
+announcement and supported thread contexts. Skip bot/self, webhook, system, direct/group messages,
+unsupported channels, empty content and unsupported links. Automatic-close activity tracking remains
+independent. Message edit/delete listeners are outside this feature.
+
+The persistent per-guild `link_preview_mode` defaults to `hybrid`, including existing rows. The
+commands `/config link-preview show` and `/config link-preview mode value:<mode>` require
+`ManageGuild`; `/config show` includes the current mode. Read-only preview lookups project missing
+rows as `hybrid` without insertion. Exact mode no-ops change neither timestamps nor audit history.
+Real mode changes and their dedicated `link_preview_audits` records commit atomically and participate
+in audit notifications and retention. Preview execution and clicks have no persistent history or audit.
+
+| Mode          | Proven safe-public | Restricted or uncertain | Confirmed age-restricted             |
+| ------------- | ------------------ | ----------------------- | ------------------------------------ |
+| `hybrid`      | Automatic embed    | Generic Preview button  | No output                            |
+| `public-only` | Automatic embed    | No output               | No output                            |
+| `button-only` | Generic button     | Generic button          | Generic button without target lookup |
+| `off`         | No output          | No output               | No output                            |
+
+`button-only` does not fetch target existence, permissions or age state at detection. `off` performs
+no target requests, rendering or sending. Existing buttons fail before target lookup when the current
+mode is `off` or `public-only`. Successful clicks are ephemeral and require current authorization.
+All failed or unconfirmed clicks use the same generic message: "WEFT could not show this message."
+Helpers reveal no target content, author, avatar, names, attachments, embeds or existence details.
+
+Supported URLs are HTTPS `https://<host>/channels/<guild-id>/<channel-id>/<message-id>`, with hosts
+`discord.com` or `discordapp.com`, optionally prefixed by `www.`, `ptb.` or `canary.`. Plain URLs,
+angle wrappers, Markdown destinations and surrounding prose are supported. Query/fragment do not
+change identity. Reject userinfo, explicit ports, backslashes, normalized dot segments, encoded IDs,
+extra path segments and trailing slashes. IDs are canonical positive decimals with no leading zero,
+at most 20 digits and within uint64 range. Cross-guild targets are ignored before any target request.
+Deduplicate by all three IDs in appearance order using local parsing only. Keep source-level ordinals
+and the total candidate count. `MAX_CANDIDATES_EXAMINED = 6` bounds Discord investigation to the first
+six candidates; later candidates receive no target/channel/message/permission/existence lookup.
+`MAX_VISIBLE_ITEMS = 3` bounds actual preview/button items, not the first three candidates.
+
+Safe-public is a conservative sufficient proof from fresh raw Discord state. For a text/announcement
+channel, or the fresh direct parent of a public/announcement/forum thread, validate the guild, type
+and complete permission overwrite data. Apply only that channel's everyone overwrite to the fresh
+`@everyone` guild role. Both `ViewChannel` and `ReadMessageHistory` must remain, and no non-everyone
+role/member overwrite may deny either bit. Unknown, malformed, missing or unconfirmed evidence cannot
+prove safe-public. Category overwrites are not applied again. Bot access is checked separately and
+never establishes the public proof. Private threads are never automatic.
+
+Clicks fetch fresh target/parent, guild, role and individual member data. Require view/history access
+and, for private threads, current membership or effective `ManageThreads`. Bot access is separately
+checked. Archived/locked targets can be read without joining, unarchiving or unlocking. Age eligibility
+is never inferred: only fresh `nsfw === false` on a direct text/announcement target or thread's direct
+parent permits content rendering. Missing/invalid age data, wrong parents or failed reads fail closed.
+No owner, Administrator, ManageThreads or membership exception allows age-restricted previews.
+
+All candidate content and identity reads and bounded rendering finish before a final batch of fresh
+channel/thread/parent, permission and age observations. Immediately before public Create Message,
+remove protected payloads that fail revalidation. In hybrid, restricted/unconfirmed candidates become
+generic buttons and age-restricted candidates disappear; public-only drops every unproven candidate.
+No unrelated database or REST waits intervene after that batch. Click previews likewise reauthorize
+and recheck age state immediately before replying. Discord reads and sends are not atomic. Already
+created previews are point-in-time copies and are not updated or deleted after later permission
+changes, edits or deletions. Monitoring, preview tracking and retroactive removal are out of scope.
+
+WEFT generates embeds, never native forwards or impersonating webhooks. The shared renderer includes
+original nickname/global-name/username fallback, avatar, timestamp and bounded text. Authorized
+location is the actual `#channel-name` or `#parent-name › thread-name` (including forum/post names),
+taken from the final fresh observation. Generic helpers and failures never include protected names.
+There is no preview title or WEFT prefix, and no raw location ID or developer-oriented label in the
+footer. Description is at most 1500 UTF-16 units and author/footer at most 128 each; no fields.
+Three embeds remain below 6000 aggregate text units. Preserve surrogate pairs, omit text spoilers and
+neutralize mention tokens without resolving names. At most one eligible non-spoiler image attachment
+is shown by URL without re-upload. Other attachments, original embeds, stickers, polls, voice and
+components are omitted without counts. A short generic fallback covers otherwise empty unsupported
+content; image-only previews need no fallback text. Referenced replies are not additionally fetched;
+forwarded snapshots are omitted without attributing them to the forwarder.
+
+AUTO previews have no Open original button. Every authorized button-triggered ephemeral preview has
+Open original, including public targets in button-only mode. Generic helpers and all failed clicks
+have no original-link button.
+
+Within the first six examined candidates, public-only adopts the first three renderable safe-public
+previews in source order. Restricted, uncertain and age-ineligible candidates consume no visible slot
+and are excluded from examined overflow. Hybrid adopts the first three visible items in source
+order: public embeds or restricted/uncertain buttons; age-ineligible candidates consume no slot.
+Apply these rules after final fresh observations; loss of public proof can remove an item in
+public-only or turn it into a generic button in hybrid. Button-only performs no target investigation
+at detection, adopting the first three syntactic candidates as buttons. Off sends nothing, including
+no overflow, and performs no target investigation.
+
+At most one reply is generated, combining public AUTO embeds and generic Secondary Preview buttons.
+The reply has no preview label or helper explanation text. Only a single distinct supported link in
+the entire source uses `Preview`; otherwise use `Preview N`, where N is the source appearance ordinal,
+including public and omitted candidates. An automatically rendered public target has no Preview
+button but still occupies its source ordinal. Legacy components follow all embeds; buttons cannot
+be inserted between individual embeds. Buttons do not label targets as private/restricted or confirm
+existence; button-only uses the same button contract for nonexistent targets.
+
+When nonzero, display `+N more` as one line of ordinary message content, not a disabled or interactive
+button. N is the sum of examined eligible items omitted by the visible limit and unexamined syntactic
+candidates beyond the six-candidate budget. Examined candidates excluded by mode/policy do not count:
+public-only restricted/uncertain targets, confirmed age-ineligible targets, and public-only message
+read failures are excluded. Unexamined overflow is source-level only; it does not confirm existence,
+public/private status, access or previewability. It contains no names, authors, content or raw IDs.
+If only unexamined overflow remains, the reply contains that count alone; off never displays it.
+
+Suppress all mentions and replied-user mentions. Source deletion fails the reply; never fall back to
+an unreferenced send. WEFT never explicitly joins, leaves or modifies source threads to create a
+preview. Archived or locked source threads are never used for preview replies; WEFT does not
+unarchive or unlock them. Sending to an active public, announcement or forum-post source thread may
+cause Discord to add WEFT as a member through normal message-send behavior. Existing membership is
+not required for these public sources. Private source threads require fresh existing bot membership,
+regardless of ManageThreads or Administrator, so WEFT does not implicitly join them. Revalidate
+source identity, guild, supported type, parent relation, required read/send/embed permissions and
+thread state after payload preparation, in parallel with final target proof, immediately before
+Create Message. The reply uses a stable versioned source-derived nonce enforced by Discord, with one
+application attempt and no blind replay.
+The existing READY-only ingress owns message/button work and drains all admitted REST/send/edit work.
+The Client adds only MessageContent to Guilds and GuildMessages; operators must enable it in the
+Developer Portal. No extra bot permission or runtime dependency is required.
 
 ### Thread command structure
 
@@ -971,7 +1090,7 @@ Audit coverage includes:
 - authorization-related configuration changes,
 - failed administrative operations.
 
-The initial audit retention period is fixed globally at 90 * 24 hours. A process-local cleanup sweep is scheduled shortly after startup without delaying readiness, then 24 hours after each completed sweep. Every sweep uses one cutoff and deletes rows whose audit timestamp is strictly older than that cutoff, in bounded batches. The six covered sources are thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, and audit-log-destination audits. Cleanup is periodic, not an exact expiration deadline.
+The initial audit retention period is fixed globally at 90 * 24 hours. A process-local cleanup sweep is scheduled shortly after startup without delaying readiness, then 24 hours after each completed sweep. Every sweep uses one cutoff and deletes rows whose audit timestamp is strictly older than that cutoff, in bounded batches. The seven covered sources are thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, audit-log-destination, and link-preview mode audits. Cleanup is periodic, not an exact expiration deadline.
 
 Retention deletes only audit history. It does not delete or change active schedules, managed resources, configuration, or recovery state, and it creates no audit notifications. A source cleanup failure does not invalidate application operations; outstanding work waits for a later sweep. Shutdown drains an in-flight batch before PostgreSQL closes, subject to the existing process-wide shutdown deadline.
 
@@ -995,7 +1114,6 @@ User-facing errors must not expose:
 
 The following ideas are outside the MVP and do not yet have an approved implementation design:
 
-- Discord message-link previews,
 - polls,
 - reaction-role assignment,
 - monitoring message edits and deletions,

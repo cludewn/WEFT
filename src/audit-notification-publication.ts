@@ -1,5 +1,6 @@
 import { inArray } from "drizzle-orm";
 
+import { linkPreviewAudits, type LinkPreviewStore } from "./link-preview-persistence.js";
 import {
   auditLogDestinationAudits,
   type AuditLogDestinationStore,
@@ -46,6 +47,12 @@ export async function publishExistingAudits(
   try {
     let committed: { id: string }[];
     switch (source) {
+      case "LINK_PREVIEW":
+        committed = await database
+          .select({ id: linkPreviewAudits.id })
+          .from(linkPreviewAudits)
+          .where(inArray(linkPreviewAudits.id, ids));
+        break;
       case "THREAD":
         committed = await database
           .select({ id: threadAudits.id })
@@ -284,6 +291,22 @@ export function publishAuditDestinationChanges(
       if (result.outcome === "CHANGED") {
         await publishExistingAudits(database, publisher, "AUDIT_LOG_DESTINATION", [input.auditId]);
       }
+      return result;
+    },
+  };
+}
+
+export function publishLinkPreviewChanges(
+  database: DatabaseClient,
+  publisher: AuditNotificationPublisher,
+  store: LinkPreviewStore,
+): LinkPreviewStore {
+  return {
+    ...store,
+    async change(input) {
+      const result = await store.change(input);
+      if (result.outcome === "CHANGED")
+        await publishExistingAudits(database, publisher, "LINK_PREVIEW", [input.auditId]);
       return result;
     },
   };
