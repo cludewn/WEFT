@@ -112,6 +112,39 @@ three retries, and a 60-second startup grace period. The health port is not publ
 A timed-out readiness request leaves any unfinished database query owned by the process until it
 settles or the shared shutdown deadline expires; no second physical health query starts meanwhile.
 
+## One-time scheduled messages
+
+Use exactly one of the relative `after` or absolute `at` options:
+
+```text
+/message schedule create after:2h
+/message schedule create at:"2026-10-10 19:30"
+/message schedule reschedule id:<schedule-id> after:2h
+/message schedule reschedule id:<schedule-id> at:"2026-10-10 19:30"
+```
+
+`after` retains the single `m`, `h`, or `d` duration grammar from `1m` through `365d`. Create opens
+the existing message/embed modal; its full delay begins after submission and fresh service
+preflight. `at` requires exactly `YYYY-MM-DD HH:mm`, with ASCII digits, zero-padded fields, one
+space and a 24-hour clock. Extra whitespace, `T`, seconds, offsets, `Z`, timezone annotations and
+invalid calendar dates are rejected. Missing or conflicting selectors are rejected. Empty supplied
+values are invalid input, not omitted selectors.
+
+`at` uses the current configured guild timezone (`UTC` by default). Create loads it during modal
+submission processing, so a timezone change while the modal is open takes effect on submission.
+Reschedule loads it during that operation. Invalid or numeric-offset saved zones are rejected
+without fallback. Both nonexistent DST gap times and ambiguous DST overlap times are rejected;
+choose another time or use `after`.
+
+The service establishes one clock after preflight and required timezone lookup. The canonical
+instant must be at least one minute and at most 365 elapsed 24-hour days ahead, both inclusive.
+The maximum is not a local calendar year. PostgreSQL persists only that instant, so later guild
+timezone changes never move an existing one-time schedule. Success uses `<t:unix:F> (<t:unix:R>)`,
+which Discord displays in each viewer's client timezone; that can differ from the guild-local
+input. Existing persistence, audits, pg-boss delivery, recovery, reconciliation and concurrency
+protection are reused. This adds no migration, dependency, intent, bot permission or exactly-once
+guarantee.
+
 ## Confirmed interactive bulk thread closing
 
 Run `/thread bulk-close` to open the setup Modal. Select one text, announcement or forum parent,

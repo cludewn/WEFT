@@ -2,6 +2,12 @@ import { asc, eq, inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  createGuildSettingsStore,
+  guildSettings,
+  type GuildSettingsStore,
+} from "../../src/guild-settings.js";
+import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
 import { scheduledActions } from "../../src/scheduled-action-persistence.js";
@@ -21,6 +27,7 @@ const actorId = "scheduled-admin-actor";
 const baseTime = new Date("2031-01-01T00:00:00.000Z");
 const database = createDatabase(loadTestDatabaseConfig());
 const store = createScheduledMessageStore(database.client);
+const settings = createGuildSettingsStore(database.client);
 
 beforeAll(async () => {
   await migrate(database.client, { migrationsFolder: "drizzle" });
@@ -371,6 +378,290 @@ describe("scheduled message administration persistence", () => {
   });
 });
 
+describe("absolute one-time application persistence", () => {
+  it.each([false, true])(
+    "atomically stores AT action/state/CREATED audit with response loss = %s",
+    async (loseResponse) => {
+      const id = `absolute-create-${loseResponse}`;
+      const commandStore = loseResponse
+        ? createScheduledMessageStore(responseLossDatabase(() => Promise.resolve(undefined)))
+        : store;
+      const f = absoluteCommand(commandStore, [id, `${id}-audit`]);
+      await expect(
+        f.command.create({
+          guildId,
+          channelId,
+          actorUserId: actorId,
+          schedule: { kind: "AT", localDateTime: "2031-01-01 10:00" },
+          payload: { content: "absolute payload", embed: null },
+        }),
+      ).resolves.toMatchObject({
+        outcome: "SUCCESS",
+        definition: { action: { id, executeAt: new Date("2031-01-01T10:00:00Z") } },
+      });
+      await expect(store.find(id)).resolves.toMatchObject({
+        action: {
+          id,
+          actionType: "SEND_MESSAGE",
+          status: "ACTIVE",
+          executeAt: new Date("2031-01-01T10:00:00Z"),
+        },
+        payload: { content: "absolute payload", embed: null },
+        creatorUserId: actorId,
+        revision: 0,
+        retryCount: 0,
+        resultMessageId: null,
+      });
+      await expect(
+        database.client
+          .select()
+          .from(scheduledMessageAudits)
+          .where(eq(scheduledMessageAudits.scheduledActionId, id)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          id: `${id}-audit`,
+          event: "CREATED",
+          executeAt: new Date("2031-01-01T10:00:00Z"),
+          occurredAt: baseTime,
+          content: "absolute payload",
+          actorId,
+        }),
+      ]);
+      await expect(settings.getOrCreate(guildId)).resolves.toMatchObject({ timezone: "UTC" });
+      await settings.setTimezone(guildId, "Asia/Tokyo");
+      await expect(store.find(id)).resolves.toMatchObject({
+        action: { executeAt: new Date("2031-01-01T10:00:00Z") },
+      });
+      expect(f.ensureScheduledMessageDelivery).toHaveBeenCalledWith({
+        scheduledActionId: id,
+        executeAt: new Date("2031-01-01T10:00:00Z"),
+        revision: 0,
+      });
+    },
+  );
+
+  it("rolls back AT action and state when the CREATED audit cannot commit", async () => {
+    await store.create(creation("absolute-audit-owner", baseTime, "existing payload"));
+    const f = absoluteCommand(store, ["absolute-rollback", "absolute-audit-owner-created-audit"]);
+    await expect(
+      f.command.create({
+        guildId,
+        channelId,
+        actorUserId: actorId,
+        schedule: { kind: "AT", localDateTime: "2031-01-01 10:00" },
+        payload: { content: "rollback payload" },
+      }),
+    ).resolves.toEqual({ outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED" });
+    await expect(store.find("absolute-rollback")).resolves.toBeUndefined();
+    await expect(
+      database.client
+        .select()
+        .from(scheduledActions)
+        .where(eq(scheduledActions.id, "absolute-rollback")),
+    ).resolves.toEqual([]);
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageStates)
+        .where(eq(scheduledMessageStates.scheduledActionId, "absolute-rollback")),
+    ).resolves.toEqual([]);
+    expect(f.ensureScheduledMessageDelivery).not.toHaveBeenCalled();
+  });
+
+  it("reschedules AT on the same row with the current timezone, one revision, preserved state and exact audit", async () => {
+    await settings.setTimezone(guildId, "Asia/Tokyo");
+    const f = absoluteCommand(store, [
+      "absolute-reschedule",
+      "absolute-reschedule-created",
+      "absolute-rescheduled-audit",
+    ]);
+    const created = await f.command.create({
+      guildId,
+      channelId,
+      actorUserId: actorId,
+      schedule: { kind: "AT", localDateTime: "2031-01-01 10:00" },
+      payload: { content: "preserved payload", embed: null },
+    });
+    if (created.outcome !== "SUCCESS") throw new Error("creation failed");
+    await database.client
+      .update(scheduledMessageStates)
+      .set({ retryCount: 2 })
+      .where(eq(scheduledMessageStates.scheduledActionId, created.definition.action.id));
+    await settings.setTimezone(guildId, "UTC");
+    await expect(
+      f.command.reschedule({
+        scheduledActionId: created.definition.action.id,
+        guildId,
+        channelId,
+        actorUserId: "rescheduling-actor",
+        schedule: { kind: "AT", localDateTime: "2031-01-01 12:00" },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "RESCHEDULED",
+      definition: {
+        action: {
+          id: created.definition.action.id,
+          executeAt: new Date("2031-01-01T12:00:00Z"),
+          createdAt: created.definition.action.createdAt,
+          status: "ACTIVE",
+        },
+        revision: 1,
+        retryCount: 2,
+        creatorUserId: actorId,
+        payload: created.definition.payload,
+        resultMessageId: null,
+      },
+    });
+    await expect(
+      database.client.select().from(scheduledActions).where(eq(scheduledActions.guildId, guildId)),
+    ).resolves.toHaveLength(1);
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageStates)
+        .where(eq(scheduledMessageStates.scheduledActionId, created.definition.action.id)),
+    ).resolves.toHaveLength(1);
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(eq(scheduledMessageAudits.scheduledActionId, created.definition.action.id))
+        .orderBy(asc(scheduledMessageAudits.id)),
+    ).resolves.toEqual([
+      expect.objectContaining({ event: "CREATED", executeAt: new Date("2031-01-01T01:00:00Z") }),
+      expect.objectContaining({
+        id: "absolute-rescheduled-audit",
+        event: "RESCHEDULED",
+        executeAt: new Date("2031-01-01T12:00:00Z"),
+        occurredAt: baseTime,
+        actorId: "rescheduling-actor",
+        content: "preserved payload",
+      }),
+    ]);
+    await settings.setTimezone(guildId, "America/New_York");
+    await expect(store.find(created.definition.action.id)).resolves.toMatchObject({
+      action: { executeAt: new Date("2031-01-01T12:00:00Z") },
+      revision: 1,
+    });
+    await expect(store.claimExecution(created.definition.action.id, 0)).resolves.toMatchObject({
+      outcome: "NOT_TRANSITIONED",
+    });
+    await expect(store.claimExecution(created.definition.action.id, 1)).resolves.toMatchObject({
+      outcome: "COMMITTED",
+    });
+    await expect(
+      f.command.reschedule({
+        scheduledActionId: created.definition.action.id,
+        guildId,
+        channelId,
+        actorUserId: actorId,
+        schedule: { kind: "AT", localDateTime: "2031-01-01 12:00" },
+      }),
+    ).resolves.toEqual({ outcome: "EXECUTING" });
+  });
+
+  it("lets an execution claim during AT timezone lookup defeat the earlier editable snapshot", async () => {
+    const initial = await store.create(
+      creation("absolute-claim-race", new Date("2031-01-01T01:00:00Z"), "preserved"),
+    );
+    const f = absoluteCommand(store, ["absolute-claim-loser-audit"], {
+      async getOrCreate(id) {
+        const current = await settings.getOrCreate(id);
+        await expect(
+          store.claimExecution(initial.action.id, initial.revision),
+        ).resolves.toMatchObject({ outcome: "COMMITTED" });
+        return current;
+      },
+    });
+    await expect(
+      f.command.reschedule({
+        scheduledActionId: initial.action.id,
+        guildId,
+        channelId,
+        actorUserId: actorId,
+        schedule: { kind: "AT", localDateTime: "2031-01-01 02:00" },
+      }),
+    ).resolves.toEqual({ outcome: "EXECUTING" });
+    await expect(store.find(initial.action.id)).resolves.toMatchObject({
+      action: { status: "EXECUTING", executeAt: initial.action.executeAt },
+      revision: 0,
+    });
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(eq(scheduledMessageAudits.scheduledActionId, initial.action.id)),
+    ).resolves.toEqual([expect.objectContaining({ event: "CREATED" })]);
+    expect(f.ensureScheduledMessageDelivery).not.toHaveBeenCalled();
+  });
+
+  it("confirms AT reschedule after response loss and a later revision without rewriting or restoring old state", async () => {
+    const initial = await store.create(
+      creation("absolute-reschedule-loss", new Date("2031-01-01T01:00:00Z"), "preserved"),
+    );
+    const lossyStore = createScheduledMessageStore(
+      responseLossDatabase(async () => {
+        await store.reschedule({
+          ...scope(initial),
+          actorId,
+          expectedRevision: 1,
+          executeAt: new Date("2031-01-01T03:00:00Z"),
+          auditId: "absolute-later-reschedule",
+          occurredAt: baseTime,
+        });
+      }),
+    );
+    const f = absoluteCommand(lossyStore, ["absolute-reschedule-loss-audit"]);
+    await expect(
+      f.command.reschedule({
+        scheduledActionId: initial.action.id,
+        guildId,
+        channelId,
+        actorUserId: actorId,
+        schedule: { kind: "AT", localDateTime: "2031-01-01 02:00" },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "RESCHEDULED",
+      definition: { revision: 1, action: { executeAt: new Date("2031-01-01T02:00:00Z") } },
+    });
+    await expect(store.find(initial.action.id)).resolves.toMatchObject({
+      revision: 2,
+      action: { executeAt: new Date("2031-01-01T03:00:00Z") },
+    });
+    expect(f.ensureScheduledMessageDelivery).toHaveBeenCalledWith({
+      scheduledActionId: initial.action.id,
+      revision: 2,
+      executeAt: new Date("2031-01-01T03:00:00Z"),
+    });
+    await expect(
+      database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(eq(scheduledMessageAudits.scheduledActionId, initial.action.id)),
+    ).resolves.toHaveLength(3);
+  });
+});
+
+function absoluteCommand(
+  commandStore: typeof store,
+  ids: string[],
+  timezoneSettings: Pick<GuildSettingsStore, "getOrCreate"> = settings,
+) {
+  const ensureScheduledMessageDelivery = vi.fn(() => Promise.resolve("CURRENT" as const));
+  const command = createScheduledMessageCommandService({
+    discord: {
+      authorizeCreation: vi.fn(() => Promise.resolve({ outcome: "AUTHORIZED" as const })),
+    },
+    store: commandStore,
+    guildSettings: timezoneSettings,
+    delivery: { ensureScheduledMessageDelivery, cancelScheduledMessageDeliveries: vi.fn() },
+    logger: { warn: vi.fn() },
+    now: () => baseTime,
+    generateId: () => ids.shift()!,
+  });
+  return { command, ensureScheduledMessageDelivery };
+}
+
 function creation(id: string, executeAt: Date, content: string): CreateScheduledMessage {
   return {
     scheduledActionId: id,
@@ -420,6 +711,7 @@ function reschedule(
 }
 
 async function cleanup(): Promise<void> {
+  await database.client.delete(guildSettings).where(eq(guildSettings.guildId, guildId));
   await database.client
     .delete(scheduledMessageAudits)
     .where(eq(scheduledMessageAudits.guildId, guildId));

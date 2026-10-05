@@ -300,10 +300,13 @@ describe("recurring scheduled-message administration service", () => {
     });
   });
 
-  it("keeps recurring IDs out of one-time reschedule persistence", async () => {
+  it.each([
+    { kind: "AFTER", durationMs: 60_000 } as const,
+    { kind: "AT", localDateTime: "2030-01-01 09:00" } as const,
+  ])("keeps recurring IDs out of one-time reschedule persistence for $kind", async (schedule) => {
     const f = fixture();
     await expect(
-      f.service.reschedule({ ...input, scheduledActionId: "series-id", durationMs: 60_000 }),
+      f.service.reschedule({ ...input, scheduledActionId: "series-id", schedule }),
     ).resolves.toEqual({ outcome: "WRONG_KIND" });
     expect(f.oneTimeReschedule).not.toHaveBeenCalled();
   });

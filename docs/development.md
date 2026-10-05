@@ -1622,16 +1622,17 @@ waits 60 seconds after each completed sweep. The worker count is one; correctnes
 the database claim rather than worker count.
 
 Phase 8C-1 adds `/message schedule create`, `cancel`, and `status` without changing the existing
-`send` and `edit` subcommands. Create stores only the validated relative delay in its modal custom
-ID and reuses the managed-message payload fields and validator. After modal submission, a dedicated
+`send` and `edit` subcommands. Create stores only the validated one-time selector in its modal
+custom ID and reuses the managed-message payload fields and validator. Legacy relative-delay IDs
+remain readable after Issue #91 adds the absolute selector. After modal submission, a dedicated
 Discord boundary freshly checks the target, active thread state, actor `ManageMessages`, and bot
 view/send permissions, including `EmbedLinks` only for an explicit embed. It does not send, join a
 private thread, unarchive a thread, or hold a PostgreSQL transaction during Discord reads.
 
-After successful preflight, the application generates stable action and audit IDs, captures one
-establishment timestamp, derives `execute_at` from that timestamp, and uses the same timestamp for
-the `CREATED` audit. Existing exact creation confirmation remains authoritative. Initial pg-boss
-enqueue occurs only after confirmed persistence. An enqueue error is confirmed by a read-only
+After successful preflight, the application generates stable action and audit IDs, performs any
+required guild-timezone lookup, then captures one establishment timestamp. It normalizes the
+one-time selector to `execute_at` and uses the same establishment timestamp for the `CREATED` audit.
+Existing exact creation confirmation remains authoritative. Initial pg-boss enqueue occurs only after confirmed persistence. An enqueue error is confirmed by a read-only
 effective-delivery check; otherwise the active schedule is reported as pending reconciliation and
 left for the existing startup/runtime repair path.
 
@@ -1695,6 +1696,61 @@ wakeups while authoritative execution time remains in the future, and relies on 
 database claim to prevent stale or duplicate Discord effects.
 
 One-time list, edit, and reschedule commands are implemented.
+
+#### Absolute one-time message scheduling (Issue #91)
+
+`one-time-message-schedule.ts` owns the shared `AFTER`/`AT` selector, strict parser, bounded errors
+and canonical normalization. `/message schedule create [after:<duration>] [at:<local-datetime>]`
+and `reschedule id:<id> [after:<duration>] [at:<local-datetime>]` define both selectors as optional,
+with required `id` first. The handler enforces XOR by option presence, validates syntax/calendar
+and transports the selector through the existing payload modal. Empty supplied strings remain
+invalid. `at` has equal min/max lengths of 16; the parser requires ASCII `YYYY-MM-DD HH:mm`, one
+space and `00:00` through `23:59`, then uses `Temporal.PlainDateTime.from` with overflow rejection.
+No whitespace trimming, locale parsing, seconds, offsets, annotations or calendar normalization
+is allowed. Relative parsing remains unchanged.
+
+The old numeric duration modal IDs remain supported. AT uses the same owned prefix with an `at:`
+discriminator and strict local input. No timezone or canonical instant is encoded; malformed and
+oversize identities fail before service calls. The existing five payload fields and stateless
+transport remain, with no persistent modal sessions.
+
+The application service freshly authorizes create or loads scoped editable reschedule state,
+then loads current `guild_settings.timezone` only for AT. Create does this during modal submission
+processing, so settings changed while the form is open are authoritative at submission. Reschedule
+reads settings during its operation. Reuse `getOrCreate` for the existing missing-setting UTC
+default and `normalizeRecurringTimezone` for named-IANA validation, including supported aliases.
+Reject invalid saved zones and numeric offsets without fallback. Separate bounded timezone lookup
+failure from invalid stored timezone; never surface raw values or exceptions.
+
+After preflight and lookup, capture exactly one `establishedAt = now()`. AFTER continues through
+`addRelativeDuration`; AT converts the validated local datetime directly using `resolveLocalCandidate`
+with the explicit guild timezone. Reject both `DST_GAP` and the resolver's overlap flag. Never
+persist the resolver's earlier occurrence for one-time overlap input. Recurring gap/overlap policy
+is unchanged. These installed polyfill 0.5.1 APIs do not require `Temporal.TimeZone` or host-local
+Date parsing.
+
+AT horizon validation compares the canonical instant with that single clock: inclusive 60,000 ms
+minimum and 31,536,000,000 ms maximum (365 elapsed days). Do not impose the relative transport's
+whole-minute-multiple rule on this difference. Do not convert AT to a duration or use another clock.
+Do not revalidate minimum lead time at commit; delays after establishment retain existing recovery.
+Both selectors continue through the same `executeAt: Date` persistence and projection path, with
+canonical `CREATED`/`RESCHEDULED` audit data only. Guild timezone changes cannot reinterpret a stored
+instant. Reschedule retains row locks/revisions and preserves payload, creator, retry/result state;
+same-instant reschedules still mutate and audit. Discord success timestamps remain viewer-local.
+
+No schema, migration, dependency, intent, permission, worker, queue, claim, reconciliation or shutdown
+changes are required. Existing duplicate-delivery and response-loss behavior remains authoritative;
+no creation deduplication or exactly-once guarantee is added.
+
+Unit coverage includes XOR presence, strict/calendar grammar, named zones, DST gaps/overlaps
+(including Lord Howe), inclusive horizon/non-minute differences, deterministic preflight-clock
+advancement and single-clock establishment, modal round trips/timezone changes, reschedule and
+bounded response errors. Run the pure absolute tests under distinct host TZ values to verify
+independence. PostgreSQL integration extends administration and worker suites for atomic canonical
+creation/audit (including rollback and response loss), same-row/revision reschedule, unchanged stored
+instants after timezone edits, claims, exact later-revision confirmation and real pg-boss
+projection/reconciliation repair. The maintainer runs secret-dependent `weft-integration` after
+non-secret Node 24 checks; passing unit tests does not establish integration success.
 
 #### Phase 8D: Recurring scheduled messages
 

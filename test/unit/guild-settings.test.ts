@@ -15,14 +15,23 @@ import {
 } from "../../src/guild-settings.js";
 
 describe("guild settings validation", () => {
-  it("accepts Node.js-supported IANA timezones and trims input", () => {
-    expect(validateTimezone(" Asia/Tokyo ")).toBe("Asia/Tokyo");
-    expect(validateTimezone("UTC")).toBe("UTC");
+  it.each([
+    ["Asia/Tokyo", "Asia/Tokyo"],
+    ["America/New_York", "America/New_York"],
+    ["UTC", "UTC"],
+    [" Asia/Tokyo ", "Asia/Tokyo"],
+    ["asia/tokyo", "Asia/Tokyo"],
+    ["US/Eastern", "US/Eastern"],
+  ])("accepts and normalizes named IANA timezone %s", (input, expected) => {
+    expect(validateTimezone(input)).toBe(expected);
   });
 
-  it("rejects an invalid timezone", () => {
-    expect(() => validateTimezone("not/a-timezone")).toThrow(InvalidTimezoneError);
-  });
+  it.each(["JST", "+09:00", "-05:00", "not/a-timezone", "", "   "])(
+    "rejects unsupported timezone %s",
+    (input) => {
+      expect(() => validateTimezone(input)).toThrow(InvalidTimezoneError);
+    },
+  );
 
   it("trims a closed prefix and accepts 1 to 20 Unicode characters", () => {
     expect(validateClosedPrefix(" [DONE] ")).toBe("[DONE]");

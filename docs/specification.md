@@ -1037,13 +1037,13 @@ resume to `EXECUTING` wins over stale expiry reads, and expiry never terminalize
 Scheduled messages expose these commands:
 
 ```text
-/message schedule create after:<duration>
+/message schedule create [after:<duration>] [at:<local-datetime>]
 /message schedule recurring-create frequency:<daily|weekly> time:<HH:MM> [weekdays:<weekday-list>] [timezone:<IANA>]
 /message schedule cancel id:<schedule-id>
 /message schedule status id:<schedule-id>
 /message schedule list [page:<positive-integer>]
 /message schedule edit id:<schedule-id>
-/message schedule reschedule id:<schedule-id> after:<duration>
+/message schedule reschedule id:<schedule-id> [after:<duration>] [at:<local-datetime>]
 /message schedule recurrence-edit id:<schedule-id> frequency:<daily|weekly> time:<HH:MM> [weekdays:<weekday-list>] [timezone:<IANA>]
 ```
 
@@ -1086,9 +1086,50 @@ For recurring rows, `execute_at` is the next scheduled occurrence only while cur
 and after cancellation it may be historical. It is never the retry wake time. User mutations
 compete on the unified revision; a stale edit or cancellation reports conflict without blind retry.
 
-One-time creation accepts one relative duration from `1m` through `365d`, using a single `m`, `h`, or `d`
-unit. The delay begins only after modal submission and fresh authorization succeed. Creation
-revalidates the target, active thread state, actor membership and `ManageMessages`, and WEFT's
+One-time creation and reschedule require exactly one supplied selector: `after` or `at`.
+Neither and both are rejected. An empty supplied value is invalid input, not an omitted option.
+`after` retains the existing single-unit relative duration grammar from `1m` through `365d`,
+using `m`, `h`, or `d`. The create delay begins at the application service's establishment time,
+after payload modal submission and fresh authorization; filling out the modal never shortens it.
+
+`at` is an absolute local datetime interpreted in the current PostgreSQL-backed guild timezone,
+with the existing `UTC` default when no setting exists. Its strict, locale-independent grammar is
+exactly 16 characters: `YYYY-MM-DD HH:mm`, with ASCII digits, zero-padded fields, one ASCII space,
+a four-digit year and a 24-hour clock from `00:00` through `23:59`. Whitespace, newlines, `T`, seconds,
+fractions, offsets, `Z`, timezone annotations and invalid calendar dates are rejected. Calendar
+validation rejects overflow rather than normalizing it. Only validated named IANA timezone
+identifiers, including supported aliases, are accepted; numeric offsets and invalid saved values
+are rejected without UTC fallback. Lookup failure produces a bounded availability error. No
+stored raw timezone or internal parser/database error is exposed.
+
+Create reads the timezone in the application service during payload modal submission processing,
+not when opening the modal. A timezone change while the modal is open uses the value read on
+submission. Reschedule reads the current timezone during its application operation. Conversion
+explicitly uses that timezone and never depends on the server host timezone. One-time `at` rejects
+both nonexistent DST gap times and ambiguous DST overlap times without adjustment or automatic
+selection. For an overlap, choose another unambiguous time or use `after`. Recurring DST policy
+remains unchanged.
+
+After required preflight/state checks and any timezone lookup, the service captures exactly one
+`establishedAt`. Both selectors normalize to the same canonical `executeAt: Date`; `after` adds its
+duration to `establishedAt`, while `at` converts directly to an instant. The inclusive horizon is
+`60_000 <= executeAt - establishedAt <= 31_536_000_000` milliseconds: one minute through
+365 elapsed 24-hour days, not a local calendar year. Past, exactly-now and too-soon/too-far `at`
+values are rejected. The absolute difference need not be a whole-minute multiple; a valid local
+minute may be 90 seconds ahead. Command parsing is not horizon authority. No extra minimum-lead
+check at transaction commit is added; later delays use existing overdue/recovery semantics.
+
+The existing five-field message/embed modal and stateless custom-ID transport carry only the
+selector. Legacy duration IDs remain supported; new AT IDs carry local input, without timezone
+or final instant. Malformed IDs are rejected and all valid IDs remain within 100 characters.
+No persistent modal session is added.
+
+Only the canonical instant is persisted and audited. Later guild timezone changes never reinterpret
+stored one-time schedules. No local datetime, input method or one-time timezone is persisted.
+Success still renders `<t:unix:F> (<t:unix:R>)`; Discord shows that instant in each viewer's client
+timezone, which may differ from the guild timezone that interpreted `at`.
+
+Creation revalidates the target, active thread state, actor membership and `ManageMessages`, and WEFT's
 view/send permissions; an explicit rich embed also requires `EmbedLinks`. Creation persists the
 active schedule and `CREATED` audit before enqueueing delivery and never sends the Discord message
 itself. A confirmed schedule remains active when initial delivery enqueueing cannot be confirmed;
@@ -1119,11 +1160,16 @@ permission, canonical payload, active state, and expected revision. An exact pay
 nothing. A successful edit replaces the complete payload, increments revision once, and commits an
 `EDITED` user audit atomically. A stale form never overwrites a later edit or reschedule.
 
-Reschedule accepts the same `1m` through `365d` single-unit relative duration as creation. The new
-execution time is derived from the reschedule establishment time, not from the old execution time.
+Reschedule accepts the same `after`/`at` selector contract as creation. It replaces the old execution
+instant with the newly normalized instant; `after` is measured from the reschedule establishment
+time, never from the old execution time. The same execution instant still performs a reschedule,
+including its revision and audit; no new no-op rule applies.
 Only `ACTIVE` schedules may change. A successful reschedule updates only execution time and the
 scheduled-message revision, preserves payload, creator, retry count, and result state, and commits
-a complete `RESCHEDULED` user audit atomically.
+a complete `RESCHEDULED` user audit atomically. Both input methods reuse existing persistence,
+pg-boss projection, recovery, reconciliation, cancellation, execution claims, response-loss
+confirmation and shutdown. Issue #91 adds no migration, runtime dependency, dependency upgrade,
+Gateway intent, bot permission, scheduler path or exactly-once guarantee.
 
 For one-time schedules, the persisted scheduled-message revision starts at zero and increments exactly once for each
 successful edit or reschedule. Execution loads the authoritative revision before Discord preflight
