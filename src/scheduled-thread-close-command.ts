@@ -15,6 +15,7 @@ import type {
 } from "./scheduled-thread-close-persistence.js";
 import type { ScheduledThreadCloseWorkerController } from "./scheduled-thread-close-worker.js";
 import type {
+  BulkThreadCloseHooks,
   ThreadLifecycleDiscord,
   ThreadLifecycleResult,
   ThreadLifecycleService,
@@ -101,6 +102,7 @@ export type ScheduledThreadCloseCommandService = {
     guildId: string,
     threadId: string,
     actorId: string,
+    bulk?: BulkThreadCloseHooks,
   ) => Promise<ManualThreadCloseCommandResult>;
 };
 
@@ -283,14 +285,20 @@ export function createScheduledThreadCloseCommandService({
         return { ok: false, code: "PERSISTENCE_FAILURE" };
       }
     },
-    async closeManually(guildId, threadId, actorId) {
+    async closeManually(guildId, threadId, actorId, bulk) {
       try {
-        const result = await threadLifecycle.close(guildId, threadId, actorId, async () => {
-          const cancellation = await persistCancellation(guildId, threadId, actorId);
-          if (cancellation.outcome === "EXECUTION_IN_PROGRESS") {
-            throw new ScheduledThreadCloseExecutionInProgress();
-          }
-        });
+        const result = await threadLifecycle.close(
+          guildId,
+          threadId,
+          actorId,
+          async () => {
+            const cancellation = await persistCancellation(guildId, threadId, actorId);
+            if (cancellation.outcome === "EXECUTION_IN_PROGRESS") {
+              throw new ScheduledThreadCloseExecutionInProgress();
+            }
+          },
+          bulk,
+        );
         return { outcome: "LIFECYCLE", result };
       } catch (error) {
         if (error instanceof ScheduledThreadCloseExecutionInProgress) {

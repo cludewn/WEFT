@@ -1,6 +1,8 @@
 import { ChannelType } from "discord.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createBulkCloseService } from "../../src/bulk-thread-close.js";
+import { createScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 
 import { createAuditNotificationDispatcher } from "../../src/audit-notification-dispatcher.js";
@@ -23,6 +25,7 @@ import {
   removeClosedPrefix,
 } from "../../src/thread-lifecycle.js";
 import type {
+  BulkThreadCloseHooks,
   ThreadFailureCode,
   ThreadLifecycleDiscord,
   ThreadSnapshot,
@@ -2609,3 +2612,476 @@ function createFixture({
     },
   };
 }
+
+describe("bulk lifecycle admission and logical settlement", () => {
+  function hooks(fixture: ReturnType<typeof createFixture>): BulkThreadCloseHooks {
+    return {
+      checkSelection: vi.fn(() => Promise.resolve({ ...fixture.thread })),
+      canAdmit: vi.fn(() => true),
+      onAttemptStarted: vi.fn(),
+      onLogicalSettled: vi.fn(),
+    };
+  }
+  it("false selection avoids schedule cancellation, settings creation, state, audit and PATCH", async () => {
+    const f = createFixture();
+    const bulk = hooks(f);
+    const prepare = vi.fn();
+    bulk.checkSelection = vi.fn(() => Promise.resolve(undefined));
+    expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, prepare, bulk)).toMatchObject({
+      bulkSkipped: "INELIGIBLE",
+    });
+    await f.service.drain();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(f.calls).toEqual([]);
+    expect(bulk.onAttemptStarted).not.toHaveBeenCalled();
+    expect(bulk.onLogicalSettled).toHaveBeenCalledOnce();
+  });
+  it("final synchronous admission denies a deadline/shutdown crossing after preflight", async () => {
+    const f = createFixture();
+    const bulk = hooks(f);
+    bulk.canAdmit = () => false;
+    const prepare = vi.fn();
+    expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, prepare, bulk)).toMatchObject({
+      bulkSkipped: "NOT_STARTED",
+    });
+    expect(f.calls).toEqual([]);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(bulk.onAttemptStarted).not.toHaveBeenCalled();
+  });
+  it.each(["cancellation", "managed write"])(
+    "eligibility lost after %s stays an attempted failure with no PATCH",
+    async (stage) => {
+      const f = createFixture();
+      const bulk = hooks(f);
+      let reads = 0;
+      bulk.checkSelection = vi.fn(() =>
+        Promise.resolve(
+          ++reads === (stage === "cancellation" ? 2 : 3) ? undefined : { ...f.thread },
+        ),
+      );
+      const prepare = vi.fn(() => Promise.resolve());
+      const result = await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, prepare, bulk);
+      expect(result).toMatchObject({ ok: false, code: "BULK_SELECTION_CHANGED" });
+      expect(result).not.toHaveProperty("bulkSkipped");
+      expect(bulk.onAttemptStarted).toHaveBeenCalledOnce();
+      expect(prepare).toHaveBeenCalledOnce();
+      expect(f.discord.archiveThread).not.toHaveBeenCalled();
+      expect(f.audits).toMatchObject([
+        { action: "CLOSE", actorType: "USER", actorId: ACTOR_ID, outcome: "FAILURE" },
+      ]);
+      expect(f.managedThreads.saveClosed).toHaveBeenCalledTimes(stage === "cancellation" ? 0 : 1);
+    },
+  );
+  it("uses the latest still-matching title at the mutation boundary", async () => {
+    const f = createFixture();
+    const bulk = hooks(f);
+    let reads = 0;
+    bulk.checkSelection = vi.fn(() =>
+      Promise.resolve({ ...f.thread, name: ++reads === 3 ? "Latest Topic" : "Topic" }),
+    );
+    expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, undefined, bulk)).toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(f.thread.name).toBe("[CLOSED] Latest Topic");
+  });
+  it.each(["CLOSE", "AUTO_CLOSE", "SCHEDULED", "AUTO_OPEN", "BULK"])(
+    "existing %s ownership denies bulk before any preparation or duplicate audit",
+    async (owner) => {
+      const f = createFixture();
+      const gate = deferred<ThreadSnapshot | undefined>();
+      vi.mocked(f.discord.fetchThread).mockImplementationOnce(() => gate.promise);
+      const firstBulk = hooks(f);
+      const bulkGate = deferred<ThreadSnapshot | undefined>();
+      firstBulk.checkSelection = () => bulkGate.promise;
+      const existing =
+        owner === "CLOSE"
+          ? f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)
+          : owner === "AUTO_CLOSE"
+            ? f.service.autoCloseAsSystem(GUILD_ID, THREAD_ID, "auto-audit")
+            : owner === "SCHEDULED"
+              ? f.service.closeAsSystem(GUILD_ID, THREAD_ID, "scheduled-audit")
+              : owner === "AUTO_OPEN"
+                ? f.service.autoOpen(GUILD_ID, THREAD_ID)
+                : f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, undefined, firstBulk);
+      const bulk = hooks(f);
+      const prepare = vi.fn();
+      expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, prepare, bulk)).toMatchObject({
+        bulkSkipped: "EXISTING_OPERATION",
+      });
+      expect(prepare).not.toHaveBeenCalled();
+      expect(bulk.checkSelection).not.toHaveBeenCalled();
+      expect(bulk.onAttemptStarted).not.toHaveBeenCalled();
+      gate.resolve({ ...f.thread });
+      bulkGate.resolve({ ...f.thread });
+      await existing;
+      await f.service.drain();
+    },
+  );
+  it("logical settlement follows final audit even after raw PATCH and caller Pending", async () => {
+    vi.useFakeTimers();
+    const f = createFixture();
+    const bulk = hooks(f);
+    const mutation = deferred<void>();
+    const finalAudit = deferred<void>();
+    vi.mocked(f.discord.archiveThread).mockImplementationOnce(() => mutation.promise);
+    vi.mocked(f.auditStore.record).mockImplementationOnce(() => finalAudit.promise);
+    const result = f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, undefined, bulk);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await result).toEqual({ ok: false, pending: true });
+    expect(bulk.onLogicalSettled).not.toHaveBeenCalled();
+    mutation.resolve(undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.auditStore.record).toHaveBeenCalledOnce();
+    expect(bulk.onLogicalSettled).not.toHaveBeenCalled();
+    const second = hooks(f);
+    expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, undefined, second)).toMatchObject({
+      bulkSkipped: "EXISTING_OPERATION",
+    });
+    finalAudit.resolve(undefined);
+    await f.service.drain();
+    expect(bulk.onLogicalSettled).toHaveBeenCalledOnce();
+  });
+  it("stalled preparation remains owned by lifecycle drain", async () => {
+    const f = createFixture();
+    const bulk = hooks(f);
+    const preparation = deferred<void>();
+    const close = f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, () => preparation.promise, bulk);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    let drained = false;
+    const drain = f.service.drain().then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    expect(bulk.onLogicalSettled).not.toHaveBeenCalled();
+    preparation.resolve(undefined);
+    await close;
+    await drain;
+    expect(bulk.onLogicalSettled).toHaveBeenCalledOnce();
+  });
+});
+
+it("a deselected candidate never enters manual close or causes cancellation, managed write, audit or PATCH", async () => {
+  const selected = createFixture();
+  const deselected = createFixture();
+  const excludedId = "200000000000000002";
+  deselected.thread.threadId = excludedId;
+  const cancel = vi.fn((input: { threadId: string }) => {
+    void input;
+    return Promise.resolve({ outcome: "NOT_SCHEDULED" } as const);
+  });
+  const wrapper = (fixture: ReturnType<typeof createFixture>) =>
+    createScheduledThreadCloseCommandService({
+      discord: fixture.discord,
+      threadLifecycle: fixture.service,
+      schedules: { cancel, createOrReplace: vi.fn() },
+      delivery: { enqueueScheduledThreadClose: vi.fn(), hasCreatedOrRetryDelivery: vi.fn() },
+      logger: { warn: vi.fn() },
+    });
+  const selectedManual = wrapper(selected);
+  const excludedManual = wrapper(deselected);
+  const closeManually = vi.fn<ScheduledThreadCloseCommandService["closeManually"]>(
+    (guild, id, actor, hooks) =>
+      (id === THREAD_ID ? selectedManual : excludedManual).closeManually(guild, id, actor, hooks),
+  );
+  const parent = {
+    id: "900000000000000001",
+    guildId: GUILD_ID,
+    type: ChannelType.GuildText,
+    name: "Parent",
+  };
+  const threads = [selected.thread, deselected.thread].map((thread) => ({
+    ...thread,
+    parentId: parent.id,
+    ownerId: ACTOR_ID,
+    createdTimestamp: null,
+  }));
+  const bulk = createBulkCloseService({
+    discord: {
+      discover: () => Promise.resolve({ parent, threads }),
+      observe: (_g, _p, _a, ids) =>
+        Promise.resolve({ parent, threads: threads.filter((t) => ids.includes(t.threadId)) }),
+    },
+    manualClose: { closeManually },
+    isReady: () => true,
+  });
+  const result = await bulk.preview(GUILD_ID, parent.id, ACTOR_ID, { nameContains: "Topic" });
+  if (!result.ok) throw new Error(result.reason);
+  bulk.bind(result.session, "100");
+  const identity = { guildId: GUILD_ID, actorId: ACTOR_ID, messageId: "100" };
+  expect(bulk.select(result.session.id, identity, 0, 0, [THREAD_ID])).toBeDefined();
+  await bulk.page(result.session.id, identity, 0);
+  expect(cancel).not.toHaveBeenCalled();
+  for (const fixture of [selected, deselected]) {
+    expect(fixture.managedThreads.saveClosed).not.toHaveBeenCalled();
+    expect(fixture.auditStore.record).not.toHaveBeenCalled();
+    expect(fixture.discord.archiveThread).not.toHaveBeenCalled();
+    expect(fixture.discord.renameThread).not.toHaveBeenCalled();
+  }
+  const confirmed = await bulk.confirm(result.session.id, identity);
+  expect(await confirmed!.result).toMatchObject({ selected: 1, attempted: 1, closed: 1 });
+  await Promise.all([selected.service.drain(), deselected.service.drain()]);
+  expect(closeManually).toHaveBeenCalledOnce();
+  expect(closeManually.mock.calls[0]?.[1]).toBe(THREAD_ID);
+  expect(cancel).toHaveBeenCalledOnce();
+  expect(cancel.mock.calls[0]?.[0]).toMatchObject({ threadId: THREAD_ID });
+  expect(deselected.managedThreads.saveClosed).not.toHaveBeenCalled();
+  expect(deselected.auditStore.record).not.toHaveBeenCalled();
+  expect(deselected.discord.archiveThread).not.toHaveBeenCalled();
+  expect(deselected.discord.renameThread).not.toHaveBeenCalled();
+});
+
+describe("mutation-capable persistence timeout ownership", () => {
+  it.each(["saveClosed", "getOrCreate", "markOpen"] as const)(
+    "%s keeps drain pending after caller timeout until late success or failure",
+    async (boundary) => {
+      for (const outcome of ["success", "failure"] as const) {
+        vi.useFakeTimers();
+        const f = createFixture({
+          deadlineMs: 50,
+          ...(boundary === "markOpen" ? { state: createManagedState("CLOSED", "[CLOSED]") } : {}),
+        });
+        const gate = deferred<void>();
+        if (boundary === "saveClosed")
+          vi.mocked(f.managedThreads.saveClosed).mockImplementation(() =>
+            gate.promise.then(() => createManagedState("CLOSED", "[CLOSED]")),
+          );
+        else if (boundary === "getOrCreate")
+          vi.mocked(f.guildSettings.getOrCreate).mockImplementation(() =>
+            gate.promise.then(() => f.settings),
+          );
+        else
+          vi.mocked(f.managedThreads.markOpen).mockImplementation(() =>
+            gate.promise.then(() => createManagedState("OPEN", "[CLOSED]")),
+          );
+        const settled = vi.fn();
+        const bulk: BulkThreadCloseHooks = {
+          checkSelection: () => Promise.resolve({ ...f.thread }),
+          canAdmit: () => true,
+          onAttemptStarted: vi.fn(),
+          onLogicalSettled: settled,
+        };
+        const result =
+          boundary === "markOpen"
+            ? f.service.open(GUILD_ID, THREAD_ID, ACTOR_ID)
+            : f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID, undefined, bulk);
+        await vi.advanceTimersByTimeAsync(50);
+        expect(await result).toEqual({
+          ok: false,
+          code:
+            boundary === "getOrCreate" ? "SETTINGS_READ_TIMEOUT" : "STATE_WRITE_OUTCOME_UNKNOWN",
+        });
+        let drained = false;
+        const drain = f.service.drain().then(() => {
+          drained = true;
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(drained).toBe(false);
+        expect(settled).not.toHaveBeenCalled();
+        if (outcome === "success") gate.resolve(undefined);
+        else gate.reject(new Error("Opaque persistence failure"));
+        await drain;
+        expect(drained).toBe(true);
+        expect(settled).toHaveBeenCalledTimes(boundary === "markOpen" ? 0 : 1);
+        expect(f.discord.archiveThread).not.toHaveBeenCalled();
+        expect(f.discord.renameThread).not.toHaveBeenCalled();
+        expect(f.auditStore.record).not.toHaveBeenCalled();
+        expect(
+          boundary === "getOrCreate"
+            ? f.guildSettings.getOrCreate
+            : boundary === "markOpen"
+              ? f.managedThreads.markOpen
+              : f.managedThreads.saveClosed,
+        ).toHaveBeenCalledOnce();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  function bulkPersistenceFixture(boundary: "saveClosed" | "getOrCreate") {
+    const f = createFixture({ deadlineMs: 50 });
+    const parent = {
+      id: "900000000000000001",
+      guildId: GUILD_ID,
+      type: ChannelType.GuildText,
+      name: "Parent",
+    };
+    const threads = Array.from({ length: 4 }, (_, i) => ({
+      ...f.thread,
+      threadId: `20000000000000000${i + 1}`,
+      parentId: parent.id,
+      ownerId: ACTOR_ID,
+      createdTimestamp: null,
+    }));
+    vi.mocked(f.discord.fetchThread).mockImplementation((_guildId, threadId) =>
+      Promise.resolve(threads.find((thread) => thread.threadId === threadId)),
+    );
+    const writes: { resolve: () => void; reject: () => void }[] = [];
+    let unresolved = 0;
+    let peak = 0;
+    function stall<T>(value: T): Promise<T> {
+      const gate = deferred<T>();
+      unresolved++;
+      peak = Math.max(peak, unresolved);
+      writes.push({
+        resolve: () => gate.resolve(value),
+        reject: () => gate.reject(new Error("Opaque write failure")),
+      });
+      return gate.promise.then(
+        (result) => {
+          unresolved--;
+          return result;
+        },
+        (error: unknown) => {
+          unresolved--;
+          throw error;
+        },
+      );
+    }
+    if (boundary === "saveClosed")
+      vi.mocked(f.managedThreads.saveClosed).mockImplementation((_guildId, threadId, prefix) =>
+        stall({ ...createManagedState("CLOSED", prefix), threadId }),
+      );
+    else vi.mocked(f.guildSettings.getOrCreate).mockImplementation(() => stall(f.settings));
+    const cancel = vi.fn(() => Promise.resolve({ outcome: "NOT_SCHEDULED" } as const));
+    const wrapper = createScheduledThreadCloseCommandService({
+      discord: f.discord,
+      threadLifecycle: f.service,
+      schedules: { cancel, createOrReplace: vi.fn() },
+      delivery: { enqueueScheduledThreadClose: vi.fn(), hasCreatedOrRetryDelivery: vi.fn() },
+      logger: { warn: vi.fn() },
+    });
+    const settled = vi.fn();
+    const closeManually = vi.fn<ScheduledThreadCloseCommandService["closeManually"]>(
+      (guild, threadId, actor, hooks) =>
+        wrapper.closeManually(guild, threadId, actor, {
+          ...hooks!,
+          onLogicalSettled: () => {
+            settled(threadId);
+            hooks!.onLogicalSettled();
+          },
+        }),
+    );
+    const bulk = createBulkCloseService({
+      discord: {
+        discover: () => Promise.resolve({ parent, threads }),
+        observe: (_guildId, _parentId, _actorId, ids) =>
+          Promise.resolve({
+            parent,
+            threads: threads.filter((thread) => ids.includes(thread.threadId)),
+          }),
+      },
+      manualClose: { closeManually },
+      isReady: () => true,
+    });
+    async function confirm(ids = threads.map((thread) => thread.threadId)) {
+      const preview = await bulk.preview(GUILD_ID, parent.id, ACTOR_ID, { nameContains: "Topic" });
+      if (!preview.ok) throw new Error(preview.reason);
+      bulk.bind(preview.session, "100");
+      const identity = { guildId: GUILD_ID, actorId: ACTOR_ID, messageId: "100" };
+      expect(bulk.select(preview.session.id, identity, 0, 0, ids)).toBeDefined();
+      const execution = await bulk.confirm(preview.session.id, identity);
+      if (!execution) throw new Error("Confirmation unavailable");
+      return execution;
+    }
+    return {
+      ...f,
+      bulk,
+      writes,
+      settled,
+      closeManually,
+      cancel,
+      confirm,
+      ids: threads.map((thread) => thread.threadId),
+      get unresolved() {
+        return unresolved;
+      },
+      get peak() {
+        return peak;
+      },
+    };
+  }
+
+  for (const boundary of ["saveClosed", "getOrCreate"] as const) {
+    it.each(["success", "failure"] as const)(
+      `${boundary}: three unresolved writes retain global slots across sessions until late %s`,
+      async (outcome) => {
+        vi.useFakeTimers();
+        const f = bulkPersistenceFixture(boundary);
+        const first = await f.confirm(f.ids.slice(0, 3));
+        const second = await f.confirm(f.ids.slice(3));
+        await vi.advanceTimersByTimeAsync(50);
+        expect(await first.result).toMatchObject({ selected: 3, attempted: 3, failed: 3 });
+        expect(f.unresolved).toBe(3);
+        expect(f.peak).toBe(3);
+        expect(f.closeManually).toHaveBeenCalledTimes(3);
+        expect(f.settled).not.toHaveBeenCalled();
+        let drained = false;
+        const drain = f.service.drain().then(() => {
+          drained = true;
+        });
+        await vi.advanceTimersByTimeAsync(300_001);
+        expect(await second.result).toMatchObject({ selected: 1, attempted: 0, skipped: 1 });
+        expect(drained).toBe(false);
+        expect(f.closeManually).toHaveBeenCalledTimes(3);
+        for (const write of f.writes) write[outcome === "success" ? "resolve" : "reject"]();
+        await drain;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(f.unresolved).toBe(0);
+        expect(f.settled).toHaveBeenCalledTimes(3);
+        expect(f.closeManually).toHaveBeenCalledTimes(3);
+        expect(f.cancel).toHaveBeenCalledTimes(3);
+        expect(f.discord.archiveThread).not.toHaveBeenCalled();
+        expect(f.auditStore.record).not.toHaveBeenCalled();
+      },
+    );
+    it(`${boundary}: a four-target session returns bounded counts while writes stay unresolved`, async () => {
+      vi.useFakeTimers();
+      const f = bulkPersistenceFixture(boundary);
+      const execution = await f.confirm();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(f.unresolved).toBe(3);
+      expect(f.settled).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(300_001);
+      expect(await execution.result).toMatchObject({
+        selected: 4,
+        attempted: 3,
+        failed: 3,
+        skipped: 1,
+      });
+      expect(f.unresolved).toBe(3);
+      expect(f.peak).toBe(3);
+      for (const write of f.writes) write.resolve();
+      await f.service.drain();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.closeManually).toHaveBeenCalledTimes(3);
+      expect(f.settled).toHaveBeenCalledTimes(3);
+    });
+    it(`${boundary}: only actual settlement admits the waiting fourth target before the deadline`, async () => {
+      vi.useFakeTimers();
+      const f = bulkPersistenceFixture(boundary);
+      const execution = await f.confirm();
+      await vi.advanceTimersByTimeAsync(50);
+      expect(f.closeManually).toHaveBeenCalledTimes(3);
+      f.writes[0]!.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.closeManually).toHaveBeenCalledTimes(4);
+      expect(f.settled).toHaveBeenCalledTimes(1);
+      expect(f.unresolved).toBe(3);
+      expect(f.peak).toBe(3);
+      await vi.advanceTimersByTimeAsync(50);
+      expect(await execution.result).toMatchObject({ selected: 4, attempted: 4, failed: 4 });
+      expect(f.unresolved).toBe(3);
+      for (const write of f.writes.slice(1)) write.reject();
+      await f.service.drain();
+      expect(f.unresolved).toBe(0);
+      expect(f.settled).toHaveBeenCalledTimes(4);
+      expect(f.cancel).toHaveBeenCalledTimes(4);
+      expect(f.auditStore.record).not.toHaveBeenCalled();
+      expect(f.discord.archiveThread).not.toHaveBeenCalled();
+    });
+  }
+});

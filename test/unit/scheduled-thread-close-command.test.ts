@@ -14,6 +14,7 @@ import type {
 } from "../../src/scheduled-thread-close-persistence.js";
 import type { ScheduledThreadCloseWorkerController } from "../../src/scheduled-thread-close-worker.js";
 import type {
+  BulkThreadCloseHooks,
   SupportedThreadType,
   ThreadLifecycleDiscord,
   ThreadLifecycleResult,
@@ -331,6 +332,25 @@ describe("scheduled thread close command service", () => {
       code: "CONTEXT_VALIDATION_FAILURE",
     });
     expect(fixture.schedules.cancel).not.toHaveBeenCalled();
+  });
+
+  it("forwards bulk selection, admission and settlement hooks through the authoritative manual wrapper", async () => {
+    const fixture = createFixture();
+    const bulk: BulkThreadCloseHooks = {
+      checkSelection: () => Promise.resolve(createThread()),
+      canAdmit: () => true,
+      onAttemptStarted: vi.fn(),
+      onLogicalSettled: vi.fn(),
+    };
+    await fixture.service.closeManually("guild-id", "thread-id", "actor-id", bulk);
+    expect(fixture.close).toHaveBeenCalledWith(
+      "guild-id",
+      "thread-id",
+      "actor-id",
+      expect.any(Function),
+      bulk,
+    );
+    expect(fixture.schedules.cancel).toHaveBeenCalledOnce();
   });
 
   it("cancels scheduling before allowing the shared lifecycle close to continue", async () => {
