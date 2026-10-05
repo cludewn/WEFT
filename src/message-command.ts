@@ -32,8 +32,13 @@ import {
 import {
   isValidRelativeDurationMilliseconds,
   InvalidRelativeDurationError,
-  parseRelativeDuration,
 } from "./relative-duration.js";
+import {
+  ONE_TIME_SCHEDULE_ERRORS,
+  parseOneTimeLocalDateTime,
+  parseOneTimeScheduleOptions,
+  type OneTimeScheduleInput,
+} from "./one-time-message-schedule.js";
 import type {
   CreateScheduledMessageCommandResult,
   ScheduledMessageCommandService,
@@ -114,16 +119,32 @@ export function parseManagedMessageEditModalId(
   return { messageId: match[1], expectedRevision: revision };
 }
 
-export function createScheduledMessageCreateModalId(durationMs: number): string {
-  if (!isValidRelativeDurationMilliseconds(durationMs)) throw new InvalidRelativeDurationError();
-  return `${SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX}${durationMs}`;
+export function createScheduledMessageCreateModalId(schedule: OneTimeScheduleInput): string {
+  if (schedule.kind === "AFTER") {
+    if (!isValidRelativeDurationMilliseconds(schedule.durationMs))
+      throw new InvalidRelativeDurationError();
+    return `${SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX}${schedule.durationMs}`;
+  }
+  if (!parseOneTimeLocalDateTime(schedule.localDateTime).ok)
+    throw new Error("Invalid absolute local datetime");
+  return `${SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX}at:${schedule.localDateTime}`;
 }
 
-export function parseScheduledMessageCreateModalId(customId: string): number | undefined {
+export function parseScheduledMessageCreateModalId(
+  customId: string,
+): OneTimeScheduleInput | undefined {
+  if (customId.length > 100) return undefined;
+  const atPrefix = `${SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX}at:`;
+  if (customId.startsWith(atPrefix)) {
+    const localDateTime = customId.slice(atPrefix.length);
+    return parseOneTimeLocalDateTime(localDateTime).ok ? { kind: "AT", localDateTime } : undefined;
+  }
   const match = scheduledCreateModalRegex.exec(customId);
-  if (match?.[1] === undefined) return undefined;
+  if (match?.[1] === undefined || match[0] !== customId) return undefined;
   const durationMs = Number(match[1]);
-  return isValidRelativeDurationMilliseconds(durationMs) ? durationMs : undefined;
+  return isValidRelativeDurationMilliseconds(durationMs)
+    ? { kind: "AFTER", durationMs }
+    : undefined;
 }
 
 const weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
@@ -241,8 +262,14 @@ export const messageCommandDefinition = new SlashCommandBuilder()
           .addStringOption((option) =>
             option
               .setName("after")
-              .setDescription("Delay such as 30m, 2h, or 7d")
-              .setRequired(true),
+              .setDescription("Relative delay such as 30m, 2h, or 7d; choose after or at"),
+          )
+          .addStringOption((option) =>
+            option
+              .setName("at")
+              .setDescription("Guild-local YYYY-MM-DD HH:mm (24-hour clock); choose after or at")
+              .setMinLength(16)
+              .setMaxLength(16),
           ),
       )
       .addSubcommand((subcommand) =>
@@ -308,8 +335,14 @@ export const messageCommandDefinition = new SlashCommandBuilder()
           .addStringOption((option) =>
             option
               .setName("after")
-              .setDescription("Delay such as 30m, 2h, or 7d")
-              .setRequired(true),
+              .setDescription("Relative delay such as 30m, 2h, or 7d; choose after or at"),
+          )
+          .addStringOption((option) =>
+            option
+              .setName("at")
+              .setDescription("Guild-local YYYY-MM-DD HH:mm (24-hour clock); choose after or at")
+              .setMinLength(16)
+              .setMaxLength(16),
           ),
       )
       .addSubcommand((subcommand) =>
@@ -443,9 +476,9 @@ export function createManagedMessageEditModal(
   );
 }
 
-export function createScheduledMessageCreateModal(durationMs: number): ModalBuilder {
+export function createScheduledMessageCreateModal(schedule: OneTimeScheduleInput): ModalBuilder {
   return createPayloadModal(
-    createScheduledMessageCreateModalId(durationMs),
+    createScheduledMessageCreateModalId(schedule),
     "Schedule managed message",
   );
 }
@@ -542,17 +575,15 @@ export async function handleMessageCommand(
     if (scheduledMessages === undefined)
       throw new Error("Scheduled message command service is unavailable");
     if (subcommand === "create") {
-      let durationMs: number;
-      try {
-        durationMs = parseRelativeDuration(interaction.options.getString("after", true));
-      } catch (error) {
-        if (!(error instanceof InvalidRelativeDurationError)) throw error;
-        await interaction.reply(
-          ephemeralReply("Enter one duration from 1m through 365d using m, h, or d."),
-        );
+      const selector = parseOneTimeScheduleOptions(
+        interaction.options.getString("after"),
+        interaction.options.getString("at"),
+      );
+      if (!selector.ok) {
+        await interaction.reply(ephemeralReply(ONE_TIME_SCHEDULE_ERRORS[selector.code]));
         return;
       }
-      await interaction.showModal(createScheduledMessageCreateModal(durationMs));
+      await interaction.showModal(createScheduledMessageCreateModal(selector.schedule));
       return;
     }
 
@@ -598,17 +629,17 @@ export async function handleMessageCommand(
       return;
     }
 
-    let rescheduleDurationMs: number | undefined;
+    let rescheduleInput: OneTimeScheduleInput | undefined;
     if (subcommand === "reschedule") {
-      try {
-        rescheduleDurationMs = parseRelativeDuration(interaction.options.getString("after", true));
-      } catch (error) {
-        if (!(error instanceof InvalidRelativeDurationError)) throw error;
-        await interaction.reply(
-          ephemeralReply("Enter one duration from 1m through 365d using m, h, or d."),
-        );
+      const selector = parseOneTimeScheduleOptions(
+        interaction.options.getString("after"),
+        interaction.options.getString("at"),
+      );
+      if (!selector.ok) {
+        await interaction.reply(ephemeralReply(ONE_TIME_SCHEDULE_ERRORS[selector.code]));
         return;
       }
+      rescheduleInput = selector.schedule;
     }
 
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -646,14 +677,14 @@ export async function handleMessageCommand(
       return;
     }
     if (subcommand === "reschedule") {
-      if (rescheduleDurationMs === undefined)
-        throw new Error("Validated reschedule duration is missing");
+      if (rescheduleInput === undefined)
+        throw new Error("Validated reschedule selector is missing");
       const result = await scheduledMessages.reschedule({
         scheduledActionId: scheduledActionId!,
         guildId: interaction.guildId,
         channelId: interaction.channelId,
         actorUserId: interaction.user.id,
-        durationMs: rescheduleDurationMs,
+        schedule: rescheduleInput,
       });
       await interaction.editReply(editReply(scheduledMessageRescheduleResultMessage(result)));
       return;
@@ -731,8 +762,18 @@ function createScheduledMessageResultMessage(result: CreateScheduledMessageComma
       return "The embed image URL must be 2048 characters or fewer.";
     case "EMBED_IMAGE_URL_INVALID":
       return "Enter an absolute HTTP or HTTPS embed image URL.";
+    case "MISSING_SELECTOR":
+    case "CONFLICTING_SELECTORS":
+    case "INVALID_AT_FORMAT":
+    case "INVALID_AT_DATE":
+    case "INVALID_GUILD_TIMEZONE":
+    case "TIMEZONE_UNAVAILABLE":
+    case "DST_GAP":
+    case "DST_OVERLAP":
+    case "TOO_SOON":
+    case "TOO_FAR":
     case "INVALID_DURATION":
-      return "This scheduled-message form has an invalid or expired duration.";
+      return ONE_TIME_SCHEDULE_ERRORS[result.code];
     case "UNSUPPORTED_TARGET":
     case "TARGET_GUILD_MISMATCH":
       return "Scheduled messages are only supported in the current guild text or active thread channel.";
@@ -944,8 +985,8 @@ function scheduledMessageRescheduleResultMessage(
       ? `${base} Delivery is pending reconciliation.`
       : base;
   }
-  if (result.outcome === "INVALID_DURATION") {
-    return "Enter one duration from 1m through 365d using m, h, or d.";
+  if (result.outcome in ONE_TIME_SCHEDULE_ERRORS) {
+    return ONE_TIME_SCHEDULE_ERRORS[result.outcome as keyof typeof ONE_TIME_SCHEDULE_ERRORS];
   }
   if (result.outcome === "WRONG_KIND")
     return "This is a recurring schedule; use /message schedule recurrence-edit.";
@@ -1089,7 +1130,7 @@ export async function handleManagedMessageModalSubmit(
     return false;
 
   const editTarget = ownedEdit ? parseManagedMessageEditModalId(interaction.customId) : undefined;
-  const scheduledDurationMs = ownedScheduledCreate
+  const scheduledInput = ownedScheduledCreate
     ? parseScheduledMessageCreateModalId(interaction.customId)
     : undefined;
   const recurringInput = ownedRecurringCreate
@@ -1104,10 +1145,8 @@ export async function handleManagedMessageModalSubmit(
     );
     return true;
   }
-  if (ownedScheduledCreate && scheduledDurationMs === undefined) {
-    await interaction.reply(
-      ephemeralReply("This scheduled-message form has an invalid or expired duration."),
-    );
+  if (ownedScheduledCreate && scheduledInput === undefined) {
+    await interaction.reply(ephemeralReply("This scheduled-message form is invalid or expired."));
     return true;
   }
   if (ownedRecurringCreate && recurringInput === undefined) {
@@ -1176,15 +1215,14 @@ export async function handleManagedMessageModalSubmit(
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   if (ownedScheduledCreate) {
-    if (scheduledDurationMs === undefined)
-      throw new Error("Validated schedule duration is missing");
+    if (scheduledInput === undefined) throw new Error("Validated schedule selector is missing");
     if (scheduledMessages === undefined)
       throw new Error("Scheduled message command service is unavailable");
     const result = await scheduledMessages.create({
       guildId: interaction.guildId,
       channelId: interaction.channelId,
       actorUserId: interaction.user.id,
-      durationMs: scheduledDurationMs,
+      schedule: scheduledInput,
       payload: validation.payload,
     });
     await interaction.editReply(editReply(createScheduledMessageResultMessage(result)));

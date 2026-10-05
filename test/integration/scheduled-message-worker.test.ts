@@ -3,6 +3,7 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import type { Logger } from "pino";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
+import { createGuildSettingsStore, guildSettings } from "../../src/guild-settings.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
 import { managedMessageAudits, managedMessages } from "../../src/managed-message-persistence.js";
@@ -67,6 +68,111 @@ afterAll(async () => {
 });
 
 describe("scheduled message pg-boss delivery", () => {
+  it.each([false, true])(
+    "reuses AT projection and runtime repair for create/reschedule with failure = %s",
+    async (failProjection) => {
+      const healthy = createController(createDiscord());
+      await healthy.ensureQueue();
+      const faulty = failProjection
+        ? createControllerWithBoss(
+            proxyBoss(() => {
+              return Promise.reject(new Error("injected projection failure"));
+            }),
+            createDiscord(),
+          )
+        : healthy;
+      const establishedAt = new Date();
+      const executeAt = new Date(Math.ceil((establishedAt.getTime() + 300_000) / 60_000) * 60_000);
+      const local = (instant: Date) => instant.toISOString().slice(0, 16).replace("T", " ");
+      const ids = [
+        "absolute-projected",
+        "absolute-projected-created",
+        "absolute-projected-rescheduled",
+      ];
+      const command = createScheduledMessageCommandService({
+        discord: {
+          authorizeCreation: vi.fn(() => Promise.resolve({ outcome: "AUTHORIZED" as const })),
+        },
+        store: messages,
+        guildSettings: createGuildSettingsStore(database.client),
+        delivery: faulty,
+        logger: createLogger(),
+        now: () => establishedAt,
+        generateId: () => ids.shift()!,
+      });
+      await expect(
+        command.create({
+          guildId,
+          channelId: "channel-id",
+          actorUserId: "creator-id",
+          schedule: { kind: "AT", localDateTime: local(executeAt) },
+          payload: { content: "absolute projected payload", embed: null },
+        }),
+      ).resolves.toMatchObject({
+        outcome: "SUCCESS",
+        deliveryPendingReconciliation: failProjection,
+        definition: { action: { executeAt }, revision: 0 },
+      });
+      if (failProjection)
+        await expect(findJobsForAction("absolute-projected")).resolves.toEqual([]);
+      const reconciler = createScheduledMessageRuntimeReconciler({
+        scheduledActions: actions,
+        store: messages,
+        executor: { execute: vi.fn() },
+        delivery: healthy,
+        logger: createLogger(),
+      });
+      try {
+        await reconciler.reconcileOnce();
+        const [job] = await findJobsForAction("absolute-projected");
+        expect(job).toMatchObject({
+          state: "created",
+          startAfter: executeAt,
+          singletonKey: "absolute-projected",
+          data: {
+            scheduledActionId: "absolute-projected",
+            scheduledExecuteAt: executeAt.toISOString(),
+            scheduleRevision: 0,
+          },
+        });
+        const replacement = new Date(executeAt.getTime() + 60_000);
+        await expect(
+          command.reschedule({
+            scheduledActionId: "absolute-projected",
+            guildId,
+            channelId: "channel-id",
+            actorUserId: "rescheduling-actor",
+            schedule: { kind: "AT", localDateTime: local(replacement) },
+          }),
+        ).resolves.toMatchObject({
+          outcome: "RESCHEDULED",
+          deliveryPendingReconciliation: failProjection,
+          definition: { action: { executeAt: replacement }, revision: 1 },
+        });
+        await reconciler.reconcileOnce();
+        await expect(findJobsForAction("absolute-projected")).resolves.toEqual([
+          expect.objectContaining({
+            id: job!.id,
+            state: "created",
+            startAfter: replacement,
+            data: {
+              scheduledActionId: "absolute-projected",
+              scheduledExecuteAt: replacement.toISOString(),
+              scheduleRevision: 1,
+            },
+          }),
+        ]);
+        await expect(messages.find("absolute-projected")).resolves.toMatchObject({
+          action: { executeAt: replacement, status: "ACTIVE" },
+          revision: 1,
+          retryCount: 0,
+        });
+      } finally {
+        await reconciler.stop();
+      }
+    },
+  );
+
   it("creates a future command schedule with effective delivery and cleans it after cancellation", async () => {
     const controller = createController(createDiscord());
     await controller.ensureQueue();
@@ -90,7 +196,7 @@ describe("scheduled message pg-boss delivery", () => {
         guildId,
         channelId: "channel-id",
         actorUserId: "creator-id",
-        durationMs: 60_000,
+        schedule: { kind: "AFTER", durationMs: 60_000 },
         payload: { content: "command-created content", embed: null },
       }),
     ).resolves.toMatchObject({
@@ -1331,6 +1437,7 @@ async function waitFor(
 }
 
 async function cleanup(): Promise<void> {
+  await database.client.delete(guildSettings).where(eq(guildSettings.guildId, guildId));
   await database.client
     .delete(managedMessageAudits)
     .where(eq(managedMessageAudits.guildId, guildId));

@@ -19,6 +19,8 @@ import {
   InvalidTimezoneError,
 } from "../../src/guild-settings.js";
 import type { GuildSettings, GuildSettingsStore } from "../../src/guild-settings.js";
+import { createGuildSettingsStore, validateTimezone } from "../../src/guild-settings.js";
+import type { DatabaseClient } from "../../src/database.js";
 
 const defaultSettings: GuildSettings = {
   guildId: "123456789012345678",
@@ -146,6 +148,49 @@ describe("config command", () => {
     );
     expect(prefixInteraction.reply).toHaveBeenCalledWith(ephemeral("Closed prefix set to [DONE]."));
   });
+
+  it.each(["Asia/Tokyo", "America/New_York", "UTC"])(
+    "accepts supported timezone %s through config validation",
+    async (value) => {
+      const store = createStore({
+        setTimezone: vi.fn<GuildSettingsStore["setTimezone"]>((_guildId, timezone) =>
+          Promise.resolve({ ...defaultSettings, timezone: validateTimezone(timezone) }),
+        ),
+      });
+      const { interaction, reply } = createInteraction({ subcommand: "timezone", value });
+      await handleConfigCommand(
+        interaction,
+        store,
+        createAutomaticClose(),
+        createAuditDestination(),
+        createPreviewConfig(),
+      );
+      expect(store.setTimezone).toHaveBeenCalledWith(defaultSettings.guildId, value);
+      expect(reply).toHaveBeenCalledOnce();
+      expect(reply).toHaveBeenCalledWith(ephemeral(`Timezone set to ${value}.`));
+    },
+  );
+
+  it.each(["JST", "+09:00", "not/a-timezone"])(
+    "rejects unsupported timezone %s before database access",
+    async (value) => {
+      const database = { insert: vi.fn(), select: vi.fn(), update: vi.fn() };
+      const store = createGuildSettingsStore(database as unknown as DatabaseClient);
+      const { interaction, reply } = createInteraction({ subcommand: "timezone", value });
+      await handleConfigCommand(
+        interaction,
+        store,
+        createAutomaticClose(),
+        createAuditDestination(),
+        createPreviewConfig(),
+      );
+      expect(reply).toHaveBeenCalledOnce();
+      expect(reply).toHaveBeenCalledWith(ephemeral("Timezone must be a valid IANA timezone"));
+      expect(database.insert).not.toHaveBeenCalled();
+      expect(database.select).not.toHaveBeenCalled();
+      expect(database.update).not.toHaveBeenCalled();
+    },
+  );
 
   it("returns validation failures ephemerally", async () => {
     const timezoneStore = createStore({

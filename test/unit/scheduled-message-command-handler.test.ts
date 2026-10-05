@@ -19,6 +19,10 @@ import {
   SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX,
   SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX,
 } from "../../src/message-command.js";
+import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
+import { ONE_TIME_SCHEDULE_ERRORS } from "../../src/one-time-message-schedule.js";
+import type { GuildSettingsStore } from "../../src/guild-settings.js";
+import type { ScheduledMessageStore } from "../../src/scheduled-message-persistence.js";
 import type { ScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
 
 const executeAt = new Date("2030-01-02T03:04:05.000Z");
@@ -159,9 +163,11 @@ function commandInteraction(input: {
       getString: (name: string) =>
         input.options !== undefined && name in input.options
           ? input.options[name]
-          : name === "after"
-            ? (input.after ?? input.value)
-            : input.value,
+          : name === "at"
+            ? null
+            : name === "after"
+              ? (input.after ?? input.value)
+              : input.value,
       getInteger: () => 1,
     },
     inGuild: () => true,
@@ -379,9 +385,12 @@ describe("scheduled message command handler", () => {
     expect(response).not.toContain("sensitive scheduled content");
   });
   it("round-trips only a validated relative delay in the modal custom ID", () => {
-    const customId = createScheduledMessageCreateModalId(3_600_000);
+    const customId = createScheduledMessageCreateModalId({ kind: "AFTER", durationMs: 3_600_000 });
     expect(customId).toBe(`${SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX}3600000`);
-    expect(parseScheduledMessageCreateModalId(customId)).toBe(3_600_000);
+    expect(parseScheduledMessageCreateModalId(customId)).toEqual({
+      kind: "AFTER",
+      durationMs: 3_600_000,
+    });
     expect(
       parseScheduledMessageCreateModalId(`${SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX}60001`),
     ).toBe(undefined);
@@ -393,14 +402,16 @@ describe("scheduled message command handler", () => {
     const s = services();
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
     expect(f.showModal.mock.calls[0]?.[0].toJSON()).toMatchObject({
-      custom_id: createScheduledMessageCreateModalId(1_800_000),
+      custom_id: createScheduledMessageCreateModalId({ kind: "AFTER", durationMs: 1_800_000 }),
       title: "Schedule managed message",
     });
     expect(f.deferReply).not.toHaveBeenCalled();
   });
 
   it("routes a validated schedule modal after ephemeral acknowledgement without Discord create", async () => {
-    const f = modalInteraction(createScheduledMessageCreateModalId(3_600_000));
+    const f = modalInteraction(
+      createScheduledMessageCreateModalId({ kind: "AFTER", durationMs: 3_600_000 }),
+    );
     const s = services();
     await expect(
       handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled),
@@ -410,7 +421,7 @@ describe("scheduled message command handler", () => {
       guildId: "guild-id",
       channelId: "channel-id",
       actorUserId: "actor-id",
-      durationMs: 3_600_000,
+      schedule: { kind: "AFTER", durationMs: 3_600_000 },
       payload: { content: "sensitive scheduled content", embed: null },
     });
     expect(s.managed.send).not.toHaveBeenCalled();
@@ -428,7 +439,9 @@ describe("scheduled message command handler", () => {
   });
 
   it("retains schedule metadata when delivery is pending reconciliation", async () => {
-    const f = modalInteraction(createScheduledMessageCreateModalId(3_600_000));
+    const f = modalInteraction(
+      createScheduledMessageCreateModalId({ kind: "AFTER", durationMs: 3_600_000 }),
+    );
     const s = services("ACTIVE", true);
     await handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled);
     const response = JSON.stringify(f.editReply.mock.calls);
@@ -639,7 +652,7 @@ describe("scheduled message command handler", () => {
       guildId: "guild-id",
       channelId: "channel-id",
       actorUserId: "actor-id",
-      durationMs: 7_200_000,
+      schedule: { kind: "AFTER", durationMs: 7_200_000 },
     });
     expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
   });
@@ -677,4 +690,214 @@ describe("scheduled message command handler", () => {
       expect.objectContaining({ allowedMentions: { parse: [] } }),
     );
   });
+});
+
+describe("absolute one-time commands and modal transport", () => {
+  it.each(["create", "reschedule"] as const)(
+    "validates %s selectors by presence before opening or deferring",
+    async (subcommand) => {
+      for (const options of [
+        { after: null, at: null },
+        { after: "1m", at: "2030-01-02 03:06" },
+        { after: "", at: "" },
+        { after: null, at: "" },
+        { after: "", at: null },
+        { after: null, at: "2030-02-29 12:00" },
+      ]) {
+        const f = commandInteraction({ subcommand, value: "schedule-id", options });
+        const s = services();
+        await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+        expect(f.reply).toHaveBeenCalledWith(
+          expect.objectContaining({
+            flags: MessageFlags.Ephemeral,
+            allowedMentions: { parse: [] },
+          }),
+        );
+        expect(f.showModal).not.toHaveBeenCalled();
+        expect(f.deferReply).not.toHaveBeenCalled();
+        expect(s.create).not.toHaveBeenCalled();
+        expect(s.scheduled.reschedule).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("carries AT through the existing five-field Modal and renders the authoritative timestamp", async () => {
+    const s = services();
+    const f = commandInteraction({
+      subcommand: "create",
+      value: "",
+      options: { after: null, at: "2030-01-02 03:06" },
+    });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    const modal = f.showModal.mock.calls[0]![0].toJSON();
+    expect(modal.components).toHaveLength(5);
+    expect(modal.custom_id).toBe("scheduled-message:schedule-create:at:2030-01-02 03:06");
+    expect(modal.custom_id.length).toBeLessThanOrEqual(100);
+    expect(s.create).not.toHaveBeenCalled();
+    const submission = modalInteraction(modal.custom_id);
+    await handleManagedMessageModalSubmit(submission.interaction, s.managed, s.scheduled);
+    expect(s.create).toHaveBeenCalledWith(
+      expect.objectContaining({ schedule: { kind: "AT", localDateTime: "2030-01-02 03:06" } }),
+    );
+    expect(JSON.stringify(submission.editReply.mock.calls)).toContain(
+      "<t:1893553445:F> (<t:1893553445:R>)",
+    );
+  });
+
+  it("passes the AT selector during reschedule after ephemeral acknowledgement", async () => {
+    const s = services();
+    const f = commandInteraction({
+      subcommand: "reschedule",
+      value: "schedule-id",
+      options: { after: null, at: "2030-01-02 03:06" },
+    });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    expect(s.scheduled.reschedule).toHaveBeenCalledWith({
+      scheduledActionId: "schedule-id",
+      guildId: "guild-id",
+      channelId: "channel-id",
+      actorUserId: "actor-id",
+      schedule: { kind: "AT", localDateTime: "2030-01-02 03:06" },
+    });
+    expect(f.deferReply.mock.invocationCallOrder[0]).toBeLessThan(
+      s.scheduled.reschedule.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it.each([
+    "scheduled-message:schedule-create:at:2030-02-29 12:00",
+    "scheduled-message:schedule-create:at:2030-01-02T12:00",
+    "scheduled-message:schedule-create:at:2030-01-02 12:00Z",
+    "scheduled-message:schedule-create:at:2030-01-02 12:00:UTC",
+    "scheduled-message:schedule-create:at:2030-01-02 12:00\n",
+    "scheduled-message:schedule-create:60000\n",
+    "scheduled-message:schedule-create:060000",
+    "scheduled-message:schedule-create:at:" + "0".repeat(101),
+  ])(
+    "rejects malformed owned modal %# before acknowledgement or service call",
+    async (customId) => {
+      expect(parseScheduledMessageCreateModalId(customId)).toBeUndefined();
+      const s = services();
+      const f = modalInteraction(customId);
+      await handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled);
+      expect(f.reply).toHaveBeenCalledTimes(1);
+      expect(f.deferReply).not.toHaveBeenCalled();
+      expect(s.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it("round-trips AT without encoding a timezone or canonical instant", () => {
+    const selector = { kind: "AT", localDateTime: "9999-12-31 23:59" } as const;
+    const id = createScheduledMessageCreateModalId(selector);
+    expect(parseScheduledMessageCreateModalId(id)).toEqual(selector);
+    expect(id.length).toBeLessThanOrEqual(100);
+    expect(() =>
+      createScheduledMessageCreateModalId({ kind: "AT", localDateTime: "invalid" }),
+    ).toThrow();
+  });
+
+  it("uses a timezone changed while the Modal was open and preserves AFTER's full delay", async () => {
+    const s = services();
+    const initialResult = await s.create({
+      guildId: "guild-id",
+      channelId: "channel-id",
+      actorUserId: "actor-id",
+      schedule: { kind: "AFTER", durationMs: 60_000 },
+      payload: { content: "test" },
+    });
+    if (initialResult.outcome !== "SUCCESS") throw new Error("fixture failed");
+    let zone = "UTC";
+    let clock = new Date("2030-01-02T03:00:00Z");
+    const getOrCreate = vi.fn<GuildSettingsStore["getOrCreate"]>(() =>
+      Promise.resolve({
+        guildId: "guild-id",
+        timezone: zone,
+        closedPrefix: "[CLOSED]",
+        linkPreviewMode: "hybrid",
+        auditLogChannelId: null,
+        autoCloseInactivitySeconds: 604800,
+        autoCloseBotMessagesCountAsActivity: false,
+        createdAt: clock,
+        updatedAt: clock,
+      }),
+    );
+    const create = vi.fn<ScheduledMessageStore["create"]>((input) =>
+      Promise.resolve({
+        ...initialResult.definition,
+        action: { ...initialResult.definition.action, executeAt: input.executeAt },
+      }),
+    );
+    const application = createScheduledMessageCommandService({
+      discord: {
+        authorizeCreation: vi.fn(() => Promise.resolve({ outcome: "AUTHORIZED" as const })),
+      },
+      store: {
+        create,
+        cancel: vi.fn(),
+        findStatus: vi.fn(),
+        listNonterminal: vi.fn(),
+        findEditable: vi.fn(),
+        edit: vi.fn(),
+        reschedule: vi.fn(),
+        find: vi.fn(),
+      },
+      delivery: {
+        ensureScheduledMessageDelivery: vi.fn(() => Promise.resolve("CURRENT" as const)),
+        cancelScheduledMessageDeliveries: vi.fn(),
+      },
+      guildSettings: { getOrCreate },
+      logger: { warn: vi.fn() },
+      now: () => clock,
+    });
+    const atCommand = commandInteraction({
+      subcommand: "create",
+      value: "",
+      options: { after: null, at: "2030-01-02 12:06" },
+    });
+    await handleMessageCommand(atCommand.interaction, s.managed, application);
+    expect(getOrCreate).not.toHaveBeenCalled();
+    zone = "Asia/Tokyo";
+    clock = new Date("2030-01-02T03:04:30Z");
+    await handleManagedMessageModalSubmit(
+      modalInteraction(atCommand.showModal.mock.calls[0]![0].toJSON().custom_id).interaction,
+      s.managed,
+      application,
+    );
+    expect(create.mock.calls[0]![0].executeAt).toEqual(new Date("2030-01-02T03:06:00Z"));
+    zone = "UTC";
+    expect(create.mock.calls[0]![0].executeAt).toEqual(new Date("2030-01-02T03:06:00Z"));
+    getOrCreate.mockClear();
+    const afterCommand = commandInteraction({ subcommand: "create", value: "2h" });
+    await handleMessageCommand(afterCommand.interaction, s.managed, application);
+    clock = new Date("2030-01-02T08:00:00Z");
+    await handleManagedMessageModalSubmit(
+      modalInteraction(afterCommand.showModal.mock.calls[0]![0].toJSON().custom_id).interaction,
+      s.managed,
+      application,
+    );
+    expect(create.mock.calls[1]![0].executeAt).toEqual(new Date("2030-01-02T10:00:00Z"));
+    expect(getOrCreate).not.toHaveBeenCalled();
+  });
+
+  it.each(Object.entries(ONE_TIME_SCHEDULE_ERRORS))(
+    "renders bounded %s errors for create and reschedule",
+    async (code, message) => {
+      const s = services();
+      const typedCode = code as keyof typeof ONE_TIME_SCHEDULE_ERRORS;
+      s.create.mockResolvedValue({ outcome: "FAILURE", code: typedCode });
+      const modal = modalInteraction(
+        createScheduledMessageCreateModalId({ kind: "AT", localDateTime: "2030-01-02 03:06" }),
+      );
+      await handleManagedMessageModalSubmit(modal.interaction, s.managed, s.scheduled);
+      expect(modal.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: message, allowedMentions: { parse: [] } }),
+      );
+      s.scheduled.reschedule.mockResolvedValue({ outcome: typedCode });
+      const f = commandInteraction({ subcommand: "reschedule", value: "schedule-id", after: "1m" });
+      await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+      expect(f.editReply).toHaveBeenCalledWith(
+        expect.objectContaining({ content: message, allowedMentions: { parse: [] } }),
+      );
+    },
+  );
 });

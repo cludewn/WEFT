@@ -39,13 +39,17 @@ import {
   type ManagedMessagePayloadInput,
   type ManagedMessagePayloadValidationCode,
 } from "./managed-message-payload.js";
-import { addRelativeDuration, InvalidRelativeDurationError } from "./relative-duration.js";
+import {
+  resolveOneTimeSchedule,
+  type OneTimeScheduleInput,
+  type OneTimeScheduleError,
+} from "./one-time-message-schedule.js";
 
 export type CreateScheduledMessageCommandInput = {
   guildId: string;
   channelId: string;
   actorUserId: string;
-  durationMs: number;
+  schedule: OneTimeScheduleInput;
   payload: ManagedMessagePayloadInput;
 };
 
@@ -60,7 +64,7 @@ export type CreateScheduledMessageCommandResult =
       code:
         | ManagedMessagePayloadValidationCode
         | ScheduledMessageCreationAuthorizationFailureCode
-        | "INVALID_DURATION"
+        | OneTimeScheduleError
         | "PERSISTENCE_UNCONFIRMED";
     };
 
@@ -82,7 +86,7 @@ export type RescheduleScheduledMessageCommandResult =
       { outcome: "RESCHEDULED" }
     >)
   | Exclude<ModifyScheduledMessageResult, { outcome: "RESCHEDULED" | "EDITED" | "UNCHANGED" }>
-  | { outcome: "INVALID_DURATION" | "UNAVAILABLE" | "WRONG_KIND" };
+  | { outcome: OneTimeScheduleError | "UNAVAILABLE" | "WRONG_KIND" };
 
 export type CreateRecurringCommandResult =
   | {
@@ -125,7 +129,7 @@ export type ScheduledMessageCommandService = {
     input: CreateScheduledMessageCommandInput,
   ) => Promise<CreateScheduledMessageCommandResult>;
   createRecurring: (
-    input: Omit<CreateScheduledMessageCommandInput, "durationMs"> & {
+    input: Omit<CreateScheduledMessageCommandInput, "schedule"> & {
       recurrence: RecurringCommandInput;
     },
   ) => Promise<CreateRecurringCommandResult>;
@@ -173,7 +177,7 @@ export type ScheduledMessageCommandService = {
     guildId: string;
     channelId: string;
     actorUserId: string;
-    durationMs: number;
+    schedule: OneTimeScheduleInput;
   }) => Promise<RescheduleScheduledMessageCommandResult>;
 };
 
@@ -218,6 +222,24 @@ export function createScheduledMessageCommandService({
   generateId = randomUUID,
   now = () => new Date(),
 }: Dependencies): ScheduledMessageCommandService {
+  async function establishSchedule(schedule: OneTimeScheduleInput, guildId: string) {
+    let timezone: string | undefined;
+    if (schedule.kind === "AT") {
+      if (guildSettings === undefined) return { ok: false, code: "TIMEZONE_UNAVAILABLE" } as const;
+      let storedTimezone: string;
+      try {
+        storedTimezone = (await guildSettings.getOrCreate(guildId)).timezone;
+      } catch {
+        return { ok: false, code: "TIMEZONE_UNAVAILABLE" } as const;
+      }
+      timezone = normalizeRecurringTimezone(storedTimezone);
+      if (timezone === undefined) return { ok: false, code: "INVALID_GUILD_TIMEZONE" } as const;
+    }
+    const establishedAt = now();
+    const resolved = resolveOneTimeSchedule(schedule, establishedAt, timezone);
+    return resolved.ok ? { ...resolved, establishedAt } : resolved;
+  }
+
   return {
     async create(input) {
       const validation = validateManagedMessagePayload(input.payload);
@@ -238,14 +260,9 @@ export function createScheduledMessageCommandService({
 
       const scheduledActionId = generateId();
       const auditId = generateId();
-      const establishedAt = now();
-      let executeAt: Date;
-      try {
-        executeAt = addRelativeDuration(establishedAt, input.durationMs);
-      } catch (error) {
-        if (!(error instanceof InvalidRelativeDurationError)) throw error;
-        return { outcome: "FAILURE", code: "INVALID_DURATION" };
-      }
+      const resolved = await establishSchedule(input.schedule, input.guildId);
+      if (!resolved.ok) return { outcome: "FAILURE", code: resolved.code };
+      const { executeAt, establishedAt } = resolved;
 
       let definition: ScheduledMessageDefinition;
       try {
@@ -717,14 +734,9 @@ export function createScheduledMessageCommandService({
         return { outcome: "UNAVAILABLE" };
       }
       if (current.outcome !== "ACTIVE") return current;
-      const establishedAt = now();
-      let executeAt: Date;
-      try {
-        executeAt = addRelativeDuration(establishedAt, input.durationMs);
-      } catch (error) {
-        if (!(error instanceof InvalidRelativeDurationError)) throw error;
-        return { outcome: "INVALID_DURATION" };
-      }
+      const resolved = await establishSchedule(input.schedule, input.guildId);
+      if (!resolved.ok) return { outcome: resolved.code };
+      const { executeAt, establishedAt } = resolved;
       const result = await store.reschedule({
         scheduledActionId: input.scheduledActionId,
         guildId: input.guildId,

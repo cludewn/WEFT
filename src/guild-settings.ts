@@ -2,6 +2,7 @@ import { eq, sql } from "drizzle-orm";
 import { boolean, check, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
 import type { DatabaseClient } from "./database.js";
+import { normalizeRecurringTimezone } from "./recurring-message.js";
 
 export const DEFAULT_GUILD_TIMEZONE = "UTC";
 export const DEFAULT_CLOSED_PREFIX = "[CLOSED]";
@@ -87,21 +88,8 @@ export class InvalidAutoCloseInactivityInputError extends Error {
 }
 
 export function validateTimezone(value: string): string {
-  const timezone = value.trim();
-
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: timezone }).format();
-  } catch (error) {
-    if (error instanceof RangeError) {
-      throw new InvalidTimezoneError();
-    }
-    throw error;
-  }
-
-  if (timezone.length === 0) {
-    throw new InvalidTimezoneError();
-  }
-
+  const timezone = normalizeRecurringTimezone(value.trim());
+  if (timezone === undefined) throw new InvalidTimezoneError();
   return timezone;
 }
 

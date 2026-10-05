@@ -92,7 +92,13 @@ describe("message command", () => {
       name: "schedule",
       description: "Manage scheduled messages",
       options: [
-        { name: "create", options: [{ name: "after", required: true }] },
+        {
+          name: "create",
+          options: [
+            { name: "after", required: false },
+            { name: "at", required: false, min_length: 16, max_length: 16 },
+          ],
+        },
         {
           name: "recurring-create",
           options: [
@@ -117,7 +123,8 @@ describe("message command", () => {
           name: "reschedule",
           options: [
             { name: "id", required: true },
-            { name: "after", required: true },
+            { name: "after", required: false },
+            { name: "at", required: false, min_length: 16, max_length: 16 },
           ],
         },
         {
@@ -638,3 +645,18 @@ function createModalInteraction(
   } as unknown as ModalSubmitInteraction;
   return { interaction, service, reply, deferReply, editReply };
 }
+
+it("keeps one-time option descriptions within Discord's 100-character limit", () => {
+  const group = messageCommandDefinition
+    .toJSON()
+    .options?.find((option) => option.name === "schedule");
+  if (group === undefined || !("options" in group)) throw new Error("missing schedule group");
+  for (const command of group.options ?? []) {
+    if (command.name !== "create" && command.name !== "reschedule") continue;
+    expect(command.description.length).toBeLessThanOrEqual(100);
+    if ("options" in command) {
+      for (const option of command.options ?? [])
+        expect(option.description.length).toBeLessThanOrEqual(100);
+    }
+  }
+});
