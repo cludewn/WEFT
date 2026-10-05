@@ -20,6 +20,7 @@ const DEFAULT_RECONCILIATION_RETRY_MAX_MS = 60_000;
 
 export const THREAD_FAILURE_CODES = [
   "UNSUPPORTED_CONTEXT",
+  "BULK_SELECTION_CHANGED",
   "THREAD_NOT_ACTIVE",
   "THREAD_LOCKED",
   "ACTOR_PERMISSION_MISSING",
@@ -77,6 +78,7 @@ export type ThreadLifecycleFailedResult = {
   pending?: false;
   code: ThreadFailureCode;
   disposition?: ThreadFailureDisposition;
+  bulkSkipped?: "INELIGIBLE" | "EXISTING_OPERATION" | "NOT_STARTED";
 };
 export type ThreadLifecycleResult =
   ThreadLifecycleCompletedResult | ThreadLifecyclePendingResult | ThreadLifecycleFailedResult;
@@ -268,12 +270,21 @@ export class PendingDiscordMutationGuard {
   }
 }
 
+/** Only confirmed bulk close uses these guards; ordinary close semantics remain unchanged. */
+export type BulkThreadCloseHooks = {
+  checkSelection: () => Promise<ThreadSnapshot | undefined>;
+  canAdmit: () => boolean;
+  onAttemptStarted: () => void;
+  onLogicalSettled: () => void;
+};
+
 export type ThreadLifecycleService = {
   close: (
     guildId: string,
     threadId: string,
     actorId: string,
     prepareManualClose?: () => Promise<void>,
+    bulk?: BulkThreadCloseHooks,
   ) => Promise<ThreadLifecycleResult>;
   closeAsSystem: (
     guildId: string,
@@ -365,10 +376,19 @@ export function createThreadLifecycleService(
       auditId?: string;
       completionMode?: OperationContext["completionMode"];
       onLogicalSettled?: () => void;
+      bulk?: BulkThreadCloseHooks;
     },
   ): Promise<ThreadLifecycleResult> {
     const key = `${guildId}:${threadId}`;
     const preceding = queuedOperations.get(key);
+    if (contextOptions?.bulk && (preceding || pendingMutations.isPending(guildId, threadId))) {
+      contextOptions.onLogicalSettled?.();
+      return Promise.resolve({
+        ok: false,
+        code: "BULK_SELECTION_CHANGED",
+        bulkSkipped: "EXISTING_OPERATION",
+      });
+    }
     const retained = new Set<Promise<void>>();
     const retain = (promise: Promise<void>): void => {
       const tracked = promise.then(
@@ -488,8 +508,13 @@ export function createThreadLifecycleService(
     try {
       const boundaryTimeoutMs = Math.min(remainingMs, timeoutOptions?.timeoutMs ?? remainingMs);
       const underlying = operation();
-      if (boundary === "audit_write") {
-        // Retain the original write and publication after the caller wait expires.
+      if (
+        boundary === "audit_write" ||
+        boundary === "managed_state_write" ||
+        boundary === "guild_settings_read"
+      ) {
+        // getOrCreate can INSERT even though its boundary is named a read. Required persistence
+        // and audit publication remain owned until raw settlement, beyond the caller timeout.
         context.retain(underlying.then(() => undefined));
       }
       const result = await withTimeout(underlying, boundaryTimeoutMs);
@@ -1220,26 +1245,62 @@ export function createThreadLifecycleService(
     }
   }
 
+  async function fetchCloseTarget(
+    context: OperationContext,
+    bulk?: BulkThreadCloseHooks,
+  ): Promise<ThreadSnapshot> {
+    if (!bulk) return fetchSupported(context);
+    const thread = await runBoundary(
+      context,
+      "thread_fetch",
+      "BULK_SELECTION_CHANGED",
+      "DISCORD_FETCH_TIMEOUT",
+      () => {
+        const observation = bulk.checkSelection();
+        // A timed-out read cannot later admit an operation, but still belongs to logical drain.
+        context.retain(observation.then(() => undefined));
+        return observation;
+      },
+    );
+    if (!thread) throw new LifecycleFailure("BULK_SELECTION_CHANGED");
+    return thread;
+  }
+
   async function close(
     context: OperationContext,
     intent: CloseIntent,
     precedingChangedSameTarget: boolean,
     prepareManualClose?: () => Promise<void>,
+    bulk?: BulkThreadCloseHooks,
   ): Promise<ThreadLifecycleResult> {
     const { guildId, threadId } = context;
     const { operation: action, actor } = intent;
     let fallback: ThreadFailureCode = "DISCORD_FETCH_FAILED";
     try {
       await requireNoPendingMutation(context);
-      const initial = await fetchSupported(context);
+      const initial = await fetchCloseTarget(context, bulk);
       if (initial.locked) {
         throw new LifecycleFailure("THREAD_LOCKED");
       }
-      await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
+      if (!bulk) await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
     } catch (error) {
+      if (bulk)
+        return {
+          ok: false,
+          code: "BULK_SELECTION_CHANGED",
+          bulkSkipped: error instanceof LifecyclePending ? "EXISTING_OPERATION" : "INELIGIBLE",
+        };
       return fail(context, action, actor, error, fallback);
     }
 
+    // No await may intervene between final admission and the first possible attempt side effect.
+    if (bulk && !bulk.canAdmit())
+      return {
+        ok: false,
+        code: "BULK_SELECTION_CHANGED",
+        bulkSkipped: "NOT_STARTED",
+      };
+    bulk?.onAttemptStarted();
     if (prepareManualClose !== undefined) {
       await prepareManualClose();
     }
@@ -1265,11 +1326,11 @@ export function createThreadLifecycleService(
         existing?.lifecycleState === "CLOSED" ? existing.appliedPrefix : settings.closedPrefix;
 
       fallback = "DISCORD_FETCH_FAILED";
-      const beforeStateWrite = await fetchSupported(context);
+      const beforeStateWrite = await fetchCloseTarget(context, bulk);
       if (beforeStateWrite.locked) {
         throw new LifecycleFailure("THREAD_LOCKED");
       }
-      await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
+      if (!bulk) await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
       let changed = existing?.lifecycleState !== "CLOSED" || precedingChangedSameTarget;
       void addClosedPrefix(beforeStateWrite.name, appliedPrefix);
 
@@ -1283,11 +1344,11 @@ export function createThreadLifecycleService(
       );
 
       fallback = "DISCORD_FETCH_FAILED";
-      const beforeArchive = await fetchSupported(context);
+      const beforeArchive = await fetchCloseTarget(context, bulk);
       if (beforeArchive.locked) {
         throw new LifecycleFailure("THREAD_LOCKED");
       }
-      await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
+      if (!bulk) await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
       const closedName = addClosedPrefix(beforeArchive.name, appliedPrefix);
       if (!beforeArchive.archived || closedName !== beforeArchive.name) {
         const mutationIntent: CloseMutationIntent = {
@@ -1456,7 +1517,7 @@ export function createThreadLifecycleService(
   }
 
   return {
-    close: (guildId, threadId, actorId, prepareManualClose) => {
+    close: (guildId, threadId, actorId, prepareManualClose, bulk) => {
       return serialize(
         guildId,
         threadId,
@@ -1468,7 +1529,9 @@ export function createThreadLifecycleService(
             { operation: "CLOSE", actor: { type: "USER", id: actorId } },
             precedingChangedSameTarget,
             prepareManualClose,
+            bulk,
           ),
+        bulk ? { bulk, onLogicalSettled: bulk.onLogicalSettled } : undefined,
       );
     },
     closeAsSystem: (guildId, threadId, auditId) =>

@@ -24,6 +24,7 @@ describe("thread command", () => {
       PermissionFlagsBits.ManageThreads.toString(),
     );
     expect(definition.options?.map((option) => option.name)).toEqual([
+      "bulk-close",
       "close",
       "open",
       "close-after",
@@ -32,12 +33,12 @@ describe("thread command", () => {
       "untrack",
       "status",
     ]);
-    expect(definition.options?.at(2)).toMatchObject({
+    expect(definition.options?.at(3)).toMatchObject({
       name: "close-after",
       options: [{ name: "after", required: true }],
     });
-    expect(definition.options?.at(3)).toMatchObject({ name: "cancel-close", options: [] });
-    expect(definition.options?.slice(4)).toEqual([
+    expect(definition.options?.at(4)).toMatchObject({ name: "cancel-close", options: [] });
+    expect(definition.options?.slice(5)).toEqual([
       expect.objectContaining({ name: "track", options: [] }),
       expect.objectContaining({ name: "untrack", options: [] }),
       expect.objectContaining({ name: "status", options: [] }),

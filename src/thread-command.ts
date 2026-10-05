@@ -28,9 +28,12 @@ import type { ThreadFailureCode, ThreadLifecycleService } from "./thread-lifecyc
 
 export const threadCommandDefinition = new SlashCommandBuilder()
   .setName("thread")
-  .setDescription("Manage the current Discord thread")
+  .setDescription("Manage Discord threads")
   .setContexts(InteractionContextType.Guild)
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageThreads)
+  .addSubcommand((subcommand) =>
+    subcommand.setName("bulk-close").setDescription("Select and confirm closing active threads"),
+  )
   .addSubcommand((subcommand) =>
     subcommand.setName("close").setDescription("Soft-close the current thread"),
   )

@@ -4,6 +4,8 @@ import type { LinkPreviewConfiguration } from "./link-preview-configuration.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import type { Logger } from "pino";
 
+import { handleBulkCloseCommand } from "./bulk-thread-close-command.js";
+import type { BulkCloseService } from "./bulk-thread-close.js";
 import type { AuditLogDestinationService } from "./audit-log-destination.js";
 import type { AutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
 import type { AutomaticCloseThreadMaintenanceService } from "./automatic-close-thread-maintenance.js";
@@ -27,6 +29,7 @@ export const commandDefinitions = [
 ].map((command) => command.toJSON());
 
 export type CommandDependencies = {
+  bulkClose: BulkCloseService;
   linkPreview: LinkPreviewConfiguration;
   auditLogDestination: AuditLogDestinationService;
   automaticCloseConfiguration: AutomaticCloseConfigurationService;
@@ -60,6 +63,10 @@ export async function handleCommand(
   }
 
   if (interaction.commandName === "thread") {
+    if (interaction.options.getSubcommand() === "bulk-close") {
+      await handleBulkCloseCommand(interaction, dependencies.bulkClose);
+      return true;
+    }
     await handleThreadCommand(
       interaction,
       dependencies.threadLifecycle,

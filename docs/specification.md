@@ -361,6 +361,7 @@ The intended command surface is:
 
 ```text
 /thread close
+/thread bulk-close
 /thread open
 /thread close-after
 /thread cancel-close
@@ -392,6 +393,125 @@ Requirements:
 - The operation and its outcome must be audited.
 
 The title prefix is a user-visible indicator. It is not the authoritative source of state.
+
+### Confirmed interactive bulk thread closing
+
+`/thread bulk-close` has no slash options and immediately opens a setup Modal as its initial
+interaction response. `/thread` retains its ManageThreads default member permission. Command
+invocation requires the guild management boundary and READY; visibility alone does not authorize a
+selected parent. The Modal uses four Label/component inputs:
+
+| Input              | Component      | Requirement                                                      |
+| ------------------ | -------------- | ---------------------------------------------------------------- |
+| Parent             | Channel Select | Required; exactly one GuildText, GuildAnnouncement or GuildForum |
+| Owner              | User Select    | Optional; zero or one user ID                                    |
+| Name contains      | Text Input     | Optional literal, case-sensitive substring                       |
+| Created older than | Text Input     | Optional creation age duration                                   |
+
+Modal submission acknowledges ephemerally, validates the payload, then freshly authorizes the selected
+parent before starting active-thread REST enumeration. Revalidate snowflake identity, same guild,
+supported type, guild owner, roles, actor and Bot members, and parent permission overwrites. Both
+actor and Bot require ViewChannel + ManageThreads. Channel Select type restrictions are UI guidance,
+not authorization authority. Owner uses submitted user ID values, not resolved user objects.
+
+Filters combine with AND. Empty and whitespace-only text leaves the filter unset; preserve nonblank
+Name contains exactly, including leading/trailing spaces. Owner matches current Discord `owner_id`
+exactly. Creation age accepts one positive-integer `m`/`h`/`d` duration from one minute through 365 days.
+Invalid duration yields a bounded ephemeral error. Capture a fixed cutoff when candidate construction
+begins; only a usable fresh `thread_metadata.create_timestamp` at or before that cutoff matches.
+Missing, null or invalid creation timestamps cannot match a configured age filter. Creation age is
+not inactivity; snowflake, archive, last-message and database timestamps are not substitutes.
+Unconfigured filters impose no condition during execution.
+
+Candidates are active, unlocked public threads under GuildText, announcement threads under
+GuildAnnouncement, or public forum-post threads under GuildForum. Private threads, archived threads,
+GuildMedia and other parents/types are excluded before rendering. Prior WEFT management or automatic
+tracking is not required. Discovery is read-only and uses the fresh active guild REST route.
+
+At least one configured filter selects filtered mode: matching eligible candidates initially all
+start selected. With no configured filter, unfiltered manual-picking mode includes all otherwise
+eligible candidates in the parent, initially with none selected. Reject more than 50 candidates in
+either mode, without truncation; require configured or narrower filters. Zero candidates produces a
+bounded response without a selection session. Even one candidate requires selection and Confirm.
+Deduplicate and sort canonical decimal IDs by lossless length/lexical comparison. The candidate IDs
+are immutable for the session; queries never add later matches. Conditions and creation cutoff stay
+fixed through navigation and Confirm.
+
+The ephemeral selection view shows parent, filters, candidate/selected counts, expiry, soft-close
+behavior and schedule-cancellation warning. Render at most ten candidates per page, with at most five
+pages. Each current-page String Select option has a plain-text name, a candidate description and an
+ID value; defaults reflect the current selected Set. Selection allows zero through all page candidates.
+A page submission replaces only that page's selection: `(selected - page) union submitted values`.
+Reject malformed, duplicate, wrong-page and outside-snapshot values. Clear page removes only current
+page selections. Previous/Next retain other pages' selections and page revisits reflect current
+selection. Display names and validated thread links in the embed; inaccessible targets use generic
+text. Authorization precedes every protected render. Prose escapes Markdown including masked links,
+normalizes newlines, suppresses mentions and truncates safely after transformation. Select labels and
+descriptions are normalized plain text within Discord limits.
+
+A feature-specific process-local Map holds at most 128 candidate sessions without live eviction.
+Another bounded Map holds at most 128 setup tickets. Both expire after five minutes by server time.
+Setup tickets bind guild and initiator and are consumed once before parsing/discovery; replay, expiry,
+wrong guild/user, lost ticket and shutdown fail safely. Invalid submission requires a new command.
+Candidate sessions contain UUID, guild, initiator, parent, normalized filters, fixed cutoff, immutable
+candidate IDs, mutable selected Set, preview-message binding, page, revision, expiry and state.
+Custom IDs in the strict `btc:` namespace contain only UUID, action and bounded page/revision values;
+they never contain candidates, selection or filter text, and do not collide with `lp:`.
+
+Every selection/navigation/Confirm/Cancel validates guild, initiator, message binding, expiry and
+PREVIEW state. Navigation and selection do not extend the original five-minute TTL. State is PREVIEW,
+EXECUTING, CANCELLED or EXPIRED. Only the initiator may control the session. Zero selection cannot
+Confirm. After fresh actor/Bot parent authorization, Confirm re-reads the session, verifies identity,
+expiry, state and nonzero selection, copies the exact selected IDs, and synchronously changes to
+EXECUTING with no intervening await. Execution uses this immutable copy exclusively; deselected and
+outside-snapshot IDs never enter manual close. Parallel Confirm, selection/Confirm, Cancel/Confirm,
+expiry and stale pagination cannot duplicate execution or resurrect PREVIEW. Preview writes serialize
+through a response tail; queued renderers verify current state/revision after authorization, and
+terminal control removal follows earlier raw edits. Page/revision controls reject stale updates.
+Cancel acts only before execution. Consumed/cancelled candidate entries retain original expiry;
+lazy cleanup removes expired entries. Shutdown invalidates both stores. Restart restores neither.
+
+Before admission, freshly establish thread identity, guild, supported parent/type, active/unlocked
+state, filters and actor/bot ViewChannel + ManageThreads from current guild owner, role definitions,
+individual members and direct parent overwrites. Fail closed. The existing lifecycle decides operation
+ownership and performs selection checks within its serialization before any scheduled cancellation,
+settings/managed-state write or close audit, then again before managed-state write and final mutation.
+A false precondition before effects produces Skipped. Once cancellation or another attempt effect
+has begun, later ineligibility is an attempted failed/unconfirmed result, never a no-effect skip.
+
+Actual close calls the existing manual-close wrapper and lifecycle. Preserve the existing prefix,
+fresh title, soft archive, serialization, mutation guard, managed persistence, automatic-open
+interaction, reconciliation, final audit and shutdown drain. ACTIVE scheduled-close cancellation
+remains authoritative; EXECUTING or unconfirmed cancellation prevents closing. Committed cancellation
+is not restored if closing subsequently fails or remains Pending. Bulk never issues its own PATCH.
+
+At most three unresolved bulk-owned logical operations are admitted across all simultaneous sessions.
+Keep the slot through lifecycle reconciliation, required persistence and final audit; caller timeout,
+Pending or raw PATCH settlement alone never releases it. Distinguish existing operation ownership
+(no new attempt) from bulk-owned Pending. At confirmation consumption capture an inclusive five-minute
+admission deadline. Check server time and READY immediately before attempt effects, including after
+asynchronous preflight or capacity waiting. Deadline/shutdown stops unstarted targets; started work
+continues. No later background admission or mutation abortion occurs.
+
+The aggregate response is bounded independently of logical settlement: observe each manual-close
+caller for at most 15 seconds, and wait for capacity only through the admission deadline. A timed-out
+not-yet-started caller loses admission; a started unresolved attempt is Pending. The ephemeral result
+reports Selected, Attempted, Closed, Already closed, Pending, Failed or unconfirmed, and Skipped.
+Selected counts the frozen selected subset, not the candidate count. Deselected candidates are excluded
+from execution and aggregate detail; they cause no cancellation, managed write, close audit or PATCH.
+Attempted counts this invocation's actual start boundary. Closed
+and Already closed require existing lifecycle evidence, never a database CLOSED row alone. Failed or
+unconfirmed does not prove Discord stayed unchanged. Skipped means no attempt began, including
+existing ownership or an executing schedule. Results contain counts only, avoiding protected target
+identities after permission loss. No long-lived completion notification is sent for Pending work.
+
+No aggregate audit, migration, dependency, durable bulk intent or transactional all-or-nothing
+promise is introduced. Started manual closes retain CLOSE/USER/initiator per-thread audits with stable
+identity and existing late finalization. Setup, discovery, selection, pagination and Cancel
+never join, leave, archive, unarchive, lock, unlock, rename or send to threads. Restart invalidates confirmations and never resumes unstarted targets.
+Completed effects remain; started work retains only the existing lifecycle durability guarantees.
+READY-only ingress owns handlers, preview writes and orchestration through shutdown's existing source
+drain. Lifecycle drain owns started logical operations under the existing process-wide deadline.
 
 ### Thread open
 
@@ -1117,7 +1237,6 @@ The following ideas are outside the MVP and do not yet have an approved implemen
 - polls,
 - reaction-role assignment,
 - monitoring message edits and deletions,
-- bulk thread closing,
 - reaction-based solved state.
 
 Do not implement or document detailed designs for these features until they are explicitly approved.

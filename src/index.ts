@@ -1,5 +1,8 @@
 import pino from "pino";
 
+import { createBulkCloseService } from "./bulk-thread-close.js";
+import { createBulkCloseDiscord } from "./bulk-thread-close-discord.js";
+
 import { createLinkPreviewConfiguration } from "./link-preview-configuration.js";
 import { createLinkPreviewStore } from "./link-preview-persistence.js";
 import { createLinkPreviewService } from "./link-preview.js";
@@ -302,6 +305,11 @@ async function main(): Promise<void> {
     isDiscordReady: () => discordRuntime.client.isReady(),
     verifyDatabaseConnection: () => database.verifyConnection(),
   });
+  const bulkClose = createBulkCloseService({
+    discord: createBulkCloseDiscord(discordRuntime.client),
+    manualClose: scheduledThreadCloseCommand,
+    isReady: () => runtime.getState() === "READY",
+  });
   const runtime = createApplicationRuntime({
     startHealthListener: () => health.start(),
     quiesceHealth: () => health.quiesce(),
@@ -328,6 +336,7 @@ async function main(): Promise<void> {
     startAutomaticCloseRuntime: () => automaticCloseRuntime.start(),
     startAuditRetentionRuntime: () => auditRetentionRuntime.start(),
     quiesce: [
+      { name: "bulk-close", stop: () => bulkClose.stop() },
       { name: "audit-retention-runtime", stop: () => auditRetentionRuntime.stop() },
       { name: "automatic-close-runtime", stop: () => automaticCloseRuntime.stop() },
       {
@@ -380,6 +389,7 @@ async function main(): Promise<void> {
   registerDiscordCommandHandler(
     discordRuntime.client,
     {
+      bulkClose,
       auditLogDestination,
       linkPreview,
       automaticCloseConfiguration,

@@ -112,6 +112,42 @@ three retries, and a 60-second startup grace period. The health port is not publ
 A timed-out readiness request leaves any unfinished database query owned by the process until it
 settles or the shared shutdown deadline expires; no second physical health query starts meanwhile.
 
+## Confirmed interactive bulk thread closing
+
+Run `/thread bulk-close` to open the setup Modal. Select one text, announcement or forum parent,
+then optionally select an Owner, enter Name contains, or enter Created older than. Submit the Modal,
+review the ephemeral candidate selection, select or deselect threads, then Confirm selected threads.
+
+Filtered example: choose the help parent and Name contains `resolved`; matching candidates initially
+start selected, so you can deselect exceptions. Combine Owner, Name contains and Created older than
+with AND. Names use literal, case-sensitive substring matching, including nonblank edge spaces.
+Owner means the current Discord thread creator. Empty or whitespace-only text leaves a filter unset.
+Created older than `30d` means **created at least 30 days ago, not inactive for 30 days**. It accepts
+one positive `m`, `h` or `d` duration from one minute through 365 days. Threads without a usable
+Discord creation timestamp cannot match that filter.
+
+Unfiltered example: choose the questions parent and leave every optional filter blank. All otherwise
+eligible candidates appear, but **none starts selected**. Explicitly pick the threads to close.
+Zero selected threads cannot be confirmed.
+
+Active, unlocked public/announcement/forum threads are supported, including unmanaged threads.
+Private and archived threads are excluded. More than 50 candidates rejects the whole operation;
+configure or narrow filters. The String Select shows ten candidates per page, with at most five pages.
+Selections persist across Previous/Next navigation. Clear page removes only that page's selections.
+Review every candidate as needed; Confirm is required even for one thread. Only the initiator can
+use the controls. The session expires after five minutes; selection and navigation do not extend it.
+
+The candidate snapshot never gains threads. Confirm freezes exactly the current selected subset;
+deselected candidates never execute. Current state, filters or permissions can still cause skips.
+Closing adds the configured prefix and archives without locking. It may cancel an active scheduled
+close; cancellation is not restored if the later close fails or remains Pending. Execution uses a
+shared maximum of three unresolved bulk operations and stops starting new targets five minutes after
+confirmation. The aggregate distinguishes selected, attempted, closed, already closed, pending,
+failed/unconfirmed and skipped. Selected counts the frozen subset, not all candidates. Pending work
+can finish later; failed/unconfirmed does not prove Discord remained unchanged. This is a partial
+batch, not an all-or-nothing transaction. Restart invalidates setup/selection sessions and never
+resumes unstarted targets.
+
 ## Message-link previews
 
 WEFT displays up to three preview/button items from distinct same-guild Discord message links in
