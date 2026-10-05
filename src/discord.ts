@@ -1,5 +1,11 @@
 import { Client, Events, GatewayDispatchEvents, GatewayIntentBits, RESTEvents } from "discord.js";
 
+import {
+  BULK_COMPONENT_PREFIX,
+  handleBulkCloseButton,
+  handleBulkCloseModal,
+} from "./bulk-thread-close-command.js";
+
 import type { Logger } from "pino";
 
 import { safeErrorName, type ApplicationIngress } from "./application-runtime.js";
@@ -198,9 +204,37 @@ export function registerDiscordCommandHandler(
   ingress: ApplicationIngress = openIngress,
 ): void {
   client.on(Events.InteractionCreate, (interaction) => {
-    if (!interaction.isChatInputCommand()) {
+    if (
+      !interaction.isChatInputCommand() &&
+      (interaction.isButton?.() ||
+        interaction.isStringSelectMenu?.() ||
+        interaction.isModalSubmit?.()) &&
+      interaction.customId.startsWith(BULK_COMPONENT_PREFIX)
+    ) {
+      const invocation = ingress.run(() => {
+        if (interaction.isModalSubmit?.()) {
+          const retained: Promise<unknown>[] = [];
+          return handleBulkCloseModal(interaction, dependencies.bulkClose, {
+            logger: dependencies.logger,
+            retain: (operation) => retained.push(operation),
+          }).finally(async () => {
+            // Caller preparation is bounded; raw REST/edit work remains source-owned through shutdown.
+            await Promise.allSettled(retained);
+          });
+        }
+        if (interaction.isButton?.() || interaction.isStringSelectMenu?.())
+          return handleBulkCloseButton(interaction, dependencies.bulkClose);
+        return Promise.resolve();
+      });
+      void invocation?.catch(() =>
+        dependencies.logger.error(
+          { event: "bulk_close_component_failed" },
+          "Bulk close component handling failed",
+        ),
+      );
       return;
     }
+    if (!interaction.isChatInputCommand()) return;
 
     const invocation = ingress.run(() => handleCommand(interaction, dependencies));
     if (invocation === undefined) return;

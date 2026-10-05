@@ -14,6 +14,7 @@ import type {
 import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
+import type { BulkCloseService } from "../../src/bulk-thread-close.js";
 import type { ApplicationIngress } from "../../src/application-runtime.js";
 import {
   createDiscordClient,
@@ -784,6 +785,7 @@ function registerTestCommandHandler(
   registerDiscordCommandHandler(
     client,
     {
+      bulkClose: {} as BulkCloseService,
       linkPreview: { show: vi.fn(), set: vi.fn() },
       auditLogDestination: { show: vi.fn(), set: vi.fn(), disable: vi.fn() },
       automaticCloseConfiguration: {

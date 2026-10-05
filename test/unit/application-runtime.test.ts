@@ -1,5 +1,13 @@
 import { EventEmitter } from "node:events";
 import { Events, ChannelType, PermissionFlagsBits as P } from "discord.js";
+import {
+  BULK_PREPARATION_FAILURE,
+  BULK_PREPARATION_MS,
+} from "../../src/bulk-thread-close-command.js";
+import { registerDiscordCommandHandler } from "../../src/discord.js";
+import type { CommandDependencies } from "../../src/commands.js";
+import { ComponentType } from "discord.js";
+import type { ModalSubmitInteraction } from "discord.js";
 import type { Client } from "discord.js";
 import {
   createLinkPreviewDiscord,
@@ -10,6 +18,8 @@ import type { LinkPreviewBoundary } from "../../src/link-preview.js";
 import type { Logger } from "pino";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createBulkCloseService } from "../../src/bulk-thread-close.js";
+import type { BulkThreadCloseHooks } from "../../src/thread-lifecycle.js";
 import type { AuditRetentionStore } from "../../src/audit-retention-persistence.js";
 import { createAuditRetentionRuntime } from "../../src/audit-retention-runtime.js";
 
@@ -739,4 +749,193 @@ describe("link preview ingress and shutdown ownership", () => {
       if (stage === "edit") expect(deferReply).toHaveBeenCalledOnce();
     },
   );
+});
+
+describe("bulk work under existing application shutdown ownership", () => {
+  const parent = { id: "2", guildId: "1", type: ChannelType.GuildText, name: "Parent" };
+  const threads = ["10", "11", "12", "13"].map((threadId) => ({
+    guildId: "1",
+    threadId,
+    type: ChannelType.PublicThread as const,
+    parentId: "2",
+    name: "Topic",
+    archived: false,
+    locked: false,
+    ownerId: "9",
+    createdTimestamp: 0,
+  }));
+  it("quiesces capacity admission, drains admitted orchestration, then logical work before dependencies close", async () => {
+    const logical = deferred();
+    const hooks: BulkThreadCloseHooks[] = [];
+    const f = createFixture({ drainThreadLifecycle: vi.fn(() => logical.promise) });
+    const closeManually = vi.fn(
+      (_g: string, _t: string, _a: string, bulk?: BulkThreadCloseHooks) => {
+        hooks.push(bulk!);
+        bulk!.onAttemptStarted();
+        return Promise.resolve({
+          outcome: "LIFECYCLE",
+          result: { ok: false, pending: true },
+        } as const);
+      },
+    );
+    const service = createBulkCloseService({
+      discord: {
+        discover: () => Promise.resolve({ parent, threads }),
+        observe: () => Promise.resolve({ parent, threads }),
+      },
+      manualClose: { closeManually },
+      isReady: () => f.runtime.getState() === "READY",
+    });
+    f.dependencies.quiesce = [{ name: "bulk-close", stop: () => service.stop() }];
+    expect(await service.preview("1", "2", "9", { ownerId: "9" })).toMatchObject({ ok: false });
+    await f.runtime.start();
+    const preview = await service.preview("1", "2", "9", { ownerId: "9" });
+    if (!preview.ok) throw new Error(preview.reason);
+    service.bind(preview.session, "100");
+    const admitted = f.runtime.ingress.run(async () => {
+      const confirmation = await service.confirm(preview.session.id, {
+        guildId: "1",
+        actorId: "9",
+        messageId: "100",
+      });
+      return confirmation!.result;
+    })!;
+    await vi.waitFor(() => expect(closeManually).toHaveBeenCalledTimes(3));
+    const shutdown = f.runtime.shutdown("test");
+    expect(await admitted).toMatchObject({ attempted: 3, pending: 3, skipped: 1 });
+    await vi.waitFor(() => expect(f.dependencies.drainThreadLifecycle).toHaveBeenCalledOnce());
+    expect(f.dependencies.destroyDiscord).not.toHaveBeenCalled();
+    expect(f.dependencies.closeDatabase).not.toHaveBeenCalled();
+    expect(
+      f.runtime.ingress.run(() => service.preview("1", "2", "9", { ownerId: "9" })),
+    ).toBeUndefined();
+    for (const bulk of hooks) bulk.onLogicalSettled();
+    logical.resolve();
+    await shutdown;
+    expect(f.dependencies.closeDatabase).toHaveBeenCalledOnce();
+    expect(closeManually).toHaveBeenCalledTimes(3);
+  });
+  it("retains raw acknowledged preview-message writes inside source drain", async () => {
+    const write = deferred();
+    const f = createFixture();
+    const service = createBulkCloseService({
+      discord: {
+        discover: () => Promise.resolve({ parent, threads }),
+        observe: () => Promise.resolve({ parent, threads }),
+      },
+      manualClose: { closeManually: vi.fn() },
+      isReady: () => f.runtime.getState() === "READY",
+    });
+    f.dependencies.quiesce = [{ name: "bulk-close", stop: () => service.stop() }];
+    await f.runtime.start();
+    const preview = await service.preview("1", "2", "9", { ownerId: "9" });
+    if (!preview.ok) throw new Error(preview.reason);
+    const publish = vi.fn(() => write.promise);
+    const admitted = f.runtime.ingress.run(() => service.updatePreview(preview.session, publish));
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+    const shutdown = f.runtime.shutdown("test");
+    await Promise.resolve();
+    expect(f.dependencies.drainThreadLifecycle).not.toHaveBeenCalled();
+    expect(f.dependencies.closeDatabase).not.toHaveBeenCalled();
+    write.resolve();
+    await admitted;
+    await shutdown;
+    expect(f.dependencies.drainThreadLifecycle).toHaveBeenCalledOnce();
+  });
+});
+
+it("drains raw Modal observation after the bounded user failure and rejects new ingress during shutdown", async () => {
+  vi.useFakeTimers();
+  const f = createFixture();
+  const gate = deferred<{
+    parent: { id: string; guildId: string; type: ChannelType; name: string };
+    threads: typeof threads;
+  }>();
+  const parent = { id: "2", guildId: "1", type: ChannelType.GuildText, name: "Parent" };
+  const threads = [
+    {
+      guildId: "1",
+      threadId: "10",
+      type: ChannelType.PublicThread as const,
+      parentId: "2",
+      name: "Topic",
+      archived: false,
+      locked: false,
+      ownerId: "9",
+      createdTimestamp: 0,
+    },
+  ];
+  const closeManually = vi.fn();
+  const service = createBulkCloseService({
+    discord: { discover: () => Promise.resolve({ parent, threads }), observe: () => gate.promise },
+    manualClose: { closeManually },
+    isReady: () => f.runtime.getState() === "READY",
+  });
+  f.dependencies.quiesce = [{ name: "bulk-close", stop: () => service.stop() }];
+  const editReply = vi.fn((options: unknown) => {
+    void options;
+    return Promise.resolve({ id: "100" });
+  });
+  const deferReply = vi.fn(() => Promise.resolve());
+  const client = new EventEmitter() as unknown as Client;
+  const admitted: Promise<unknown>[] = [];
+  registerDiscordCommandHandler(
+    client,
+    {
+      bulkClose: service,
+      logger: { debug: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    } as unknown as CommandDependencies,
+    {
+      run: (operation) => {
+        const result = f.runtime.ingress.run(operation);
+        if (result) admitted.push(result);
+        return result;
+      },
+    },
+  );
+  await f.runtime.start();
+  const ticket = service.createSetup("1", "9")!;
+  const modal = {
+    isChatInputCommand: () => false,
+    isButton: () => false,
+    isStringSelectMenu: () => false,
+    isModalSubmit: () => true,
+    customId: `btc:${ticket}:setup`,
+    guildId: "1",
+    user: { id: "9" },
+    deferReply,
+    editReply,
+    fields: {
+      getField: (key: string) => ({
+        type: key === "parent" ? ComponentType.ChannelSelect : ComponentType.UserSelect,
+        values: key === "parent" ? ["2"] : [],
+      }),
+      getTextInputValue: (key: string) => (key === "name" ? "Topic" : ""),
+    },
+  } as unknown as ModalSubmitInteraction;
+  client.emit(Events.InteractionCreate, modal);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(editReply.mock.calls.at(-1)?.[0]).toMatchObject({
+    content: "Preparing bulk-close preview…",
+  });
+  let sourceDone = false;
+  const source = admitted[0]!.then(() => {
+    sourceDone = true;
+  });
+  await vi.advanceTimersByTimeAsync(BULK_PREPARATION_MS);
+  expect(editReply.mock.calls.at(-1)?.[0]).toMatchObject({ content: BULK_PREPARATION_FAILURE });
+  expect(sourceDone).toBe(false);
+  const shutdown = f.runtime.shutdown("test");
+  await vi.advanceTimersByTimeAsync(0);
+  client.emit(Events.InteractionCreate, modal);
+  expect(deferReply).toHaveBeenCalledOnce();
+  expect(f.dependencies.destroyDiscord).not.toHaveBeenCalled();
+  expect(f.dependencies.closeDatabase).not.toHaveBeenCalled();
+  gate.resolve({ parent, threads });
+  await source;
+  await shutdown;
+  expect(sourceDone).toBe(true);
+  expect(f.dependencies.closeDatabase).toHaveBeenCalledOnce();
+  expect(closeManually).not.toHaveBeenCalled();
+  expect(editReply.mock.calls.at(-1)?.[0]).toMatchObject({ content: BULK_PREPARATION_FAILURE });
 });

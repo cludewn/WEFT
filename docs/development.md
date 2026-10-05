@@ -1978,3 +1978,128 @@ creation. Neither PostgreSQL nor live Discord verification is implied by passing
 Discord reference contracts: [permissions](https://docs.discord.com/developers/topics/permissions),
 [channel/thread resources](https://docs.discord.com/developers/resources/channel), and
 [message creation](https://docs.discord.com/developers/resources/message).
+
+## Confirmed interactive bulk thread closing (Issue #89)
+
+`bulk-thread-close.ts` owns pure optional AND filters, fixed candidate snapshots, mutable selected
+subsets, bounded setup/session Maps and application orchestration. `bulk-thread-close-discord.ts`
+owns fresh raw REST reads; `bulk-thread-close-command.ts` owns interaction acknowledgement, strict
+`btc:` controls and bounded rendering. Existing `lp:` routing remains separate. `/thread` keeps its
+ManageThreads command default.
+
+The slash command has no options. Its guild/ManageThreads/READY checks precede `showModal()` as the
+initial response; do not defer that command before opening the Modal. Current discord.js
+LabelBuilder and ModalBuilder.addLabelComponents support required Channel Select, optional User
+Select and two optional Text Inputs. Submit reads typed fields and raw selected ID arrays rather
+than resolved objects, defers ephemerally, consumes a guild/initiator-bound setup ticket once, then
+validates input. Blank name/age means unset; nonblank name preserves its original spaces. The
+relative-duration parser sets one fixed age cutoff. Setup tickets have independent capacity 128 and
+five-minute TTL, lazy cleanup and no live eviction. Restart, shutdown, expiry or replay invalidates
+them.
+
+The active guild route is the REST equivalent of `guild.channels.fetchActiveThreads()`. Read raw
+`create_timestamp` directly to avoid cached ThreadChannel metadata or snowflake fallback. Parent,
+guild owner, roles and individual actor/bot members are observed freshly. All parent authorization
+responses must succeed before starting active enumeration; failure never starts enumeration. Reuse
+the repository's permission DTO validators and effective-overwrite calculation from
+`link-preview-permissions.ts`, requiring ViewChannel + ManageThreads rather than link-preview
+read/send permissions. Public and announcement threads inherit their direct parent's permissions.
+Private and wrong-parent/type identities never leave the bulk Discord boundary. Each bounded
+observation awaits all parallel siblings even if one fails. No freshness authority persists between
+observations.
+
+Sort canonical decimal thread IDs by length, then lexical comparison, giving ascending numeric
+ordering without Number conversion or creation-time inference. Store immutable candidate IDs,
+mutable selected Set, conditions, fixed creation cutoff, identity/binding, expiry, state, current
+page/revision and preview-write ownership. Filtered snapshots initially select all candidates;
+unfiltered snapshots initially select none. Both modes reject more than 50 eligible candidates
+without truncation. The ten-option current-page String Select replaces only that page's selected
+values. Validate array, unique snowflakes, current page and snapshot membership before changing the
+Set. Clear page submits an empty selection while retaining other pages. Navigation/revisit projects
+the Set into option defaults. Bounded revision controls reject stale page/selection submissions.
+Revision values range from zero to 999999; at the bound further editing fails safely while
+Confirm/Cancel remain available. Session capacity is 128: at most 6,400 IDs for a single instance
+with five-minute previews. No live eviction occurs. Expired entries are cleaned lazily on
+access/creation; consumed and cancelled sessions retain their original expiry and do not extend it.
+Shutdown clears the Map and wakes capacity waiters. There is no periodic cleanup timer or durable
+restart progress.
+
+Extend existing lifecycle close with optional `BulkThreadCloseHooks` only. Inside lifecycle
+ownership, a queued operation or guarded mutation returns a typed existing-operation skip before
+selection or preparation. A fresh selection hook returns a currently authorized snapshot;
+false/rejected/timed-out pre-attempt evidence produces a typed skip without schedule cancellation,
+settings creation, managed write, close audit or PATCH. Immediately after this check, a synchronous
+admission hook checks READY, caller admission and the inclusive confirmation-time + five-minute
+deadline. Then `onAttemptStarted` marks the first possible effect before existing manual-close
+preparation. The preparation still uses `scheduledThreadClose.closeManually`, preserving schedule
+cancellation and EXECUTING exclusion. Fresh selection is repeated before managed persistence and
+immediately before archive using the latest title. After the start boundary, selection failure
+follows the existing attempted failure/audit path. A confirmed EXECUTING cancellation result
+establishes no cancellation/close effect and remains skipped.
+
+`onLogicalSettled` propagates the existing serialize/retained-operation settlement boundary. A
+feature-wide owner reserves at most three slots across all sessions (including preflight
+reservation). Only that lifecycle signal releases the reservation, after raw mutation,
+reconciliation, required persistence and final audit/publication have relinquished ownership. No
+bulk finalizer, second reconciler, audit path, per-thread lock, rate limiter or retry layer is
+added. Ordinary single closes have no hooks and retain their behavior. Timed-out bulk selection
+reads remain attached to logical drain and cannot later admit an attempt.
+
+Three local orchestration workers per session share the single feature owner. Capacity waits wake on
+logical settlement, deadline or quiesce. Per-target caller observation is 15 seconds; timeout closes
+only that caller's future admission. Started unresolved work remains Pending and retains its slot.
+Aggregate counts return by the admission deadline plus at most one caller-observation budget, even
+if manual-close preparation never settles. Lifecycle owns the underlying promise throughout. A
+result uses only counts and generic explanation, so no final authorization lookup is needed to
+expose names. There is no later interaction-token completion notification.
+
+`discord.ts` routes btc Modal submissions, String Selects and buttons through existing READY-only
+`ingress.run`, separately from lp controls. No interaction work is detached. Modal submit uses
+`deferReply` ephemerally; page/select/buttons use `deferUpdate` before slow REST work. Pages show
+ten identities with bounded Markdown/masked-link-safe prose and normalized plain-text Select
+labels/descriptions; one embed remains below description, field and aggregate UTF-16 limits.
+Mention-like tokens are neutralized and `allowedMentions: { parse: [] }` is applied to every
+reply/edit. Invalid controls and identity/authorization failures return one generic ephemeral
+message. Confirm freshly authorizes the parent, then re-reads session identity/expiry/state and
+nonzero selection, copies selected candidate IDs, and synchronously transitions PREVIEW to EXECUTING
+without an intervening await. Only the frozen execution IDs enter the unchanged manual-close
+orchestration. Selected in aggregate counts means this frozen subset; deselected candidates never
+call closeManually or cause schedule cancellation, managed writes, audit or PATCH. Selection may
+change while Confirm awaits authorization; the final synchronous copy is authoritative. Once
+consumed it cannot change. Preview edits are serialized per session and page authorization is
+refreshed after any earlier raw edit settles; queued renderers check current state/revision after
+fresh reads; stale writes cannot publish after consumption, and terminal control removal follows
+earlier raw page edits. Confirm's bounded aggregate uses a separate ephemeral follow-up, so an
+in-flight page edit cannot delay the result indefinitely. Both promises stay under READY ingress
+ownership and the existing source drain, then retained work uses lifecycle drain.
+
+Use fake timers, controlled promises and fresh REST DTO fakes for race, deadline, privacy and
+payload tests. PostgreSQL tests exercise existing unmanaged transition, cancellation, actor and
+stable audit persistence, including partial selection failure after an effect. No migration or
+dependency changes are needed. The maintainer must run `weft-integration` and the Issue #89 live
+Discord gate after non-secret Node 24 checks; unit tests do not establish either result.
+
+Modal preview preparation uses the existing `withTimeout` observation helper: acknowledgement and
+message edits have the existing 2.5-second interaction I/O budget, and preparation shares one
+15-second budget after acknowledgement. The budget covers fresh authorization, active enumeration,
+first-page reauthorization, rendering and publication, including response-tail waiting. Each REST
+read logs its fixed stage (`parent_fetch`, `guild_fetch`, `roles_fetch`, actor/Bot member fetch,
+`active_enumeration` or `candidate_fetch`); rendering and updates have separate boundary stages.
+Started/completed debug events and failed/timeout warnings contain only stage, duration and a coarse
+failure code, without names, filters, IDs, URLs or raw errors.
+
+Use distinct Previous/Next action IDs even on a single page: Discord forbids duplicate component
+custom IDs, including disabled buttons. A rejected preview edit must replace the Preparing text with
+a generic preparation failure and remove controls. Preparation failure discards the unpublished
+session and aborts continuation authority. Late authorization must not start enumeration; late
+enumeration/page reads cannot create or publish a session. This signal does not cancel discord.js
+transport or change its rate-limit queue/retry policy. A failure edit has its own bounded observation;
+if Discord also refuses or stalls that edit, log its outcome as unknown rather than claiming delivery.
+Never enqueue this recovery inside the renderer's own response tail.
+
+The Modal router retains raw REST/edit promises in its already-admitted ingress operation after the
+bounded user-facing preparation returns. Source drain awaits those raw promises under the existing
+process shutdown deadline. Do not detach them or add another shutdown coordinator. Timed-out reads
+cannot resume discovery or execute targets. A late message write cannot reactivate a discarded
+session; the transport continues to serialize the already-issued webhook edits. Other bulk mutation,
+logical-settlement and concurrency ownership remains unchanged.
