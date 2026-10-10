@@ -15,6 +15,7 @@ import {
   handleManagedMessageModalSubmit,
   MANAGED_MESSAGE_EDIT_MODAL_PREFIX,
   MANAGED_MESSAGE_SEND_MODAL_ID,
+  RECURRING_MESSAGE_CREATE_MODAL_PREFIX,
   SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX,
   SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX,
 } from "./message-command.js";
@@ -273,6 +274,7 @@ export function registerManagedMessageModalHandler(
       (interaction.customId !== MANAGED_MESSAGE_SEND_MODAL_ID &&
         !interaction.customId.startsWith(MANAGED_MESSAGE_EDIT_MODAL_PREFIX) &&
         !interaction.customId.startsWith(SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX) &&
+        !interaction.customId.startsWith(RECURRING_MESSAGE_CREATE_MODAL_PREFIX) &&
         !interaction.customId.startsWith(SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX))
     ) {
       return;

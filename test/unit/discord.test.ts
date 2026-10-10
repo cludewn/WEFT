@@ -3,10 +3,14 @@ import {
   Events,
   GatewayDispatchEvents,
   GatewayIntentBits,
+  MessageFlags,
+  PermissionFlagsBits,
   RESTEvents,
 } from "discord.js";
 import type {
   AnyThreadChannel,
+  ButtonInteraction,
+  ClientUser,
   ChatInputCommandInteraction,
   ModalSubmitInteraction,
   RateLimitData,
@@ -15,7 +19,14 @@ import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
 import type { BulkCloseService } from "../../src/bulk-thread-close.js";
-import type { ApplicationIngress } from "../../src/application-runtime.js";
+import {
+  createApplicationRuntime,
+  type ApplicationIngress,
+} from "../../src/application-runtime.js";
+import { createRecurringMessageCreateModalId } from "../../src/message-command.js";
+import type { RecurringCommandInput } from "../../src/recurring-message.js";
+import type { ScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
+import { registerLinkPreviewHandlers } from "../../src/link-preview-discord.js";
 import {
   createDiscordClient,
   createDiscordRuntime,
@@ -47,7 +58,7 @@ const discordDependencies = {
 } as unknown as DiscordDependencies;
 
 function createLogger(): Logger {
-  return { debug: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Logger;
+  return { info: vi.fn(), debug: vi.fn(), warn: vi.fn(), error: vi.fn() } as unknown as Logger;
 }
 
 describe("Discord client", () => {
@@ -469,6 +480,306 @@ describe("Discord client", () => {
 });
 
 describe("managed message modal routing", () => {
+  it.each([
+    { frequency: "daily", time: "09:30" },
+    { frequency: "daily", time: "09:30", timezone: "Asia/Tokyo" },
+    { frequency: "weekly", time: "18:45", weekdays: "mon,wed,fri" },
+    { frequency: "weekly", time: "18:45", weekdays: "mon,wed,fri", timezone: "America/New_York" },
+  ] satisfies RecurringCommandInput[])(
+    "dispatches recurring creation $frequency $timezone once",
+    async (recurrence) => {
+      const f = createModalRoutingFixture();
+      const modal = createModal(createRecurringMessageCreateModalId(recurrence));
+
+      f.client.emit(Events.InteractionCreate, modal.interaction);
+      await vi.waitFor(() => expect(modal.editReply).toHaveBeenCalledOnce());
+
+      expect(f.ingress.run).toHaveBeenCalledOnce();
+      expect(modal.deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+      expect(modal.reply).not.toHaveBeenCalled();
+      expect(f.scheduled.createRecurring).toHaveBeenCalledExactlyOnceWith({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        recurrence,
+        payload: { content: "managed content", embed: null },
+      });
+      expect(modal.deferReply.mock.invocationCallOrder[0]).toBeLessThan(
+        f.scheduled.createRecurring.mock.invocationCallOrder[0]!,
+      );
+      expect(modal.editReply).toHaveBeenCalledWith({
+        content: "Recurring message scheduled as `series-id`. First occurrence: <t:1893490200:F>.",
+        allowedMentions: { parse: [] },
+      });
+      expect(f.managed.send).not.toHaveBeenCalled();
+      expect(f.managed.edit).not.toHaveBeenCalled();
+      expect(f.scheduled.create).not.toHaveBeenCalled();
+      expect(f.scheduled.edit).not.toHaveBeenCalled();
+      expect(f.logger.error).not.toHaveBeenCalled();
+      await f.client.destroy();
+    },
+  );
+
+  it.each(["recurring-message:create:", "recurring-message:create:d:0930:127:%ZZ"])(
+    "routes malformed ID %s to the bounded validation reply",
+    async (customId) => {
+      const f = createModalRoutingFixture();
+      const modal = createModal(customId);
+
+      f.client.emit(Events.InteractionCreate, modal.interaction);
+      await vi.waitFor(() => expect(modal.reply).toHaveBeenCalledOnce());
+
+      expect(f.ingress.run).toHaveBeenCalledOnce();
+      expect(modal.reply).toHaveBeenCalledWith({
+        content: "This recurring-message form is invalid or expired.",
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      });
+      expect(modal.deferReply).not.toHaveBeenCalled();
+      expect(modal.editReply).not.toHaveBeenCalled();
+      expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
+      expect(f.logger.error).not.toHaveBeenCalled();
+      await f.client.destroy();
+    },
+  );
+
+  it.each([
+    ["managed-message:send", "send"],
+    ["managed-message:edit:900000000000000001:1", "edit"],
+    ["scheduled-message:schedule-create:60000", "create"],
+    ["scheduled-message:schedule-create:at:2030-01-02 09:30", "create"],
+    ["scheduled-message:schedule-edit:00000000-0000-4000-8000-000000000001:0", "scheduledEdit"],
+  ] as const)("preserves the existing %s route", async (customId, route) => {
+    const f = createModalRoutingFixture();
+    const modal = createModal(customId);
+    const routes = {
+      send: f.managed.send,
+      edit: f.managed.edit,
+      create: f.scheduled.create,
+      scheduledEdit: f.scheduled.edit,
+    };
+
+    f.client.emit(Events.InteractionCreate, modal.interaction);
+    await vi.waitFor(() => expect(modal.editReply).toHaveBeenCalledOnce());
+
+    expect(f.ingress.run).toHaveBeenCalledOnce();
+    expect(modal.deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+    expect(modal.reply).not.toHaveBeenCalled();
+    for (const [name, service] of Object.entries(routes)) {
+      expect(service).toHaveBeenCalledTimes(name === route ? 1 : 0);
+    }
+    expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
+    expect(f.logger.error).not.toHaveBeenCalled();
+    await f.client.destroy();
+  });
+
+  it.each(["other:modal", "btc:invalid:setup", "lp:invalid"])(
+    "leaves unrelated modal %s untouched",
+    async (customId) => {
+      const f = createModalRoutingFixture();
+      const modal = createModal(customId);
+
+      f.client.emit(Events.InteractionCreate, modal.interaction);
+
+      expect(f.ingress.run).not.toHaveBeenCalled();
+      expect(modal.reply).not.toHaveBeenCalled();
+      expect(modal.deferReply).not.toHaveBeenCalled();
+      expect(modal.editReply).not.toHaveBeenCalled();
+      expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
+      expect(f.logger.error).not.toHaveBeenCalled();
+      await f.client.destroy();
+    },
+  );
+
+  it("does not dispatch a recurring ID on a non-modal interaction", async () => {
+    const f = createModalRoutingFixture();
+    const modal = createModal(
+      createRecurringMessageCreateModalId({ frequency: "daily", time: "09:30" }),
+    );
+    modal.interaction.isModalSubmit = (() => false) as ModalSubmitInteraction["isModalSubmit"];
+
+    f.client.emit(Events.InteractionCreate, modal.interaction);
+
+    expect(f.ingress.run).not.toHaveBeenCalled();
+    expect(modal.deferReply).not.toHaveBeenCalled();
+    expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
+    await f.client.destroy();
+  });
+
+  it.each(["deferReply", "service", "editReply", "reply"] as const)(
+    "consumes %s rejection without retry or sensitive logs",
+    async (boundary) => {
+      const f = createModalRoutingFixture();
+      const modal = createModal(
+        boundary === "reply"
+          ? "recurring-message:create:invalid"
+          : createRecurringMessageCreateModalId({ frequency: "daily", time: "09:30" }),
+        "sensitive modal content",
+      );
+      const failure = new Error("sensitive raw detail");
+      if (boundary === "service") f.scheduled.createRecurring.mockRejectedValueOnce(failure);
+      else modal[boundary].mockRejectedValueOnce(failure);
+
+      f.client.emit(Events.InteractionCreate, modal.interaction);
+      await vi.waitFor(() => expect(f.logger.error).toHaveBeenCalledOnce());
+
+      expect(f.ingress.run).toHaveBeenCalledOnce();
+      expect(modal.reply).toHaveBeenCalledTimes(boundary === "reply" ? 1 : 0);
+      expect(modal.deferReply).toHaveBeenCalledTimes(boundary === "reply" ? 0 : 1);
+      expect(f.scheduled.createRecurring).toHaveBeenCalledTimes(
+        boundary === "service" || boundary === "editReply" ? 1 : 0,
+      );
+      expect(modal.editReply).toHaveBeenCalledTimes(boundary === "editReply" ? 1 : 0);
+      expect(f.logger.error).toHaveBeenCalledWith(
+        {
+          event: "managed_message_modal_failed",
+          guildId: "guild-id",
+          channelId: "channel-id",
+          errorName: "Error",
+        },
+        "Managed message modal handling failed",
+      );
+      expect(JSON.stringify(vi.mocked(f.logger.error).mock.calls)).not.toContain("sensitive");
+      await f.client.destroy();
+    },
+  );
+
+  it("returns the existing bounded service failure response", async () => {
+    const f = createModalRoutingFixture();
+    f.scheduled.createRecurring.mockResolvedValueOnce({
+      outcome: "FAILURE",
+      code: "CURRENT_STATE_CHECK_FAILED",
+    });
+    const modal = createModal(
+      createRecurringMessageCreateModalId({ frequency: "daily", time: "09:30" }),
+    );
+
+    f.client.emit(Events.InteractionCreate, modal.interaction);
+    await vi.waitFor(() => expect(modal.editReply).toHaveBeenCalledOnce());
+
+    expect(f.ingress.run).toHaveBeenCalledOnce();
+    expect(modal.deferReply).toHaveBeenCalledOnce();
+    expect(f.scheduled.createRecurring).toHaveBeenCalledOnce();
+    expect(modal.editReply).toHaveBeenCalledWith({
+      content: "WEFT could not verify the current channel or permissions. Please try again later.",
+      allowedMentions: { parse: [] },
+    });
+    expect(modal.reply).not.toHaveBeenCalled();
+    expect(f.logger.error).not.toHaveBeenCalled();
+    await f.client.destroy();
+  });
+
+  it("keeps recurring, bulk-close and link-preview work in their respective listeners", async () => {
+    const f = createModalRoutingFixture();
+    const ingress = f.ingress;
+    registerTestCommandHandler(f.client, f.logger, undefined, ingress);
+    const previews = { detect: vi.fn(), preview: vi.fn(() => Promise.resolve(undefined)) };
+    const botId = "900000000000000001";
+    f.client.user = { id: botId } as ClientUser;
+    registerLinkPreviewHandlers(f.client, previews, f.logger, ingress);
+    expect(f.client.listenerCount(Events.InteractionCreate)).toBe(3);
+    const recurring = createModal(
+      createRecurringMessageCreateModalId({ frequency: "daily", time: "09:30" }),
+    );
+    const bulk = createModal("btc:invalid:setup");
+    const preview = createModal("lp:1:1:2:3");
+    const button = {
+      ...preview.interaction,
+      isModalSubmit: () => false,
+      isButton: () => true,
+      guildId: "1",
+      message: { author: { id: botId }, webhookId: null },
+      applicationId: undefined,
+      client: f.client,
+    } as unknown as ButtonInteraction;
+
+    f.client.emit(Events.InteractionCreate, recurring.interaction);
+    await vi.waitFor(() => expect(recurring.editReply).toHaveBeenCalledOnce());
+    expect(f.ingress.run).toHaveBeenCalledOnce();
+    expect(previews.preview).not.toHaveBeenCalled();
+    f.client.emit(Events.InteractionCreate, bulk.interaction);
+    await vi.waitFor(() => expect(bulk.editReply).toHaveBeenCalledOnce());
+    expect(f.ingress.run).toHaveBeenCalledTimes(2);
+    f.client.emit(Events.InteractionCreate, button);
+    await vi.waitFor(() => expect(preview.editReply).toHaveBeenCalledOnce());
+
+    expect(f.ingress.run).toHaveBeenCalledTimes(3);
+    for (const modal of [recurring, bulk, preview]) {
+      expect(modal.deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+      expect(modal.reply).not.toHaveBeenCalled();
+    }
+    expect(f.scheduled.createRecurring).toHaveBeenCalledOnce();
+    expect(previews.preview).toHaveBeenCalledExactlyOnceWith(
+      { guildId: "1", channelId: "2", messageId: "3" },
+      "actor-id",
+    );
+    expect(f.managed.send).not.toHaveBeenCalled();
+    expect(f.managed.edit).not.toHaveBeenCalled();
+    expect(f.scheduled.create).not.toHaveBeenCalled();
+    expect(f.scheduled.edit).not.toHaveBeenCalled();
+    expect(f.logger.error).not.toHaveBeenCalled();
+    await f.client.destroy();
+  });
+
+  it("keeps accepted recurring service and reply work owned until shutdown can close resources", async () => {
+    const owner = createModalApplicationRuntime();
+    const f = createModalRoutingFixture(owner.runtime.ingress);
+    const customId = createRecurringMessageCreateModalId({ frequency: "daily", time: "09:30" });
+    const beforeReady = createModal(customId);
+    f.client.emit(Events.InteractionCreate, beforeReady.interaction);
+    expect(f.ingress.run).toHaveBeenCalledOnce();
+    expect(beforeReady.deferReply).not.toHaveBeenCalled();
+    expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
+    await owner.runtime.start();
+    f.run.mockClear();
+    const service =
+      Promise.withResolvers<
+        Awaited<ReturnType<ScheduledMessageCommandService["createRecurring"]>>
+      >();
+    const response = Promise.withResolvers<void>();
+    f.scheduled.createRecurring.mockReturnValueOnce(service.promise);
+    const accepted = createModal(customId);
+    accepted.editReply.mockReturnValueOnce(response.promise);
+    f.client.emit(Events.InteractionCreate, accepted.interaction);
+    await vi.waitFor(() => expect(f.scheduled.createRecurring).toHaveBeenCalledOnce());
+
+    const shutdown = owner.runtime.shutdown("SIGTERM");
+    expect(owner.runtime.getState()).toBe("SHUTTING_DOWN");
+    const refused = createModal(customId);
+    f.client.emit(Events.InteractionCreate, refused.interaction);
+    expect(f.ingress.run).toHaveBeenCalledTimes(2);
+    expect(refused.reply).not.toHaveBeenCalled();
+    expect(refused.deferReply).not.toHaveBeenCalled();
+    expect(f.scheduled.createRecurring).toHaveBeenCalledOnce();
+    expect(owner.stopPgBoss).not.toHaveBeenCalled();
+    expect(owner.destroyDiscord).not.toHaveBeenCalled();
+    expect(owner.closeDatabase).not.toHaveBeenCalled();
+
+    service.resolve({
+      outcome: "SUCCESS",
+      scheduledActionId: "series-id",
+      scheduledFor: new Date("2030-01-01T09:30:00.000Z"),
+      deliveryPendingReconciliation: false,
+    });
+    await vi.waitFor(() => expect(accepted.editReply).toHaveBeenCalledOnce());
+    expect(owner.runtime.getState()).toBe("SHUTTING_DOWN");
+    expect(owner.stopPgBoss).not.toHaveBeenCalled();
+    expect(owner.destroyDiscord).not.toHaveBeenCalled();
+    expect(owner.closeDatabase).not.toHaveBeenCalled();
+    response.resolve();
+    await shutdown;
+
+    expect(owner.runtime.getState()).toBe("STOPPED");
+    expect(owner.stopPgBoss).toHaveBeenCalledOnce();
+    expect(owner.destroyDiscord).toHaveBeenCalledOnce();
+    expect(owner.closeDatabase).toHaveBeenCalledOnce();
+    expect(accepted.deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+    expect(accepted.reply).not.toHaveBeenCalled();
+    expect(f.scheduled.createRecurring).toHaveBeenCalledOnce();
+    expect(f.logger.error).not.toHaveBeenCalled();
+    await f.client.destroy();
+  });
+
   it("processes only owned managed-message send and edit modals", async () => {
     const logger = createLogger();
     const service = {
@@ -825,13 +1136,95 @@ function registerTestCommandHandler(
   );
 }
 
+function createModalApplicationRuntime() {
+  const done = () => Promise.resolve();
+  const stopPgBoss = vi.fn(done);
+  const destroyDiscord = vi.fn(done);
+  const closeDatabase = vi.fn(done);
+  const runtime = createApplicationRuntime({
+    startHealthListener: done,
+    quiesceHealth: vi.fn(),
+    drainHealth: done,
+    verifyDatabaseConnection: done,
+    startPgBoss: done,
+    ensureScheduledThreadCloseQueue: done,
+    ensureScheduledMessageQueue: done,
+    ensureRecurringMessageQueue: done,
+    recoverScheduledThreadCloseDeliveries: done,
+    recoverScheduledMessageDeliveries: done,
+    recoverRecurringMessageDeliveries: done,
+    startDiscord: done,
+    startScheduledThreadCloseWorkers: done,
+    startScheduledMessageWorker: done,
+    startRecurringMessageWorker: done,
+    startScheduledThreadCloseRuntimeReconciliation: done,
+    startScheduledMessageRuntimeReconciliation: done,
+    startRecurringMessageRuntimeReconciliation: done,
+    reconcileAutomaticCloseBaselines: done,
+    startAutomaticCloseRuntime: done,
+    startAuditRetentionRuntime: done,
+    quiesce: [],
+    drainThreadLifecycle: done,
+    drainAuditNotifications: done,
+    stopPgBoss,
+    destroyDiscord,
+    closeDatabase,
+    logger: createLogger(),
+    processControl: { setExitCode: vi.fn(), forceExit: vi.fn(), writeStderr: vi.fn() },
+  });
+  return { runtime, stopPgBoss, destroyDiscord, closeDatabase };
+}
+
+function createModalRoutingFixture(ingress?: ApplicationIngress) {
+  const logger = createLogger();
+  const client = createDiscordClient(logger, discordDependencies);
+  const managed = {
+    send: vi
+      .fn<ManagedMessageService["send"]>()
+      .mockResolvedValue({ outcome: "SUCCESS", messageId: "900000000000000001" }),
+    findForEdit: vi.fn(),
+    edit: vi
+      .fn<ManagedMessageService["edit"]>()
+      .mockResolvedValue({ outcome: "SUCCESS", messageId: "900000000000000001", revision: 2 }),
+  } satisfies ManagedMessageService;
+  const scheduled = {
+    create: vi
+      .fn<ScheduledMessageCommandService["create"]>()
+      .mockResolvedValue({ outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" }),
+    createRecurring: vi.fn<ScheduledMessageCommandService["createRecurring"]>().mockResolvedValue({
+      outcome: "SUCCESS",
+      scheduledActionId: "series-id",
+      scheduledFor: new Date("2030-01-01T09:30:00.000Z"),
+      deliveryPendingReconciliation: false,
+    }),
+    editRecurrence: vi.fn(),
+    cancel: vi.fn(),
+    status: vi.fn(),
+    list: vi.fn(),
+    findEditable: vi.fn(),
+    edit: vi
+      .fn<ScheduledMessageCommandService["edit"]>()
+      .mockResolvedValue({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" }),
+    reschedule: vi.fn(),
+  } satisfies ScheduledMessageCommandService;
+  const gate: ApplicationIngress = ingress ?? {
+    run: <T>(operation: () => T | Promise<T>) => Promise.resolve(operation()),
+  };
+  const run = vi.spyOn(gate, "run");
+  registerManagedMessageModalHandler(client, managed, scheduled, logger, gate);
+  return { client, managed, scheduled, logger, ingress: gate, run };
+}
+
 function createModal(customId: string, content = "managed content") {
+  const reply = vi.fn(() => Promise.resolve());
   const deferReply = vi.fn(() => Promise.resolve());
   const editReply = vi.fn(() => Promise.resolve());
   const interaction = {
     customId,
     isChatInputCommand: () => false,
     isModalSubmit: () => true,
+    isButton: () => false,
+    isStringSelectMenu: () => false,
     fields: {
       getTextInputValue: (customId: string) =>
         customId === "managed-message:content" ? content : "",
@@ -840,10 +1233,15 @@ function createModal(customId: string, content = "managed content") {
     guildId: "guild-id",
     channelId: "channel-id",
     user: { id: "actor-id" },
+    channel: { type: ChannelType.GuildText },
+    memberPermissions: {
+      has: (permission: bigint) => permission === PermissionFlagsBits.ManageMessages,
+    },
+    reply,
     deferReply,
     editReply,
   } as unknown as ModalSubmitInteraction;
-  return { interaction, deferReply, editReply };
+  return { interaction, reply, deferReply, editReply };
 }
 
 function createStartupClient(loginImplementation: () => Promise<string>): {
