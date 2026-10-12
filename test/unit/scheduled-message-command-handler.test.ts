@@ -1,5 +1,10 @@
 import { ChannelType, MessageFlags, PermissionFlagsBits } from "discord.js";
-import type { ChatInputCommandInteraction, ModalBuilder, ModalSubmitInteraction } from "discord.js";
+import type {
+  ChatInputCommandInteraction,
+  InteractionEditReplyOptions,
+  ModalBuilder,
+  ModalSubmitInteraction,
+} from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ManagedMessageService } from "../../src/managed-message.js";
@@ -24,6 +29,7 @@ import { ONE_TIME_SCHEDULE_ERRORS } from "../../src/one-time-message-schedule.js
 import type { GuildSettingsStore } from "../../src/guild-settings.js";
 import type { ScheduledMessageStore } from "../../src/scheduled-message-persistence.js";
 import type { ScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
+import type { CombinedScheduleListItem } from "../../src/scheduled-message-administration-persistence.js";
 
 const executeAt = new Date("2030-01-02T03:04:05.000Z");
 
@@ -142,6 +148,8 @@ function commandInteraction(input: {
   value: string;
   after?: string;
   archived?: boolean;
+  page?: number | null;
+  authorized?: boolean;
   options?: Record<string, string | null>;
 }) {
   const showModal = vi.fn((modal: ModalBuilder) => {
@@ -150,7 +158,9 @@ function commandInteraction(input: {
   });
   const reply = vi.fn(() => Promise.resolve());
   const deferReply = vi.fn(() => Promise.resolve());
-  const editReply = vi.fn(() => Promise.resolve());
+  const editReply = vi.fn<(options: InteractionEditReplyOptions) => Promise<void>>(() =>
+    Promise.resolve(),
+  );
   const channel = {
     type: input.archived ? ChannelType.PublicThread : ChannelType.GuildText,
     archived: input.archived ?? false,
@@ -168,12 +178,13 @@ function commandInteraction(input: {
             : name === "after"
               ? (input.after ?? input.value)
               : input.value,
-      getInteger: () => 1,
+      getInteger: () => input.page ?? null,
     },
     inGuild: () => true,
     channel,
     memberPermissions: {
-      has: (permission: bigint) => permission === PermissionFlagsBits.ManageMessages,
+      has: (permission: bigint) =>
+        (input.authorized ?? true) && permission === PermissionFlagsBits.ManageMessages,
     },
     guildId: "guild-id",
     channelId: "channel-id",
@@ -377,11 +388,11 @@ describe("scheduled message command handler", () => {
       ],
     });
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
-    const response = JSON.stringify(f.editReply.mock.calls);
-    expect(response).toContain("one-time **ACTIVE**");
-    expect(response).toContain("recurring daily");
-    expect(response).toContain("current occurrence scheduled time");
-    expect(response).not.toContain("next scheduled occurrence");
+    const response = f.editReply.mock.calls[0]![0].content!;
+    expect(response).toContain("one-time — **ACTIVE**");
+    expect(response).toContain("recurring DAILY");
+    expect(response).toContain("current: <t:1893553445:F>");
+    expect(response).not.toContain("next:");
     expect(response).not.toContain("sensitive scheduled content");
   });
   it("round-trips only a validated relative delay in the modal custom ID", () => {
@@ -631,7 +642,7 @@ describe("scheduled message command handler", () => {
       ],
     });
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
-    const response = JSON.stringify(f.editReply.mock.calls);
+    const response = f.editReply.mock.calls[0]![0].content!;
     expect(response).toContain("full-schedule-id");
     expect(response).toContain("ACTIVE");
     expect(response).toContain("creator-id");
@@ -689,6 +700,254 @@ describe("scheduled message command handler", () => {
     expect(f.editReply).toHaveBeenCalledWith(
       expect.objectContaining({ allowedMentions: { parse: [] } }),
     );
+  });
+});
+
+describe("scheduled message list responses", () => {
+  function oneTime(index = 0): Extract<CombinedScheduleListItem, { kind: "ONE_TIME" }> {
+    return {
+      kind: "ONE_TIME",
+      scheduledActionId: `123e4567-e89b-42d3-a456-${index.toString().padStart(12, "0")}`,
+      creatorUserId: "18446744073709551615",
+      status: "EXECUTING",
+      executeAt,
+    };
+  }
+
+  function recurring(index = 0): Extract<CombinedScheduleListItem, { kind: "RECURRING" }> {
+    return {
+      ...oneTime(index),
+      kind: "RECURRING",
+      status: "ACTIVE",
+      frequency: "WEEKLY",
+      weekdayMask: 127,
+      localTime: "23:59",
+      timezone: "America/Argentina/ComodRivadavia",
+      currentOccurrenceStatus: "PENDING",
+    };
+  }
+
+  async function render(schedules: CombinedScheduleListItem[], page: number | null = null) {
+    const f = commandInteraction({ subcommand: "list", value: "", page });
+    const s = services();
+    s.scheduled.list.mockResolvedValue({ outcome: "FOUND", schedules });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    expect(f.editReply).toHaveBeenCalledTimes(1);
+    const options = f.editReply.mock.calls[0]![0];
+    const content = options.content;
+    if (typeof content !== "string") throw new Error("Expected list response content");
+    expect(content.length).toBeLessThanOrEqual(2000);
+    expect(options.allowedMentions).toEqual({ parse: [] });
+    expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(f.deferReply.mock.invocationCallOrder[0]).toBeLessThan(
+      s.scheduled.list.mock.invocationCallOrder[0]!,
+    );
+    expect(s.scheduled.list).toHaveBeenCalledWith({
+      guildId: "guild-id",
+      channelId: "channel-id",
+      page: page ?? 1,
+    });
+    expect(f.reply).not.toHaveBeenCalled();
+    return { content, ...f, ...s };
+  }
+
+  function expectCompleteRows(content: string, schedules: CombinedScheduleListItem[]) {
+    const rows = content.split("\n").filter((line) => line.startsWith("- "));
+    expect(rows).toHaveLength(schedules.length);
+    for (const [index, schedule] of schedules.entries()) {
+      expect(rows[index]).toContain(`\`${schedule.scheduledActionId}\``);
+      expect(rows[index]).toContain(`creator \`${schedule.creatorUserId}\``);
+      expect(rows[index]).toContain(`<t:${Math.floor(schedule.executeAt.getTime() / 1000)}:F>`);
+    }
+  }
+
+  it.each(["PENDING", "RETRY_PENDING"] as const)(
+    "keeps all ten weekly %s rows within Discord limits (overflow regression)",
+    async (currentOccurrenceStatus) => {
+      const schedules = Array.from({ length: 10 }, (_, index) => ({
+        ...recurring(index),
+        currentOccurrenceStatus,
+      }));
+      const { content } = await render(schedules);
+      expectCompleteRows(content, schedules);
+      expect(content.match(new RegExp(`\\*\\*${currentOccurrenceStatus}\\*\\*`, "g"))).toHaveLength(
+        10,
+      );
+      expect(content).toContain("/message schedule status id:<schedule-id>");
+    },
+  );
+
+  it.each([
+    ["one-time", 1],
+    ["one-time", 10],
+    ["daily", 1],
+    ["daily", 10],
+    ["weekly", 1],
+    ["mixed", 10],
+  ] as const)(
+    "renders %s schedules (%i rows) completely in retrieval order",
+    async (kind, count) => {
+      const schedules = Array.from({ length: count }, (_, index): CombinedScheduleListItem => {
+        const row = oneTime(count - index);
+        if (kind === "one-time" || (kind === "mixed" && index % 2 === 0))
+          return { ...row, status: index % 2 === 0 ? "ACTIVE" : "EXECUTING" };
+        return {
+          ...recurring(count - index),
+          frequency: kind === "daily" ? "DAILY" : "WEEKLY",
+          weekdayMask: kind === "weekly" ? 21 : 127,
+        };
+      });
+      const { content } = await render(schedules);
+      expectCompleteRows(content, schedules);
+      const rows = content.split("\n").filter((line) => line.startsWith("- "));
+      for (const [index, schedule] of schedules.entries()) {
+        const row = rows[index]!;
+        if (schedule.kind === "ONE_TIME") {
+          expect(row).toContain(`one-time — **${schedule.status}** — runs:`);
+          expect(row).not.toContain(":R>");
+        } else {
+          expect(row).toContain(`recurring ${schedule.frequency} — **PENDING** — next:`);
+        }
+      }
+    },
+  );
+
+  it.each([
+    ["PENDING", "next"],
+    ["EXECUTING", "current"],
+    ["RETRY_PENDING", "current"],
+    [null, "last"],
+  ] as const)("labels %s using the authoritative instant as %s", async (status, label) => {
+    const schedule = {
+      ...recurring(),
+      // A recurrence edit can leave current work on the previous definition's instant.
+      localTime: "00:00",
+      timezone: "Pacific/Auckland",
+      currentOccurrenceStatus: status,
+    };
+    const { content } = await render([schedule]);
+    expect(content).toContain(`**${status ?? "ACTIVE"}** — ${label}: <t:1893553445:F>`);
+    expect(content.match(/<t:[^>]+>/g)).toEqual(["<t:1893553445:F>"]);
+    for (const other of ["next", "current", "last"].filter((meaning) => meaning !== label))
+      expect(content).not.toContain(`${other}:`);
+  });
+
+  it("omits payload and detailed recurrence fields and directs users to status", async () => {
+    const schedules = [
+      {
+        ...recurring(),
+        content: "sensitive scheduled content",
+        embed: { title: "sensitive embed title", imageUrl: "https://sensitive.invalid/image.png" },
+      },
+    ];
+    const { content } = await render(schedules);
+    for (const omitted of [
+      "sensitive",
+      "America/Argentina/ComodRivadavia",
+      "23:59",
+      "mon,tue,wed,thu,fri,sat,sun",
+    ])
+      expect(content).not.toContain(omitted);
+    expect(content.split("\n").at(-1)).toBe("Details: /message schedule status id:<schedule-id>.");
+  });
+
+  it.each([null, 2])("renders an empty page with page option %s", async (page) => {
+    const { content } = await render([], page);
+    expect(content).toBe(
+      `No active or executing scheduled messages were found on page ${page ?? 1}.`,
+    );
+  });
+
+  it("renders page 2 without changing the supplied order", async () => {
+    const schedules = [recurring(2), oneTime(1)];
+    const { content } = await render(schedules, 2);
+    expect(content.startsWith("Scheduled messages — page 2\n")).toBe(true);
+    expectCompleteRows(content, schedules);
+  });
+
+  it("bounds the full response for the widest Date and valid page representations", async () => {
+    const schedules = Array.from({ length: 10 }, (_, index) => ({
+      ...recurring(index),
+      currentOccurrenceStatus: "RETRY_PENDING" as const,
+      executeAt: new Date(-8_640_000_000_000_000),
+    }));
+    // This page still has a safe integer offset in the application service.
+    const { content } = await render(schedules, 900_719_925_474_100);
+    expectCompleteRows(content, schedules);
+    expect(content.length).toBe(1543);
+  });
+
+  it("accepts a complete 2000-code-unit page and rejects 2001 without dropping rows", async () => {
+    const schedules = Array.from({ length: 10 }, (_, index) => recurring(index));
+    const initial = await render(schedules);
+    const row = schedules[9]!;
+    row.scheduledActionId += "x".repeat(2000 - initial.content.length);
+    const boundary = await render(schedules);
+    expect(boundary.content.length).toBe(2000);
+    expectCompleteRows(boundary.content, schedules);
+
+    row.scheduledActionId += "x";
+    const overflow = await render(schedules);
+    expect(overflow.content).toBe(
+      "WEFT could not display the complete scheduled-message page safely. No schedules were displayed.",
+    );
+    for (const schedule of schedules)
+      expect(overflow.content).not.toContain(schedule.scheduledActionId);
+  });
+
+  it.each(["schedule ID", "creator ID", "UTF-16 creator ID", "invalid date"])(
+    "fails safely for an unrepresentable page with %s",
+    async (field) => {
+      const schedules = Array.from({ length: 10 }, (_, index) => recurring(index));
+      const row = schedules[9]!;
+      if (field === "schedule ID") row.scheduledActionId = "unexpected-id-" + "x".repeat(2000);
+      if (field === "creator ID") row.creatorUserId = "unexpected-creator-" + "x".repeat(2000);
+      // Below 2000 code points, but above 2000 UTF-16 code units with the complete page.
+      if (field === "UTF-16 creator ID") row.creatorUserId = "😀".repeat(400);
+      if (field === "invalid date") row.executeAt = new Date(NaN);
+      const { content } = await render(schedules);
+      expect(content).toBe(
+        "WEFT could not display the complete scheduled-message page safely. No schedules were displayed.",
+      );
+      expect(content).not.toContain("Scheduled messages — page");
+      expect(content).not.toContain("unexpected");
+      expect(content).not.toContain("😀");
+      for (const schedule of schedules) expect(content).not.toContain(schedule.scheduledActionId);
+    },
+  );
+
+  it.each([
+    ["INVALID_PAGE", 0, "Page must be a positive integer."],
+    ["UNAVAILABLE", 1, "WEFT could not load scheduled messages. Please try again later."],
+  ] as const)("preserves the %s response", async (outcome, page, expected) => {
+    const f = commandInteraction({ subcommand: "list", value: "", page });
+    const s = services();
+    s.scheduled.list.mockResolvedValue({ outcome });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    const options = f.editReply.mock.calls[0]![0];
+    expect(options.content).toBe(expected);
+    expect(options.content!.length).toBeLessThanOrEqual(2000);
+    expect(options.allowedMentions).toEqual({ parse: [] });
+    expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+    expect(s.scheduled.list).toHaveBeenCalledWith({
+      guildId: "guild-id",
+      channelId: "channel-id",
+      page,
+    });
+  });
+
+  it("requires ManageMessages before loading or deferring a list", async () => {
+    const f = commandInteraction({ subcommand: "list", value: "", authorized: false });
+    const s = services();
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    expect(f.reply).toHaveBeenCalledWith({
+      content: "You need the Manage Messages permission to manage messages.",
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    expect(s.scheduled.list).not.toHaveBeenCalled();
+    expect(f.deferReply).not.toHaveBeenCalled();
+    expect(f.editReply).not.toHaveBeenCalled();
   });
 });
 
