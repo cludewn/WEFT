@@ -2,6 +2,7 @@ import {
   ChannelType,
   DiscordAPIError,
   EmbedBuilder,
+  EmbedMediaFlags,
   EmbedType,
   HTTPError,
   PermissionFlagsBits,
@@ -45,6 +46,28 @@ const supportedRichEmbedImageKeys = new Set([
   "content_type",
   "placeholder",
   "placeholder_version",
+  "flags",
+  "description",
+]);
+const supportedRichEmbedKeys = new Set([
+  "type",
+  "title",
+  "description",
+  "color",
+  "image",
+  "fields",
+  "flags",
+  "content_scan_version",
+  "id",
+]);
+const unsupportedRichEmbedKeys = new Set([
+  "url",
+  "timestamp",
+  "footer",
+  "thumbnail",
+  "author",
+  "provider",
+  "video",
 ]);
 
 const supportedTargetTypes = new Set<ChannelType>([
@@ -75,6 +98,7 @@ export type SentManagedMessage = {
   messageId: string;
   createdAt: Date;
   payload: ManagedMessagePayload | undefined;
+  projectionFailureReason?: ManagedMessageEmbedProjectionFailureReason;
 };
 
 export type ManagedMessageDiscordFailureCode =
@@ -192,22 +216,64 @@ export function buildManagedMessageEmbed(embed: ManagedMessageEmbed): EmbedBuild
   return builder;
 }
 
-function hasUnsupportedRichState(data: APIEmbed): boolean {
-  return (
-    data.url !== undefined ||
-    data.timestamp !== undefined ||
-    data.footer !== undefined ||
-    data.thumbnail !== undefined ||
-    data.author !== undefined ||
-    (data.fields?.length ?? 0) > 0 ||
-    data.provider !== undefined ||
-    data.video !== undefined ||
-    data.flags !== undefined
-  );
+function richStateFailureReason(
+  data: APIEmbed,
+): ManagedMessageEmbedProjectionFailureReason | undefined {
+  const unsupportedKey = Object.keys(data).find((key) => !supportedRichEmbedKeys.has(key));
+  if (unsupportedKey !== undefined) {
+    return unsupportedRichEmbedKeys.has(unsupportedKey)
+      ? "UNSUPPORTED_RICH_STATE"
+      : "UNKNOWN_RICH_FIELD";
+  }
+  // Discord adds an undocumented response ID; it is not authored content.
+  // Bound its representation without inferring Snowflake semantics. Zero is unconfirmed.
+  const responseId: unknown = (data as APIEmbed & { id?: unknown }).id;
+  if (
+    Object.hasOwn(data, "id") &&
+    (typeof responseId !== "string" || /^[1-9][0-9]{0,19}$/.exec(responseId)?.[0] !== responseId)
+  ) {
+    return "INVALID_RICH_ID";
+  }
+  // Discord adds this response-only scan-filter version, including 0 on textual embeds.
+  // It is not a scan verdict; authored fields and nonzero embed flags remain checked.
+  const scanVersion: unknown = (data as APIEmbed & { content_scan_version?: unknown })
+    .content_scan_version;
+  if (
+    scanVersion !== undefined &&
+    (typeof scanVersion !== "number" || !Number.isSafeInteger(scanVersion) || scanVersion < 0)
+  ) {
+    return "INVALID_CONTENT_SCAN_VERSION";
+  }
+  if (data.fields !== undefined) {
+    if (!Array.isArray(data.fields)) return "INVALID_RICH_FIELD";
+    if (data.fields.length !== 0) return "UNSUPPORTED_RICH_STATE";
+  }
+  const flags: unknown = data.flags;
+  if (flags !== undefined && flags !== 0) {
+    return typeof flags === "number" && Number.isSafeInteger(flags) && flags >= 0
+      ? "UNSUPPORTED_RICH_STATE"
+      : "INVALID_RICH_FIELD";
+  }
+  return undefined;
 }
 
+export type ManagedMessageEmbedProjectionFailureReason =
+  | "INVALID_EMBED_SHAPE"
+  | "INVALID_EMBED_TYPE"
+  | "MULTIPLE_RICH_EMBEDS"
+  | "UNSUPPORTED_RICH_STATE"
+  | "UNKNOWN_RICH_FIELD"
+  | "INVALID_RICH_ID"
+  | "INVALID_CONTENT_SCAN_VERSION"
+  | "INVALID_RICH_FIELD"
+  | "UNKNOWN_IMAGE_FIELD"
+  | "INVALID_IMAGE_METADATA"
+  | "INVALID_IMAGE_URL"
+  | "OTHER_PROJECTION_FAILURE";
+
 export type ManagedMessageEmbedProjection =
-  { ok: true; embed: ManagedMessageEmbed | null } | { ok: false };
+  | { ok: true; embed: ManagedMessageEmbed | null }
+  | { ok: false; reason: ManagedMessageEmbedProjectionFailureReason };
 
 export function projectManagedMessageEmbed(
   embeds: readonly Embed[],
@@ -215,27 +281,57 @@ export function projectManagedMessageEmbed(
   let candidate: APIEmbed | undefined;
   for (const embed of embeds) {
     const data = embed.data;
+    if (typeof data !== "object" || data === null || Array.isArray(data))
+      return { ok: false, reason: "INVALID_EMBED_SHAPE" };
     if (data.type === EmbedType.Rich) {
-      if (candidate !== undefined) return { ok: false };
+      if (candidate !== undefined) return { ok: false, reason: "MULTIPLE_RICH_EMBEDS" };
       candidate = data;
       continue;
     }
-    if (data.type === undefined || !ignoredPreviewEmbedTypes.has(data.type)) return { ok: false };
+    if (data.type === undefined || !ignoredPreviewEmbedTypes.has(data.type))
+      return { ok: false, reason: "INVALID_EMBED_TYPE" };
   }
   if (candidate === undefined) return { ok: true, embed: null };
-  if (hasUnsupportedRichState(candidate)) return { ok: false };
+  const richFailure = richStateFailureReason(candidate);
+  if (richFailure !== undefined) return { ok: false, reason: richFailure };
   let imageUrl: string | undefined;
   if (candidate.image !== undefined) {
     const image: unknown = candidate.image;
-    if (
-      typeof image !== "object" ||
-      image === null ||
-      Object.keys(image).some((key) => !supportedRichEmbedImageKeys.has(key))
-    ) {
-      return { ok: false };
+    if (typeof image !== "object" || image === null || Array.isArray(image)) {
+      return { ok: false, reason: "INVALID_IMAGE_METADATA" };
+    }
+    if (Object.keys(image).some((key) => !supportedRichEmbedImageKeys.has(key))) {
+      return { ok: false, reason: "UNKNOWN_IMAGE_FIELD" };
     }
     const imageRecord = image as Record<string, unknown>;
-    if (typeof imageRecord.url !== "string") return { ok: false };
+    if (typeof imageRecord.url !== "string") return { ok: false, reason: "INVALID_IMAGE_URL" };
+    for (const key of ["proxy_url", "content_type", "placeholder"] as const) {
+      if (imageRecord[key] !== undefined && typeof imageRecord[key] !== "string") {
+        return { ok: false, reason: "INVALID_IMAGE_METADATA" };
+      }
+    }
+    for (const key of ["width", "height", "placeholder_version"] as const) {
+      const value = imageRecord[key];
+      if (
+        value !== undefined &&
+        (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+      ) {
+        return { ok: false, reason: "INVALID_IMAGE_METADATA" };
+      }
+    }
+    // Animation describes rendering of the same authored resource, not a different image.
+    // Exact values avoid bitfield coercion or truncation admitting unknown flags.
+    if (
+      imageRecord.flags !== undefined &&
+      imageRecord.flags !== 0 &&
+      imageRecord.flags !== EmbedMediaFlags.IsAnimated
+    ) {
+      return { ok: false, reason: "INVALID_IMAGE_METADATA" };
+    }
+    // Non-empty alt text is semantic state outside the managed embed model.
+    if (imageRecord.description !== undefined && imageRecord.description !== "") {
+      return { ok: false, reason: "INVALID_IMAGE_METADATA" };
+    }
     imageUrl = imageRecord.url;
   }
   const validation = validateManagedMessagePayload({
@@ -247,7 +343,25 @@ export function projectManagedMessageEmbed(
       imageUrl,
     },
   });
-  if (!validation.ok || validation.payload.embed === null) return { ok: false };
+  if (!validation.ok) {
+    const emptyEmbed =
+      validation.code === "EMPTY_CONTENT" || validation.code === "EMBED_COLOR_ONLY";
+    if (
+      validation.code === "EMBED_IMAGE_URL_INVALID" ||
+      validation.code === "EMBED_IMAGE_URL_TOO_LONG" ||
+      (emptyEmbed && imageUrl !== undefined)
+    ) {
+      return { ok: false, reason: "INVALID_IMAGE_URL" };
+    }
+    return {
+      ok: false,
+      reason:
+        emptyEmbed && candidate.title === undefined && candidate.description === undefined
+          ? "OTHER_PROJECTION_FAILURE"
+          : "INVALID_RICH_FIELD",
+    };
+  }
+  if (validation.payload.embed === null) return { ok: false, reason: "OTHER_PROJECTION_FAILURE" };
   const projected = validation.payload.embed;
   if (
     projected.title !== candidate.title ||
@@ -255,7 +369,10 @@ export function projectManagedMessageEmbed(
     projected.color !== candidate.color ||
     projected.imageUrl !== imageUrl
   ) {
-    return { ok: false };
+    return {
+      ok: false,
+      reason: projected.imageUrl !== imageUrl ? "INVALID_IMAGE_URL" : "INVALID_RICH_FIELD",
+    };
   }
   return { ok: true, embed: projected };
 }
@@ -335,6 +452,7 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
         ) {
           return { outcome: "FAILURE", code: "SEND_UNCONFIRMED" };
         }
+        const projection = projectManagedMessageEmbed(message.embeds);
         return {
           outcome: "SENT",
           message: {
@@ -342,7 +460,10 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
             channelId: message.channelId,
             messageId: message.id,
             createdAt: message.createdAt,
-            payload: projectManagedMessagePayload(message),
+            payload: projection.ok
+              ? { content: message.content, embed: projection.embed }
+              : undefined,
+            ...(projection.ok ? {} : { projectionFailureReason: projection.reason }),
           },
         };
       } catch (error) {

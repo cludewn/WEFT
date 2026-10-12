@@ -10,6 +10,9 @@ import { describe, expect, it, vi } from "vitest";
 import type { Client, Embed, Message } from "discord.js";
 
 import { createManagedMessageDiscord } from "../../src/managed-message-discord.js";
+import type { ManagedMessagePayload } from "../../src/managed-message-payload.js";
+import type { ManagedMessageStore } from "../../src/managed-message-persistence.js";
+import { createManagedMessageService } from "../../src/managed-message.js";
 
 const input = {
   guildId: "700000000000000001",
@@ -26,6 +29,238 @@ const firstEditedAt = new Date("2026-08-31T01:00:00.000Z");
 const secondEditedAt = new Date("2026-08-31T01:01:00.000Z");
 
 describe("managed-message edit Discord boundary", () => {
+  it.each([
+    ["committed", true, "MISSING", "UNSAFE", "SUCCESS"],
+    ["exact confirmation", false, "MATCH", "UNSAFE", "SUCCESS"],
+    ["safe restoration", false, "MISSING", "SAFE", "FAILURE"],
+    ["unsafe database state", false, "MISSING", "UNSAFE", "PARTIAL_FAILURE"],
+  ] as const)(
+    "preserves revision and persistence contracts with metadata: %s",
+    async (_label, committed, confirmation, safety, outcome) => {
+      const previousPayload = imagePayload(input.previousPayload.content, imageUrl);
+      const payload = imagePayload(input.payload.content, changedImageUrl);
+      const fixture = createFixture({ oldEmbeds: [imageEmbed(imageUrl, 0)] });
+      const updated = message({
+        content: payload.content,
+        embeds: [imageEmbed(changedImageUrl, 32)],
+        editedAt: secondEditedAt,
+        edit: fixture.edit,
+      });
+      const restored = message({
+        content: previousPayload.content,
+        embeds: [imageEmbed(imageUrl, 0)],
+        editedAt: new Date(secondEditedAt.getTime() + 1),
+        edit: fixture.edit,
+      });
+      fixture.edit.mockResolvedValueOnce(updated).mockResolvedValueOnce(restored);
+      fixture.fetchMessage.mockResolvedValueOnce(fixture.original).mockResolvedValueOnce(updated);
+      const store = {
+        find: vi.fn<ManagedMessageStore["find"]>().mockResolvedValue({
+          messageId: input.messageId,
+          guildId: input.guildId,
+          channelId: input.channelId,
+          creatorUserId: input.actorUserId,
+          status: "ACTIVE",
+          revision: 1,
+          payload: previousPayload,
+          createdAt: firstEditedAt,
+          updatedAt: firstEditedAt,
+        }),
+        create: vi.fn<ManagedMessageStore["create"]>(),
+        confirmCreation: vi.fn<ManagedMessageStore["confirmCreation"]>(),
+        edit: vi.fn<ManagedMessageStore["edit"]>(),
+        confirmEdit: vi.fn<ManagedMessageStore["confirmEdit"]>().mockResolvedValue(confirmation),
+        readCompensationSafety: vi
+          .fn<ManagedMessageStore["readCompensationSafety"]>()
+          .mockResolvedValue(safety),
+        markDeleted: vi.fn<ManagedMessageStore["markDeleted"]>(),
+        confirmDeletion: vi.fn<ManagedMessageStore["confirmDeletion"]>(),
+      } satisfies ManagedMessageStore;
+      if (committed) store.edit.mockResolvedValue("TRANSITIONED");
+      else store.edit.mockRejectedValue(new Error("transaction response lost"));
+      const service = createManagedMessageService({
+        discord: createManagedMessageDiscord(fixture.client),
+        store,
+        logger: { warn: vi.fn() },
+        generateAuditId: () => "edit-audit",
+      });
+      await expect(service.edit({ ...input, expectedRevision: 1, payload })).resolves.toEqual(
+        outcome === "SUCCESS"
+          ? { outcome, messageId: input.messageId, revision: 2 }
+          : outcome === "FAILURE"
+            ? { outcome, code: "PERSISTENCE_UNCONFIRMED_COMPENSATED" }
+            : { outcome, messageId: input.messageId, kind: "EDIT" },
+      );
+      expect(store.edit).toHaveBeenCalledExactlyOnceWith({
+        auditId: "edit-audit",
+        guildId: input.guildId,
+        channelId: input.channelId,
+        messageId: input.messageId,
+        actorUserId: input.actorUserId,
+        expectedRevision: 1,
+        previousPayload,
+        payload,
+        occurredAt: secondEditedAt,
+      });
+      if (!committed)
+        expect(store.confirmEdit).toHaveBeenCalledExactlyOnceWith(store.edit.mock.calls[0]?.[0]);
+      else expect(store.confirmEdit).not.toHaveBeenCalled();
+      expect(fixture.edit).toHaveBeenCalledTimes(outcome === "FAILURE" ? 2 : 1);
+      expect(fixture.fetchMessage).toHaveBeenCalledTimes(outcome === "FAILURE" ? 2 : 1);
+      expect(store.readCompensationSafety).toHaveBeenCalledTimes(outcome === "SUCCESS" ? 0 : 1);
+    },
+  );
+
+  it.each([0, 32])(
+    "accepts metadata-only changes as a coherent no-op with image flags %s",
+    async (flags) => {
+      const payload = { content: input.previousPayload.content, embed: { imageUrl } };
+      const fixture = createFixture({ oldEmbeds: [imageEmbed(imageUrl, flags)] });
+      await expect(
+        createManagedMessageDiscord(fixture.client).editManagedMessage({
+          ...input,
+          previousPayload: payload,
+          payload,
+        }),
+      ).resolves.toEqual({ outcome: "UNCHANGED" });
+      expect(fixture.edit).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["add", null, imageUrl],
+    ["change", imageUrl, changedImageUrl],
+    ["remove", imageUrl, null],
+  ])(
+    "confirms image %s with compatible GET and PATCH metadata",
+    async (_label, previousUrl, nextUrl) => {
+      const previousPayload = imagePayload(input.previousPayload.content, previousUrl);
+      const payload = imagePayload(input.payload.content, nextUrl);
+      const fixture = createFixture({
+        oldEmbeds: previousUrl === null ? [] : [imageEmbed(previousUrl, 0)],
+        newEmbeds: nextUrl === null ? [] : [imageEmbed(nextUrl, 32)],
+      });
+      await expect(
+        createManagedMessageDiscord(fixture.client).editManagedMessage({
+          ...input,
+          previousPayload,
+          payload,
+        }),
+      ).resolves.toEqual({ outcome: "EDITED", editedAt: secondEditedAt });
+      expect(fixture.edit).toHaveBeenCalledOnce();
+      const options = (
+        fixture.edit.mock.calls as unknown as Array<[{ embeds: Array<{ toJSON: () => unknown }> }]>
+      )[0]?.[0];
+      expect(options?.embeds.map((embed) => embed.toJSON())).toEqual(
+        nextUrl === null ? [] : [{ image: { url: nextUrl } }],
+      );
+    },
+  );
+
+  it.each([
+    ["applied", "NEW", changedImageUrl, "EDITED"],
+    ["not applied", "OLD", imageUrl, "EDIT_NOT_APPLIED"],
+    ["unconfirmed", "NEW", "https://example.invalid/manual.png", "EDIT_UNCONFIRMED"],
+  ] as const)(
+    "classifies response-loss GET with compatible metadata as %s",
+    async (_label, reconcile, returnedUrl, outcome) => {
+      const fixture = createFixture({
+        oldEmbeds: [imageEmbed(imageUrl, 0)],
+        newEmbeds: [imageEmbed(changedImageUrl, 32)],
+        reconcileEmbeds: [imageEmbed(returnedUrl, 32)],
+        editFailure: new Error("response lost"),
+        reconcile,
+      });
+      await expect(
+        createManagedMessageDiscord(fixture.client).editManagedMessage({
+          ...input,
+          previousPayload: imagePayload(input.previousPayload.content, imageUrl),
+          payload: imagePayload(input.payload.content, changedImageUrl),
+        }),
+      ).resolves.toEqual(
+        outcome === "EDITED"
+          ? { outcome, editedAt: secondEditedAt }
+          : { outcome: "FAILURE", code: outcome },
+      );
+      expect(fixture.fetchMessage).toHaveBeenCalledTimes(2);
+      expect(fixture.edit).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not confirm an ambiguous image edit without an advanced timestamp", async () => {
+    const fixture = createFixture({
+      oldEmbeds: [imageEmbed(imageUrl, 0)],
+      newEmbeds: [imageEmbed(changedImageUrl, 32)],
+      oldEditedAt: secondEditedAt,
+      editFailure: new Error("response lost"),
+      reconcile: "NEW",
+    });
+    await expect(
+      createManagedMessageDiscord(fixture.client).editManagedMessage({
+        ...input,
+        previousPayload: imagePayload(input.previousPayload.content, imageUrl),
+        payload: imagePayload(input.payload.content, changedImageUrl),
+      }),
+    ).resolves.toEqual({ outcome: "FAILURE", code: "EDIT_UNCONFIRMED" });
+    expect(fixture.edit).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an externally changed image URL even with compatible metadata", async () => {
+    const fixture = createFixture({ oldEmbeds: [imageEmbed(changedImageUrl, 0)] });
+    await expect(
+      createManagedMessageDiscord(fixture.client).editManagedMessage({
+        ...input,
+        previousPayload: imagePayload(input.previousPayload.content, imageUrl),
+        payload: imagePayload(input.payload.content, imageUrl),
+      }),
+    ).resolves.toEqual({ outcome: "FAILURE", code: "STATE_MISMATCH" });
+    expect(fixture.edit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["exact state", changedImageUrl, secondEditedAt, "RESTORED"],
+    ["different resource", imageUrl, secondEditedAt, "PRECONDITION_FAILED"],
+    ["later edit", changedImageUrl, new Date(secondEditedAt.getTime() + 1), "PRECONDITION_FAILED"],
+  ] as const)(
+    "restores an image only from %s despite compatible metadata",
+    async (_label, currentUrl, currentEditedAt, outcome) => {
+      const fixture = createFixture({
+        oldContent: input.payload.content,
+        oldEmbeds: [imageEmbed(currentUrl, 32)],
+        oldEditedAt: currentEditedAt,
+        newContent: input.previousPayload.content,
+        newEmbeds: [imageEmbed(imageUrl, 0)],
+      });
+      await expect(
+        createManagedMessageDiscord(fixture.client).restoreManagedMessage({
+          ...input,
+          expectedPayload: imagePayload(input.payload.content, changedImageUrl),
+          expectedEditedAt: secondEditedAt,
+          restorePayload: imagePayload(input.previousPayload.content, imageUrl),
+        }),
+      ).resolves.toEqual({ outcome });
+      expect(fixture.edit).toHaveBeenCalledTimes(outcome === "RESTORED" ? 1 : 0);
+    },
+  );
+
+  it("keeps restoration unconfirmed when PATCH returns a different image resource", async () => {
+    const fixture = createFixture({
+      oldContent: input.payload.content,
+      oldEmbeds: [imageEmbed(changedImageUrl, 32)],
+      oldEditedAt: secondEditedAt,
+      newContent: input.previousPayload.content,
+      newEmbeds: [imageEmbed(changedImageUrl, 0)],
+    });
+    await expect(
+      createManagedMessageDiscord(fixture.client).restoreManagedMessage({
+        ...input,
+        expectedPayload: imagePayload(input.payload.content, changedImageUrl),
+        expectedEditedAt: secondEditedAt,
+        restorePayload: imagePayload(input.previousPayload.content, imageUrl),
+      }),
+    ).resolves.toEqual({ outcome: "UNCONFIRMED" });
+    expect(fixture.edit).toHaveBeenCalledOnce();
+  });
   it("fresh-fetches current state and returns UNCHANGED only after authorization and coherence", async () => {
     const fixture = createFixture({ newContent: input.previousPayload.content });
 
@@ -794,7 +1029,7 @@ function createFixture(
     user: { id: "bot-id" },
     channels: { fetch: fetchChannel },
   } as unknown as Client;
-  return { client, fetchChannel, fetchMember, fetchMessage, edit, permissionChecks };
+  return { client, fetchChannel, fetchMember, fetchMessage, edit, permissionChecks, original };
 }
 
 function message(inputOverrides: {
@@ -821,4 +1056,31 @@ function message(inputOverrides: {
 
 function richEmbed(data: Record<string, unknown>): Embed {
   return { data: { type: EmbedType.Rich, ...data } } as unknown as Embed;
+}
+
+const imageUrl = "https://example.invalid/original.png";
+const changedImageUrl = "https://example.invalid/changed.png";
+
+function imagePayload(content: string, url: string | null): ManagedMessagePayload {
+  return { content, embed: url === null ? null : { imageUrl: url } };
+}
+
+function imageEmbed(url: string, flags: number): Embed {
+  return richEmbed({
+    id: flags === 0 ? "101" : "202",
+    flags: 0,
+    content_scan_version: flags === 0 ? 0 : 2,
+    fields: [],
+    image: {
+      url,
+      flags,
+      description: "",
+      proxy_url: "https://proxy.invalid/image.png",
+      width: flags === 0 ? 0 : 100,
+      height: 50,
+      content_type: "image/png",
+      placeholder: "placeholder",
+      placeholder_version: 1,
+    },
+  });
 }

@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { EmbedType } from "discord.js";
+import type { Message } from "discord.js";
 
 import type { ManagedMessageDiscord } from "../../src/managed-message-discord.js";
+import { projectManagedMessagePayload } from "../../src/managed-message-discord.js";
 import type { ManagedMessageStore } from "../../src/managed-message-persistence.js";
 import {
   createManagedMessageService,
@@ -14,6 +17,171 @@ describe("managed message operation identifiers", () => {
 });
 
 describe("managed message send service", () => {
+  it.each([undefined, 0, 1, 2, 4])(
+    "persists text and a title-only embed with scan version %s without compensation",
+    async (content_scan_version) => {
+      const payload = { content: "Test", embed: { title: "Test Title" } };
+      const fixture = createFixture({
+        sendResult: {
+          outcome: "SENT",
+          message: {
+            messageId: "message-id",
+            guildId: input.guildId,
+            channelId: input.channelId,
+            createdAt,
+            payload: projectManagedMessagePayload({
+              content: payload.content,
+              embeds: [
+                {
+                  data: { type: EmbedType.Rich, title: payload.embed.title, content_scan_version },
+                },
+              ],
+            } as unknown as Message),
+          },
+        },
+      });
+      await expect(fixture.service.send({ ...input, payload })).resolves.toEqual({
+        outcome: "SUCCESS",
+        messageId: "message-id",
+      });
+      expect(fixture.store.create).toHaveBeenCalledExactlyOnceWith({
+        auditId: "stable-audit-id",
+        messageId: "message-id",
+        guildId: input.guildId,
+        channelId: input.channelId,
+        creatorUserId: input.actorUserId,
+        createdAt,
+        payload,
+      });
+      expect(fixture.discord.deleteManagedMessage).not.toHaveBeenCalled();
+      expect(fixture.logger.warn).not.toHaveBeenCalled();
+      expect(fixture.discord.sendManagedMessage).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("classifies a missing projection without a supplied detailed reason conservatively", async () => {
+    const fixture = createFixture({
+      sendResult: {
+        outcome: "SENT",
+        message: {
+          messageId: "message-id",
+          guildId: input.guildId,
+          channelId: input.channelId,
+          createdAt,
+          payload: undefined,
+        },
+      },
+    });
+    await expect(fixture.service.send(input)).resolves.toEqual({
+      outcome: "FAILURE",
+      code: "PERSISTENCE_UNCONFIRMED_COMPENSATED",
+    });
+    expect(fixture.logger.warn).toHaveBeenCalledExactlyOnceWith(
+      {
+        event: "managed_message_send_confirmation_compensated",
+        guildId: input.guildId,
+        channelId: input.channelId,
+        messageId: "message-id",
+        failureCode: "RETURNED_PAYLOAD_MISMATCH",
+        payloadFailureReason: "PROJECTION_FAILED",
+      },
+      "Managed message operation could not be confirmed",
+    );
+    expect(fixture.store.create).not.toHaveBeenCalled();
+    expect(fixture.store.confirmCreation).not.toHaveBeenCalled();
+    expect(fixture.discord.deleteManagedMessage).toHaveBeenCalledOnce();
+  });
+
+  it.each(["", "combined image content"])(
+    "confirms image-only or combined content %j with compatible metadata",
+    async (content) => {
+      const payload = { content, embed: { imageUrl: canonicalPayload.embed.imageUrl } };
+      const fixture = createFixture({
+        sendResult: {
+          outcome: "SENT",
+          message: {
+            messageId: "message-id",
+            guildId: input.guildId,
+            channelId: input.channelId,
+            createdAt,
+            payload: projectManagedMessagePayload({
+              content,
+              embeds: [
+                {
+                  data: {
+                    type: EmbedType.Rich,
+                    content_scan_version: 0,
+                    flags: 0,
+                    image: { url: payload.embed.imageUrl, flags: 32, description: "" },
+                  },
+                },
+              ],
+            } as unknown as Message),
+          },
+        },
+      });
+      await expect(fixture.service.send({ ...input, payload })).resolves.toEqual({
+        outcome: "SUCCESS",
+        messageId: "message-id",
+      });
+      expect(fixture.store.create).toHaveBeenCalledExactlyOnceWith({
+        auditId: "stable-audit-id",
+        messageId: "message-id",
+        guildId: input.guildId,
+        channelId: input.channelId,
+        creatorUserId: input.actorUserId,
+        payload,
+        createdAt,
+      });
+      expect(fixture.discord.deleteManagedMessage).not.toHaveBeenCalled();
+      expect(fixture.discord.sendManagedMessage).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("confirms image flags: 0 through the real projector without false compensation", async () => {
+    const payload = projectManagedMessagePayload({
+      content: canonicalPayload.content,
+      embeds: [
+        {
+          data: {
+            type: EmbedType.Rich,
+            content_scan_version: 0,
+            title: canonicalPayload.embed.title,
+            color: canonicalPayload.embed.color,
+            image: { url: canonicalPayload.embed.imageUrl, flags: 0 },
+          },
+        },
+      ],
+    } as unknown as Message);
+    const fixture = createFixture({
+      sendResult: {
+        outcome: "SENT",
+        message: {
+          messageId: "message-id",
+          guildId: input.guildId,
+          channelId: input.channelId,
+          createdAt,
+          payload,
+        },
+      },
+    });
+    const result = await fixture.service.send(input);
+    expect.soft(payload).toEqual(canonicalPayload);
+    expect.soft(fixture.store.create).toHaveBeenCalledExactlyOnceWith({
+      auditId: "stable-audit-id",
+      messageId: "message-id",
+      guildId: input.guildId,
+      channelId: input.channelId,
+      creatorUserId: input.actorUserId,
+      payload: canonicalPayload,
+      createdAt,
+    });
+    expect.soft(fixture.discord.deleteManagedMessage).not.toHaveBeenCalled();
+    expect.soft(fixture.store.confirmCreation).not.toHaveBeenCalled();
+    expect.soft(fixture.logger.warn).not.toHaveBeenCalled();
+    expect(result).toEqual({ outcome: "SUCCESS", messageId: "message-id" });
+  });
+
   it("sends once with one nonce and persists the exact Discord result", async () => {
     const fixture = createFixture();
 
@@ -41,6 +209,101 @@ describe("managed message send service", () => {
     });
     expect(fixture.store.confirmCreation).not.toHaveBeenCalled();
     expect(fixture.discord.deleteManagedMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ flags: 32, description: "", width: 100, height: 0 }, undefined, "MATCH", "SUCCESS"],
+    [
+      { flags: 0, proxy_url: "https://proxy.invalid/image.png" },
+      new Error("response lost"),
+      "MATCH",
+      "SUCCESS",
+    ],
+    [{ flags: 32 }, new Error("response lost"), "MISSING", "FAILURE"],
+    [{ flags: 0 }, new Error("response lost"), "CONFLICT", "FAILURE"],
+  ] as const)(
+    "preserves creation and exact confirmation with image metadata %#",
+    async (metadata, createFailure, confirmation, outcome) => {
+      const fixture = createFixture({
+        sendResult: { outcome: "SENT", message: projectedSentMessage({ ...metadata }) },
+        ...(createFailure === undefined ? {} : { createFailure }),
+        confirmation,
+      });
+      await expect(fixture.service.send(input)).resolves.toMatchObject({ outcome });
+      expect(fixture.store.create).toHaveBeenCalledExactlyOnceWith({
+        auditId: "stable-audit-id",
+        messageId: "message-id",
+        guildId: input.guildId,
+        channelId: input.channelId,
+        creatorUserId: input.actorUserId,
+        createdAt,
+        payload: canonicalPayload,
+      });
+      if (createFailure !== undefined) {
+        expect(fixture.store.confirmCreation).toHaveBeenCalledExactlyOnceWith(
+          fixture.store.create.mock.calls[0]?.[0],
+        );
+      } else expect(fixture.store.confirmCreation).not.toHaveBeenCalled();
+      expect(fixture.discord.deleteManagedMessage).toHaveBeenCalledTimes(
+        outcome === "SUCCESS" ? 0 : 1,
+      );
+      expect(fixture.discord.sendManagedMessage).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["different image", { url: "https://example.invalid/other.png", flags: 0 }, {}],
+    ["meaningful alt text", { description: "alt", flags: 0 }, {}],
+    ["different title", { flags: 32 }, { title: "manual title" }],
+    ["different color", { flags: 0 }, { color: 1 }],
+    ["different description", { flags: 0 }, { description: "manual description" }],
+    ["unknown rich state", { flags: 0 }, { future_state: true }],
+  ])("keeps %s conservative through the real projector", async (_label, metadata, richState) => {
+    for (const deleteResult of [{ outcome: "DELETED" }, { outcome: "UNCONFIRMED" }] as const) {
+      const fixture = createFixture({
+        sendResult: { outcome: "SENT", message: projectedSentMessage(metadata, richState) },
+        deleteResult,
+      });
+      await expect(fixture.service.send(input)).resolves.toEqual(
+        deleteResult.outcome === "DELETED"
+          ? { outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED_COMPENSATED" }
+          : { outcome: "PARTIAL_FAILURE", messageId: "message-id" },
+      );
+      expect(fixture.store.create).not.toHaveBeenCalled();
+      expect(fixture.store.confirmCreation).not.toHaveBeenCalled();
+      expect(fixture.discord.deleteManagedMessage).toHaveBeenCalledOnce();
+      expect(fixture.discord.sendManagedMessage).toHaveBeenCalledOnce();
+      expect(fixture.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          failureCode: "RETURNED_PAYLOAD_MISMATCH",
+        }),
+        expect.any(String),
+      );
+    }
+  });
+
+  it("keeps an unreadable creation confirmation and unconfirmed deletion partial with compatible metadata", async () => {
+    const fixture = createFixture({
+      sendResult: { outcome: "SENT", message: projectedSentMessage({ flags: 0 }) },
+      createFailure: new Error("response lost"),
+      confirmationFailure: new Error("read failed"),
+      deleteResult: { outcome: "UNCONFIRMED" },
+    });
+    await expect(fixture.service.send(input)).resolves.toEqual({
+      outcome: "PARTIAL_FAILURE",
+      messageId: "message-id",
+    });
+    expect(fixture.store.create).toHaveBeenCalledOnce();
+    expect(fixture.store.confirmCreation).toHaveBeenCalledOnce();
+    expect(fixture.discord.sendManagedMessage).toHaveBeenCalledOnce();
+    expect(fixture.discord.deleteManagedMessage).toHaveBeenCalledOnce();
+    expect(fixture.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "managed_message_partial_failure",
+        failureCode: "READ_FAILED",
+      }),
+      expect.any(String),
+    );
   });
 
   it("generates a distinct stable nonce for each send operation", async () => {
@@ -208,6 +471,34 @@ const canonicalPayload = {
   },
 };
 
+function projectedSentMessage(
+  metadata: Record<string, unknown>,
+  richState: Record<string, unknown> = {},
+) {
+  return {
+    messageId: "message-id",
+    guildId: input.guildId,
+    channelId: input.channelId,
+    createdAt,
+    payload: projectManagedMessagePayload({
+      content: canonicalPayload.content,
+      embeds: [
+        {
+          data: {
+            type: EmbedType.Rich,
+            content_scan_version: 2,
+            id: "101",
+            title: canonicalPayload.embed.title,
+            color: canonicalPayload.embed.color,
+            image: { url: canonicalPayload.embed.imageUrl, ...metadata },
+            ...richState,
+          },
+        },
+      ],
+    } as unknown as Message),
+  };
+}
+
 function createFixture(
   overrides: {
     sendResult?: Awaited<ReturnType<ManagedMessageDiscord["sendManagedMessage"]>>;
@@ -232,7 +523,7 @@ function createFixture(
   );
   const editManagedMessage = vi.fn(() => Promise.resolve({ outcome: "UNCHANGED" } as const));
   const restoreManagedMessage = vi.fn(() => Promise.resolve({ outcome: "RESTORED" } as const));
-  const create = vi.fn(() =>
+  const create = vi.fn<ManagedMessageStore["create"]>(() =>
     overrides.createFailure === undefined
       ? Promise.resolve({} as never)
       : Promise.reject(overrides.createFailure),
