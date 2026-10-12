@@ -925,25 +925,30 @@ function scheduledMessageListMessage(
   if (result.schedules.length === 0) {
     return `No active or executing scheduled messages were found on page ${page}.`;
   }
+  const displayError =
+    "WEFT could not display the complete scheduled-message page safely. No schedules were displayed.";
+  if (result.schedules.some((schedule) => !Number.isFinite(schedule.executeAt.getTime()))) {
+    return displayError;
+  }
   const rows = result.schedules.map((schedule) => {
     const when = Math.floor(schedule.executeAt.getTime() / 1_000);
     if ("kind" in schedule && schedule.kind === "RECURRING") {
       const label =
         schedule.currentOccurrenceStatus === "PENDING"
-          ? "next scheduled occurrence"
+          ? "next"
           : schedule.currentOccurrenceStatus === null
-            ? "last materialized scheduled time"
-            : "current occurrence scheduled time";
-      const selectedDays =
-        schedule.frequency === "WEEKLY"
-          ? ` ${weekdays.filter((_, index) => (schedule.weekdayMask & (1 << index)) !== 0).join(",")}`
-          : "";
-      return `- \`${schedule.scheduledActionId}\` — recurring ${schedule.frequency.toLowerCase()}${selectedDays} ${schedule.localTime.slice(0, 5)} ${schedule.timezone} — **${schedule.currentOccurrenceStatus ?? schedule.status}** — ${label}: <t:${when}:F> — creator \`${schedule.creatorUserId}\``;
+            ? "last"
+            : "current";
+      return `- \`${schedule.scheduledActionId}\` — recurring ${schedule.frequency} — **${schedule.currentOccurrenceStatus ?? schedule.status}** — ${label}: <t:${when}:F> — creator \`${schedule.creatorUserId}\``;
     }
-    const kind = "kind" in schedule ? "one-time " : "";
-    return `- \`${schedule.scheduledActionId}\` — ${kind}**${schedule.status}** — <t:${when}:F> (<t:${when}:R>) — creator \`${schedule.creatorUserId}\``;
+    return `- \`${schedule.scheduledActionId}\` — one-time — **${schedule.status}** — runs: <t:${when}:F> — creator \`${schedule.creatorUserId}\``;
   });
-  return [`Scheduled messages — page ${page}`, ...rows].join("\n");
+  const content = [
+    `Scheduled messages — page ${page}`,
+    ...rows,
+    "Details: /message schedule status id:<schedule-id>.",
+  ].join("\n");
+  return content.length <= 2000 ? content : displayError;
 }
 
 function scheduledMessageEditResultMessage(
