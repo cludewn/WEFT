@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
+import { ChannelType, EmbedType } from "discord.js";
+import type { Client } from "discord.js";
 
 import type { ScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
+import { createScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
 import {
   createScheduledMessageExecutor,
   deriveScheduledMessageNonce,
@@ -119,6 +122,116 @@ function fixture(
 }
 
 describe("scheduled message execution rules", () => {
+  it("limits ambiguous image sends to the existing one same-nonce replay", async () => {
+    const f = fixture({ loaded: definition({ payload: imagePayload }) });
+    const boundary = connectImageDiscord(f, { flags: 0 });
+    boundary.send.mockRejectedValue(new Error("response lost"));
+    await expect(f.executor.execute("action-id")).resolves.toEqual({
+      outcome: "UNCONFIRMED",
+      code: "SEND_UNCONFIRMED",
+    });
+    expect(boundary.send).toHaveBeenCalledTimes(2);
+    expect(boundary.send.mock.calls[0]).toEqual(boundary.send.mock.calls[1]);
+    expect(boundary.deleteRequest).not.toHaveBeenCalled();
+    expect(f.store.retryPreSendFailure).not.toHaveBeenCalled();
+    expect(f.store.finalizeSuccess).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 32])(
+    "finalizes an image through the real Discord projector with flags %s",
+    async (flags) => {
+      const f = fixture({ loaded: definition({ payload: imagePayload }) });
+      const boundary = connectImageDiscord(f, { flags });
+      await expect(f.executor.execute("action-id")).resolves.toEqual({ outcome: "SUCCESS" });
+      expect(boundary.send).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          content: imagePayload.content,
+          nonce: f.message.nonce,
+          enforceNonce: true,
+          allowedMentions: { parse: [] },
+        }),
+      );
+      expect(f.store.finalizeSuccess).toHaveBeenCalledExactlyOnceWith({
+        definition: f.executing,
+        messageId: f.message.messageId,
+        messageCreatedAt: f.message.createdAt,
+        managedMessageAuditId: "audit-1",
+        executionAuditId: "audit-2",
+        occurredAt: new Date(executeAt.getTime() + 1_000),
+      });
+      expect(boundary.deleteRequest).not.toHaveBeenCalled();
+      expect(f.store.failExecution).not.toHaveBeenCalled();
+      expect(f.store.retryPreSendFailure).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["different URL", { url: "https://example.invalid/different.png", flags: 0 }, undefined],
+    ["unsupported metadata", { flags: 33 }, undefined],
+    ["wrong nonce", { flags: 32 }, "wrong-nonce"],
+  ])(
+    "rejects image delivery %s through the shared projection boundary",
+    async (_label, image, nonce) => {
+      const f = fixture({ loaded: definition({ payload: imagePayload }) });
+      const boundary = connectImageDiscord(f, image, nonce);
+      await expect(f.executor.execute("action-id")).resolves.toEqual({
+        outcome: "PERMANENT_FAILURE",
+        code: "RETURNED_MESSAGE_MISMATCH",
+      });
+      expect(f.store.finalizeSuccess).not.toHaveBeenCalled();
+      expect(f.store.retryPreSendFailure).not.toHaveBeenCalled();
+      expect(boundary.send).toHaveBeenCalledOnce();
+      expect(boundary.deleteRequest).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    [
+      "unknown commit",
+      "UNKNOWN",
+      false,
+      { outcome: "UNCONFIRMED", code: "PERSISTENCE_UNCONFIRMED" },
+      0,
+    ],
+    [
+      "proven uncommitted",
+      "PROVEN_UNCOMMITTED",
+      false,
+      { outcome: "PERMANENT_FAILURE", code: "FINALIZATION_FAILED_COMPENSATED" },
+      1,
+    ],
+    [
+      "unconfirmed deletion",
+      "PROVEN_UNCOMMITTED",
+      true,
+      { outcome: "PERMANENT_FAILURE", code: "FINALIZATION_FAILED_UNCOMPENSATED" },
+      1,
+    ],
+  ] as const)(
+    "preserves image finalization handling: %s",
+    async (_label, commit, deleteFails, expected, deletes) => {
+      const f = fixture({ loaded: definition({ payload: imagePayload }) });
+      const boundary = connectImageDiscord(f, { flags: 32 });
+      if (commit === "UNKNOWN")
+        f.store.finalizeSuccess.mockRejectedValue(new Error("response lost"));
+      else f.store.finalizeSuccess.mockResolvedValue(commit);
+      if (deleteFails) boundary.deleteRequest.mockRejectedValue(new Error("response lost"));
+      await expect(f.executor.execute("action-id")).resolves.toEqual(expected);
+      expect(f.store.finalizeSuccess).toHaveBeenCalledOnce();
+      expect(boundary.send).toHaveBeenCalledOnce();
+      expect(boundary.deleteRequest).toHaveBeenCalledTimes(deletes);
+      expect(f.store.retryPreSendFailure).not.toHaveBeenCalled();
+      if (commit === "UNKNOWN") expect(f.store.failExecution).not.toHaveBeenCalled();
+      else
+        expect(f.store.failExecution).toHaveBeenCalledWith(
+          expect.objectContaining({
+            failureCode: expected.code,
+            resultMessageId: deleteFails ? "message-id" : null,
+          }),
+        );
+    },
+  );
+
   it("derives a stable bounded nonce per scheduled action", () => {
     const first = deriveScheduledMessageNonce("action-one");
     expect(first).toBe(deriveScheduledMessageNonce("action-one"));
@@ -519,3 +632,50 @@ describe("scheduled message execution rules", () => {
     expect(f.discord.createMessage).toHaveBeenCalledOnce();
   });
 });
+
+const imagePayload = {
+  content: "scheduled image",
+  embed: { imageUrl: "https://example.invalid/image.png" },
+};
+
+function connectImageDiscord(
+  f: ReturnType<typeof fixture>,
+  image: Record<string, unknown>,
+  nonce = f.message.nonce,
+) {
+  const send = vi.fn().mockResolvedValue({
+    id: f.message.messageId,
+    guildId: f.message.guildId,
+    channelId: f.message.channelId,
+    author: { id: f.message.authorId },
+    nonce,
+    createdAt: f.message.createdAt,
+    content: imagePayload.content,
+    embeds: [
+      {
+        data: {
+          type: EmbedType.Rich,
+          content_scan_version: 2,
+          id: "101",
+          flags: 0,
+          image: {
+            url: imagePayload.embed.imageUrl,
+            proxy_url: "https://proxy.invalid/image.png",
+            description: "",
+            width: 100,
+            height: 50,
+            ...image,
+          },
+        },
+      },
+    ],
+  });
+  f.target.token = { type: ChannelType.GuildText, send };
+  const deleteRequest = vi.fn().mockResolvedValue(undefined);
+  const discord = createScheduledMessageDiscord({
+    rest: { delete: deleteRequest },
+  } as unknown as Client);
+  f.discord.createMessage.mockImplementation(discord.createMessage);
+  f.discord.deleteMessage.mockImplementation(discord.deleteMessage);
+  return { send, deleteRequest };
+}

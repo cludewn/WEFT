@@ -6,6 +6,7 @@ import type {
   ManagedMessageDiscord,
   ManagedMessageDiscordEditFailureCode,
   ManagedMessageDiscordFailureCode,
+  ManagedMessageEmbedProjectionFailureReason,
 } from "./managed-message-discord.js";
 import type {
   CreateManagedMessage,
@@ -131,6 +132,10 @@ export function createManagedMessageService({
     failureCode: string,
     error?: unknown,
     auditId?: string,
+    payloadDiagnostics?: {
+      payloadFailureReason: "PROJECTION_FAILED" | "SEMANTIC_MISMATCH";
+      projectionFailureReason?: ManagedMessageEmbedProjectionFailureReason;
+    },
   ): void {
     logger.warn(
       {
@@ -139,6 +144,7 @@ export function createManagedMessageService({
         channelId: input.channelId,
         messageId: input.messageId,
         failureCode,
+        ...payloadDiagnostics,
         ...(auditId === undefined ? {} : { auditId }),
         ...(error === undefined
           ? {}
@@ -267,12 +273,24 @@ export function createManagedMessageService({
         discordResult.message.payload === undefined ||
         !managedMessagePayloadsEqual(discordResult.message.payload, validation.payload)
       ) {
+        const payloadDiagnostics =
+          discordResult.message.payload === undefined
+            ? {
+                payloadFailureReason: "PROJECTION_FAILED" as const,
+                ...(discordResult.message.projectionFailureReason === undefined
+                  ? {}
+                  : { projectionFailureReason: discordResult.message.projectionFailureReason }),
+              }
+            : { payloadFailureReason: "SEMANTIC_MISMATCH" as const };
         const deleteResult = await discord.deleteManagedMessage(discordResult.message);
         if (deleteResult.outcome === "DELETED") {
           warn(
             "managed_message_send_confirmation_compensated",
             discordResult.message,
             "RETURNED_PAYLOAD_MISMATCH",
+            undefined,
+            undefined,
+            payloadDiagnostics,
           );
           return { outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED_COMPENSATED" };
         }
@@ -280,6 +298,9 @@ export function createManagedMessageService({
           "managed_message_send_confirmation_partial_failure",
           discordResult.message,
           "RETURNED_PAYLOAD_MISMATCH",
+          undefined,
+          undefined,
+          payloadDiagnostics,
         );
         return { outcome: "PARTIAL_FAILURE", messageId: discordResult.message.messageId };
       }

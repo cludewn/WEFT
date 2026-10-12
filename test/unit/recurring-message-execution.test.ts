@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { ChannelType, EmbedType } from "discord.js";
+import type { Client } from "discord.js";
+import { createScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
 
 import {
   createRecurringMessageExecutor,
@@ -52,7 +55,7 @@ describe("recurring occurrence nonce", () => {
   });
 });
 
-function executionFixture() {
+function executionFixture(imageUrl: string | null = null) {
   const scheduledFor = new Date("2026-01-01T09:00:00.000Z");
   const pending = {
     id: "occurrence",
@@ -69,7 +72,7 @@ function executionFixture() {
     claimEmbedTitle: null,
     claimEmbedDescription: null,
     claimEmbedColor: null,
-    claimEmbedImageUrl: null,
+    claimEmbedImageUrl: imageUrl,
     firstAttemptedAt: scheduledFor,
     claimedAt: scheduledFor,
     claimedSeriesRevision: 0,
@@ -83,7 +86,7 @@ function executionFixture() {
       embedTitle: null,
       embedDescription: null,
       embedColor: null,
-      embedImageUrl: null,
+      embedImageUrl: imageUrl,
     },
     occurrence: pending,
   };
@@ -120,6 +123,11 @@ function executionFixture() {
     store: store as unknown as RecurringRuntimeStore,
     discord,
     now: () => scheduledFor,
+    generateId: vi
+      .fn()
+      .mockReturnValueOnce("terminal-audit")
+      .mockReturnValueOnce("next-occurrence")
+      .mockReturnValue("managed-audit"),
   });
   return {
     store,
@@ -148,6 +156,125 @@ function concreteMessage(fixture: ReturnType<typeof executionFixture>) {
 }
 
 describe("recurring executor ownership and ambiguity", () => {
+  it.each([0, 32])(
+    "finalizes a claimed image through the real projector with flags %s",
+    async (flags) => {
+      const f = executionFixture(imageUrl);
+      const boundary = connectImageDiscord(f, { flags });
+      await expect(f.executor.execute(f.delivery)).resolves.toEqual({ outcome: "COMPLETED" });
+      expect(boundary.send).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          content: "hello",
+          nonce: deriveRecurringOccurrenceNonce("occurrence"),
+          enforceNonce: true,
+          allowedMentions: { parse: [] },
+        }),
+      );
+      expect(f.store.terminalize).toHaveBeenCalledExactlyOnceWith({
+        occurrenceId: "occurrence",
+        auditId: "terminal-audit",
+        nextOccurrenceId: "next-occurrence",
+        occurredAt: f.scheduledFor,
+        resultMessageId: "message",
+        messageCreatedAt: f.scheduledFor,
+        managedMessageAuditId: "managed-audit",
+      });
+      expect(f.claims.claimInitial).toHaveBeenCalledExactlyOnceWith({
+        occurrenceId: "occurrence",
+        expectedSeriesRevision: 0,
+        claimedAt: f.scheduledFor,
+      });
+      expect(f.discord.createMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: { content: "hello", embed: { imageUrl } },
+        }),
+      );
+      expect(boundary.deleteRequest).not.toHaveBeenCalled();
+      expect(f.store.recordPreSendFailure).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["different URL", { url: "https://example.invalid/different.png", flags: 0 }, undefined],
+    ["unsupported metadata", { flags: 33 }, undefined],
+    ["wrong nonce", { flags: 32 }, "wrong-nonce"],
+  ])(
+    "rejects recurring image delivery %s through the shared boundary",
+    async (_label, image, nonce) => {
+      const f = executionFixture(imageUrl);
+      const boundary = connectImageDiscord(f, image, nonce);
+      await expect(f.executor.execute(f.delivery)).resolves.toEqual({
+        outcome: "FAILED",
+        code: "RETURNED_MESSAGE_MISMATCH",
+      });
+      expect(f.store.terminalize).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          failureCode: "RETURNED_MESSAGE_MISMATCH",
+          resultMessageId: "message",
+        }),
+      );
+      expect(f.store.terminalize.mock.calls[0]?.[0]).not.toHaveProperty("managedMessageAuditId");
+      expect(f.store.recordPreSendFailure).not.toHaveBeenCalled();
+      expect(boundary.send).toHaveBeenCalledOnce();
+      expect(boundary.deleteRequest).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["unknown commit", "UNKNOWN", false, { outcome: "UNCONFIRMED" }, 0],
+    [
+      "uncommitted",
+      "NOT_COMMITTED",
+      false,
+      { outcome: "FAILED", code: "FINALIZATION_FAILED_COMPENSATED" },
+      1,
+    ],
+    [
+      "unconfirmed deletion",
+      "NOT_COMMITTED",
+      true,
+      { outcome: "FAILED", code: "FINALIZATION_FAILED_UNCOMPENSATED" },
+      1,
+    ],
+  ] as const)(
+    "preserves recurring image finalization: %s",
+    async (_label, commit, deleteFails, expected, deletes) => {
+      const f = executionFixture(imageUrl);
+      const boundary = connectImageDiscord(f, { flags: 32 });
+      f.store.terminalize.mockResolvedValueOnce(commit);
+      if (deleteFails) boundary.deleteRequest.mockRejectedValue(new Error("response lost"));
+      await expect(f.executor.execute(f.delivery)).resolves.toEqual(expected);
+      expect(boundary.send).toHaveBeenCalledOnce();
+      expect(boundary.deleteRequest).toHaveBeenCalledTimes(deletes);
+      expect(f.store.recordPreSendFailure).not.toHaveBeenCalled();
+      expect(f.store.terminalize).toHaveBeenCalledTimes(commit === "UNKNOWN" ? 1 : 2);
+      if ("code" in expected)
+        expect(f.store.terminalize).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            failureCode: expected.code,
+            ...(deleteFails ? { resultMessageId: "message" } : {}),
+          }),
+        );
+    },
+  );
+
+  it("limits ambiguous image sends to the existing one same-nonce replay", async () => {
+    const f = executionFixture(imageUrl);
+    const boundary = connectImageDiscord(f, { flags: 0 });
+    boundary.send.mockRejectedValue(new Error("response lost"));
+    await expect(f.executor.execute(f.delivery)).resolves.toEqual({
+      outcome: "FAILED",
+      code: "SEND_UNCONFIRMED",
+    });
+    expect(boundary.send).toHaveBeenCalledTimes(2);
+    expect(boundary.send.mock.calls[0]).toEqual(boundary.send.mock.calls[1]);
+    expect(boundary.deleteRequest).not.toHaveBeenCalled();
+    expect(f.store.recordPreSendFailure).not.toHaveBeenCalled();
+    expect(f.store.terminalize).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ failureCode: "SEND_UNCONFIRMED" }),
+    );
+  });
+
   it.each([
     ["COMMITTED", { outcome: "FAILED", code: "PRE_SEND_RETRY_WINDOW_EXCEEDED" }],
     ["NOT_COMMITTED", { outcome: "SKIPPED" }],
@@ -381,3 +508,47 @@ describe("recurring executor ownership and ambiguity", () => {
     expect(fixture.discord.deleteMessage).not.toHaveBeenCalled();
   });
 });
+
+const imageUrl = "https://example.invalid/image.png";
+
+function connectImageDiscord(
+  f: ReturnType<typeof executionFixture>,
+  image: Record<string, unknown>,
+  nonce = deriveRecurringOccurrenceNonce("occurrence"),
+) {
+  const send = vi.fn().mockResolvedValue({
+    id: "message",
+    guildId: "guild",
+    channelId: "channel",
+    author: { id: "bot" },
+    nonce,
+    createdAt: f.scheduledFor,
+    content: "hello",
+    embeds: [
+      {
+        data: {
+          type: EmbedType.Rich,
+          content_scan_version: 2,
+          id: "101",
+          flags: 0,
+          image: {
+            url: imageUrl,
+            description: "",
+            proxy_url: "https://proxy.invalid/image.png",
+            width: 100,
+            height: 50,
+            ...image,
+          },
+        },
+      },
+    ],
+  });
+  f.target.token = { type: ChannelType.GuildText, send };
+  const deleteRequest = vi.fn().mockResolvedValue(undefined);
+  const discord = createScheduledMessageDiscord({
+    rest: { delete: deleteRequest },
+  } as unknown as Client);
+  f.discord.createMessage.mockImplementation(discord.createMessage);
+  f.discord.deleteMessage.mockImplementation(discord.deleteMessage);
+  return { send, deleteRequest };
+}
