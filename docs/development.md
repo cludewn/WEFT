@@ -389,6 +389,12 @@ minimum timeout behavior. Expiry emits only a sanitized `shutdown_timed_out`, se
 forces termination without changing feature state. No database transaction or advisory lock spans
 unrelated shutdown waits.
 
+The Compose `app` service sets `stop_grace_period: 45s`, allowing the application's independent
+30-second deadline to finish before Docker sends SIGKILL. This is a maximum allowance: a normally
+exiting container stops immediately without waiting the full 45 seconds. An explicitly supplied
+CLI stop timeout, such as `docker compose stop -t 45 app`, takes precedence for that stop operation.
+The longer container allowance does not guarantee successful application cleanup.
+
 One disposable process-handler installation owns `SIGINT`, `SIGTERM`, `unhandledRejection`, and
 `uncaughtException`. Normal signals join the shared shutdown and select status 0 only when cleanup
 succeeds. The first fatal event synchronously selects status 1 and closes ingress before joining
@@ -519,6 +525,21 @@ For an upgrade:
 5. Start the new WEFT application and check `/health/ready`.
 6. Deploy Discord commands separately where required.
 
+Compose configuration changes do not automatically update existing containers; the app container
+must be recreated to apply the 45-second stop grace period. When first applying this setting, do
+not let recreation stop the old app container with its previous 10-second allowance. First use
+the backup/restore stop block below (`docker compose stop -t 45 app`) and confirm that this stop
+logged `shutdown_completed`, exited with status 0, and left PostgreSQL running. Investigate any
+failed or unverified shutdown before recreating the app. After any required release migrations,
+recreate only the app with the prepared release image:
+
+```sh
+docker compose up -d --no-deps --force-recreate app
+```
+
+Check `/health/ready` afterward. This stop-grace-period change requires no database migration or
+Discord command deployment. Keep PostgreSQL running throughout the transition.
+
 The migration command never starts the Discord application or pg-boss.
 
 Run at most one WEFT production migration process against a database at a time. Do not start
@@ -543,8 +564,10 @@ client is required. A live copy of the `postgres-data` volume and a plain SQL du
 backup procedures. PostgreSQL major-version upgrades and downgrades are outside this procedure.
 
 For a running deployment, gracefully stop WEFT before backup or restore while PostgreSQL remains
-running. Use the 45-second Compose stop grace period to cover WEFT's shared 30-second shutdown
-deadline:
+running. Use the explicit 45-second stop timeout to cover WEFT's shared 30-second shutdown deadline,
+including for an existing app container that has not yet been recreated with the new setting.
+After recreation, normal Compose stops use the app service's configured 45-second allowance;
+keep the explicit timeout in this backup/restore procedure:
 
 ```sh
 stop_started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
