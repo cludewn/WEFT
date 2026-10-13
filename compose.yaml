@@ -16,6 +16,7 @@ services:
       - postgres-data:/var/lib/postgresql/
 
   app:
+    stop_grace_period: 45s
     build:
       context: .
     depends_on:
