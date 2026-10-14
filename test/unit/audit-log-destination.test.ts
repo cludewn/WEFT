@@ -37,6 +37,7 @@ function fixture({
     fetchFails
       ? Promise.reject(new Error("private Discord failure"))
       : Promise.resolve({
+          id: channelId,
           type,
           guildId: actualGuildId,
           guild: { members: { fetch: fetchMember } },
@@ -67,7 +68,10 @@ describe("audit log destination preflight", () => {
     "accepts supported channel type %s with only ViewChannel and SendMessages",
     async (type) => {
       const current = fixture({ type });
-      await expect(current.discord.preflight(guildId, channelId)).resolves.toBe(true);
+      await expect(current.discord.preflight(guildId, channelId)).resolves.toEqual({
+        ok: true,
+        targetId: channelId,
+      });
       expect(current.fetchChannel).toHaveBeenCalledWith(channelId, { force: true });
       expect(current.fetchMember).toHaveBeenCalledWith({ user: "bot", force: true });
       expect(current.permissionsFor).toHaveBeenCalledOnce();
@@ -78,7 +82,10 @@ describe("audit log destination preflight", () => {
     "rejects unsupported channel type %s",
     async (type) => {
       const current = fixture({ type });
-      await expect(current.discord.preflight(guildId, channelId)).resolves.toBe(false);
+      await expect(current.discord.preflight(guildId, channelId)).resolves.toEqual({
+        ok: false,
+        targetId: null,
+      });
       expect(current.fetchMember).not.toHaveBeenCalled();
     },
   );
@@ -90,7 +97,27 @@ describe("audit log destination preflight", () => {
       { send: false },
       { fetchFails: true },
     ]) {
-      await expect(fixture(options).discord.preflight(guildId, channelId)).resolves.toBe(false);
+      await expect(fixture(options).discord.preflight(guildId, channelId)).resolves.toEqual(
+        options.actualGuildId
+          ? { ok: false, targetId: null }
+          : options.fetchFails
+            ? {
+                ok: false,
+                targetId: null,
+                failure: {
+                  failureStage: "DISCORD_READ",
+                  failureReasonCode: "REQUIRED_RESOURCE_READ_FAILED",
+                },
+              }
+            : {
+                ok: false,
+                targetId: channelId,
+                failure: {
+                  failureStage: "DISCORD_PREFLIGHT",
+                  failureReasonCode: "BOT_PERMISSION_MISSING",
+                },
+              },
+      );
     }
   });
 });

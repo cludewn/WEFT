@@ -1,3 +1,4 @@
+import { administrativeOperationFailureAudits } from "./administrative-operation-failure-audit.js";
 import { guildConfigurationAudits } from "./guild-configuration-audit.js";
 import { sql } from "drizzle-orm";
 
@@ -19,6 +20,7 @@ export const AUDIT_RETENTION_SOURCES = [
   "audit_log_destination_audits",
   "link_preview_audits",
   "guild_configuration_audits",
+  "administrative_operation_failure_audits",
 ] as const;
 
 export type AuditRetentionSource = (typeof AUDIT_RETENTION_SOURCES)[number];
@@ -43,6 +45,12 @@ export function createAuditRetentionStore(database: DatabaseClient): AuditRetent
 
       const target = (() => {
         switch (source) {
+          case "administrative_operation_failure_audits":
+            return {
+              table: administrativeOperationFailureAudits,
+              timestamp: administrativeOperationFailureAudits.occurredAt,
+              id: administrativeOperationFailureAudits.id,
+            };
           case "guild_configuration_audits":
             return {
               table: guildConfigurationAudits,

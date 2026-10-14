@@ -1,3 +1,4 @@
+import type { AdministrativeDiscordFailure } from "./administrative-operation-failure-audit.js";
 import { randomUUID } from "node:crypto";
 
 import type { ChannelType } from "discord.js";
@@ -58,6 +59,17 @@ export type ThreadSnapshot = {
 };
 
 export type ThreadLifecycleDiscord = {
+  administrativeBotPreflight?: (
+    guildId: string,
+    threadId: string,
+  ) => Promise<
+    | { ok: true }
+    | {
+        ok: false;
+        failure: AdministrativeDiscordFailure;
+        code: "BOT_MISSING_PERMISSION" | "CONTEXT_VALIDATION_FAILURE";
+      }
+  >;
   fetchThread: (guildId: string, threadId: string) => Promise<ThreadSnapshot | undefined>;
   actorCanManage: (guildId: string, threadId: string, actorId: string) => Promise<boolean>;
   botCanManage: (guildId: string, threadId: string) => Promise<boolean>;

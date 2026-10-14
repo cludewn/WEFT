@@ -1,3 +1,9 @@
+import {
+  confirmedAdministrativeDatabaseFailure,
+  type AdministrativeFailureRecorder,
+  type ThreadAdministrativeOperation,
+} from "./administrative-operation-failure-audit.js";
+import type { AdministrativeAttempt } from "./administrative-transaction.js";
 import { randomUUID } from "node:crypto";
 
 import type { Logger } from "pino";
@@ -107,7 +113,10 @@ export type ScheduledThreadCloseCommandService = {
 };
 
 type Dependencies = {
-  discord: Pick<ThreadLifecycleDiscord, "fetchThread" | "actorCanManage" | "botCanManage">;
+  discord: Pick<
+    ThreadLifecycleDiscord,
+    "fetchThread" | "actorCanManage" | "botCanManage" | "administrativeBotPreflight"
+  >;
   schedules: Pick<ScheduledThreadCloseStore, "createOrReplace" | "cancel">;
   delivery: Pick<
     ScheduledThreadCloseWorkerController,
@@ -115,6 +124,7 @@ type Dependencies = {
   >;
   threadLifecycle: Pick<ThreadLifecycleService, "close">;
   logger: Pick<Logger, "warn">;
+  failures?: AdministrativeFailureRecorder;
   now?: () => Date;
   generateId?: () => string;
 };
@@ -139,28 +149,61 @@ export function createScheduledThreadCloseCommandService({
   delivery,
   threadLifecycle,
   logger,
+  failures,
   now = () => new Date(),
   generateId = randomUUID,
 }: Dependencies): ScheduledThreadCloseCommandService {
+  const warn = (fields: Record<string, unknown>, message: string): void => {
+    try {
+      logger.warn(fields, message);
+    } catch {
+      /* Preserve the business result and its owner. */
+    }
+  };
   const persistCancellation = async (
     guildId: string,
     threadId: string,
     actorId: string,
+    operationCode: Extract<
+      ThreadAdministrativeOperation,
+      "THREAD_CANCEL_CLOSE" | "MANUAL_CLOSE_PREPARATION" | "BULK_CLOSE_PREPARATION"
+    >,
   ): Promise<CancelScheduledThreadCloseResult> => {
     const auditId = generateId();
+    const attempt: AdministrativeAttempt = { operationId: auditId };
     try {
-      return await schedules.cancel({ auditId, guildId, threadId, actorId });
+      return await schedules.cancel({
+        auditId,
+        guildId,
+        threadId,
+        actorId,
+        ...(failures ? { administrativeAttempt: attempt } : {}),
+      });
     } catch {
-      logger.warn(
-        {
-          event: "scheduled_thread_close_cancellation_failed",
-          guildId,
-          threadId,
-          auditId,
-          failureCode: "PERSISTENCE_FAILURE",
-        },
-        "Scheduled thread close cancellation failed",
-      );
+      const failure = confirmedAdministrativeDatabaseFailure(attempt);
+      if (failure)
+        await failures
+          ?.record(attempt, guildId, actorId, {
+            operationCode,
+            targetType: "THREAD",
+            targetId: threadId,
+            ...failure,
+          })
+          .catch(() => undefined);
+      try {
+        warn(
+          {
+            event: "scheduled_thread_close_cancellation_failed",
+            guildId,
+            threadId,
+            auditId,
+            failureCode: "PERSISTENCE_FAILURE",
+          },
+          "Scheduled thread close cancellation failed",
+        );
+      } catch {
+        /* Preserve the cancellation result. */
+      }
       throw new ScheduledThreadCloseCancellationPersistenceFailure();
     }
   };
@@ -177,9 +220,11 @@ export function createScheduledThreadCloseCommandService({
         return { ok: false, code: "INVALID_DURATION" };
       }
 
+      let attempt: AdministrativeAttempt | undefined;
+      let scheduledActionId: string | undefined;
       try {
         const thread = await discord.fetchThread(guildId, threadId);
-        if (thread === undefined) {
+        if (thread === undefined || thread.guildId !== guildId || thread.threadId !== threadId) {
           return { ok: false, code: "UNSUPPORTED_CONTEXT" };
         }
         if (thread.archived) {
@@ -191,19 +236,48 @@ export function createScheduledThreadCloseCommandService({
         if (!(await discord.actorCanManage(guildId, threadId, actorId))) {
           return { ok: false, code: "USER_MISSING_PERMISSION" };
         }
-        if (!(await discord.botCanManage(guildId, threadId))) {
+        scheduledActionId = generateId();
+        attempt = { operationId: generateId() };
+        if (discord.administrativeBotPreflight) {
+          const preflight = await discord.administrativeBotPreflight(guildId, threadId);
+          if (!preflight.ok) {
+            await failures
+              ?.record(attempt, guildId, actorId, {
+                operationCode: "THREAD_CLOSE_AFTER_SET",
+                targetType: "THREAD",
+                targetId: threadId,
+                ...preflight.failure,
+              })
+              .catch(() => undefined);
+            return {
+              ok: false,
+              code: preflight.code,
+            };
+          }
+        } else if (!(await discord.botCanManage(guildId, threadId))) {
+          // The legacy boolean supplies no fixed bot/context evidence for failure auditing.
           return { ok: false, code: "BOT_MISSING_PERMISSION" };
         }
       } catch {
+        if (attempt && discord.administrativeBotPreflight)
+          await failures
+            ?.record(attempt, guildId, actorId, {
+              operationCode: "THREAD_CLOSE_AFTER_SET",
+              targetType: "THREAD",
+              targetId: threadId,
+              failureStage: "DISCORD_READ",
+              failureReasonCode: "REQUIRED_RESOURCE_READ_FAILED",
+            })
+            .catch(() => undefined);
         return { ok: false, code: "CONTEXT_VALIDATION_FAILURE" };
       }
 
       let persisted: CreateOrReplaceScheduledThreadCloseResult;
-      const scheduledActionId = generateId();
-      const auditId = generateId();
+      const auditId = attempt.operationId;
       try {
         persisted = await schedules.createOrReplace({
-          scheduledActionId,
+          scheduledActionId: scheduledActionId,
+          ...(failures ? { administrativeAttempt: attempt } : {}),
           auditId,
           guildId,
           threadId,
@@ -211,17 +285,31 @@ export function createScheduledThreadCloseCommandService({
           executeAt,
         });
       } catch {
-        logger.warn(
-          {
-            event: "scheduled_thread_close_creation_failed",
-            guildId,
-            threadId,
-            scheduledActionId,
-            auditId,
-            failureCode: "PERSISTENCE_FAILURE",
-          },
-          "Scheduled thread close creation failed",
-        );
+        const failure = confirmedAdministrativeDatabaseFailure(attempt);
+        if (failure)
+          await failures
+            ?.record(attempt, guildId, actorId, {
+              operationCode: "THREAD_CLOSE_AFTER_SET",
+              targetType: "THREAD",
+              targetId: threadId,
+              ...failure,
+            })
+            .catch(() => undefined);
+        try {
+          warn(
+            {
+              event: "scheduled_thread_close_creation_failed",
+              guildId,
+              threadId,
+              scheduledActionId,
+              auditId,
+              failureCode: "PERSISTENCE_FAILURE",
+            },
+            "Scheduled thread close creation failed",
+          );
+        } catch {
+          /* Preserve the original result. */
+        }
         return { ok: false, code: "PERSISTENCE_FAILURE" };
       }
 
@@ -242,7 +330,7 @@ export function createScheduledThreadCloseCommandService({
         }
       }
 
-      logger.warn(
+      warn(
         {
           event: "scheduled_thread_close_delivery_unconfirmed",
           guildId,
@@ -263,7 +351,7 @@ export function createScheduledThreadCloseCommandService({
     async cancel(guildId, threadId, actorId) {
       try {
         const thread = await discord.fetchThread(guildId, threadId);
-        if (thread === undefined) {
+        if (thread === undefined || thread.guildId !== guildId || thread.threadId !== threadId) {
           return { ok: false, code: "UNSUPPORTED_CONTEXT" };
         }
         if (!(await discord.actorCanManage(guildId, threadId, actorId))) {
@@ -274,7 +362,7 @@ export function createScheduledThreadCloseCommandService({
       }
 
       try {
-        const result = await persistCancellation(guildId, threadId, actorId);
+        const result = await persistCancellation(guildId, threadId, actorId, "THREAD_CANCEL_CLOSE");
         if (result.outcome === "EXECUTION_IN_PROGRESS") {
           return { ok: false, code: "EXECUTION_IN_PROGRESS" };
         }
@@ -292,7 +380,12 @@ export function createScheduledThreadCloseCommandService({
           threadId,
           actorId,
           async () => {
-            const cancellation = await persistCancellation(guildId, threadId, actorId);
+            const cancellation = await persistCancellation(
+              guildId,
+              threadId,
+              actorId,
+              bulk ? "BULK_CLOSE_PREPARATION" : "MANUAL_CLOSE_PREPARATION",
+            );
             if (cancellation.outcome === "EXECUTION_IN_PROGRESS") {
               throw new ScheduledThreadCloseExecutionInProgress();
             }

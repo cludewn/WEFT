@@ -150,7 +150,14 @@ describe("scheduled message Discord boundary", () => {
         actorUserId: "actor-id",
         payload: { content: "", embed: { title: "title" } },
       }),
-    ).resolves.toEqual({ outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" });
+    ).resolves.toEqual({
+      outcome: "FAILURE",
+      code: "BOT_PERMISSION_MISSING",
+      administrativeFailure: {
+        failureStage: "DISCORD_PREFLIGHT",
+        failureReasonCode: "BOT_PERMISSION_MISSING",
+      },
+    });
   });
 
   it("uses refreshed parent overwrites for thread creation authorization", async () => {
@@ -162,7 +169,14 @@ describe("scheduled message Discord boundary", () => {
         actorUserId: "actor-id",
         payload: { content: "text", embed: null },
       }),
-    ).resolves.toEqual({ outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" });
+    ).resolves.toEqual({
+      outcome: "FAILURE",
+      code: "BOT_PERMISSION_MISSING",
+      administrativeFailure: {
+        failureStage: "DISCORD_PREFLIGHT",
+        failureReasonCode: "BOT_PERMISSION_MISSING",
+      },
+    });
     expect(f.fetchParent).toHaveBeenCalledExactlyOnceWith("parent-id", { force: true });
   });
 
@@ -412,4 +426,116 @@ describe("scheduled message Discord boundary", () => {
       enforceNonce: true,
     });
   });
+});
+
+describe("authorized administrative creation preflight evidence", () => {
+  it("observes eligibility between actor and bot fetch, and never observes actor denial", async () => {
+    for (const allowed of [true, false]) {
+      const f = fixture({ actorCanManage: allowed });
+      const observe = vi.fn(() => {
+        expect(f.fetchMember).toHaveBeenCalledExactlyOnceWith({ user: "actor-id", force: true });
+
+        return Promise.resolve();
+      });
+      await createScheduledMessageDiscord(f.client).authorizeCreation({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        payload: { content: "text", embed: null },
+        afterActorAuthorized: observe,
+      });
+      expect(observe).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    }
+  });
+  it("distinguishes the same bot-related result before and after positive actor authorization", async () => {
+    const unauthorized = fixture();
+    unauthorized.fetchMember.mockRejectedValue(
+      discordApiError(RESTJSONErrorCodes.MissingPermissions, 403),
+    );
+    const authorized = fixture();
+    authorized.fetchMember
+      .mockResolvedValueOnce({ id: "actor-id" })
+      .mockRejectedValueOnce(discordApiError(RESTJSONErrorCodes.MissingPermissions, 403));
+    const input = {
+      guildId: "guild-id",
+      channelId: "channel-id",
+      actorUserId: "actor-id",
+      payload: { content: "text", embed: null },
+    };
+    expect(
+      await createScheduledMessageDiscord(unauthorized.client).authorizeCreation(input),
+    ).toEqual({ outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" });
+    expect(await createScheduledMessageDiscord(authorized.client).authorizeCreation(input)).toEqual(
+      {
+        outcome: "FAILURE",
+        code: "BOT_PERMISSION_MISSING",
+        administrativeFailure: {
+          failureStage: "DISCORD_PREFLIGHT",
+          failureReasonCode: "BOT_PERMISSION_MISSING",
+        },
+      },
+    );
+  });
+  it.each(["read failure", "unavailable"] as const)(
+    "records fixed authorized bot-member %s evidence",
+    async (kind) => {
+      const f = fixture();
+      f.fetchMember
+        .mockResolvedValueOnce({ id: "actor-id" })
+        .mockRejectedValueOnce(
+          kind === "unavailable"
+            ? discordApiError(RESTJSONErrorCodes.UnknownMember, 404)
+            : new Error("private response"),
+        );
+      const result = await createScheduledMessageDiscord(f.client).authorizeCreation({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        payload: { content: "text", embed: null },
+      });
+      expect(result).toMatchObject({
+        outcome: "FAILURE",
+        administrativeFailure: {
+          failureStage: "DISCORD_READ",
+          failureReasonCode:
+            kind === "unavailable"
+              ? "REQUIRED_RESOURCE_UNAVAILABLE"
+              : "REQUIRED_RESOURCE_READ_FAILED",
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain("private response");
+    },
+  );
+});
+
+describe("creation bot-context response precedence", () => {
+  it.each(["denied", "unverified", "authorized"] as const)(
+    "preserves CURRENT_STATE_CHECK_FAILED with initial missing bot context and %s actor",
+    async (kind) => {
+      const f = fixture({ actorCanManage: kind !== "denied" });
+      Object.assign(f.client, { user: null });
+      if (kind === "unverified") f.fetchMember.mockRejectedValue(new Error("private actor read"));
+      const observe = vi.fn(() => Promise.resolve());
+      const result = await createScheduledMessageDiscord(f.client).authorizeCreation({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        payload: { content: "text", embed: null },
+        afterActorAuthorized: observe,
+      });
+      expect(result).toEqual(
+        kind === "authorized"
+          ? {
+              outcome: "FAILURE",
+              code: "CURRENT_STATE_CHECK_FAILED",
+              administrativeFailure: {
+                failureStage: "DISCORD_PREFLIGHT",
+                failureReasonCode: "BOT_CONTEXT_UNAVAILABLE",
+              },
+            }
+          : { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" },
+      );
+      expect(observe).toHaveBeenCalledTimes(kind === "authorized" ? 1 : 0);
+    },
+  );
 });

@@ -4,6 +4,7 @@ export const baseDrizzleConfig = {
   dialect: "postgresql",
   out: "./drizzle",
   schema: [
+    "./src/administrative-operation-failure-audit.ts",
     "./src/audit-log-destination-persistence.ts",
     "./src/automatic-close-persistence.ts",
     "./src/guild-settings.ts",

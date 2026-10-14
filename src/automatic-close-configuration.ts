@@ -1,10 +1,16 @@
+import type { AdministrativeAttempt } from "./administrative-transaction.js";
+import {
+  confirmedAdministrativeDatabaseFailure,
+  type AdministrativeFailureRecorder,
+} from "./administrative-operation-failure-audit.js";
+import { validateAutoCloseInactivitySeconds } from "./guild-settings.js";
 import type { ChannelType } from "discord.js";
 import type { Logger } from "pino";
 
 import type { AutomaticClosePersistenceStore } from "./automatic-close-persistence.js";
 import { createConfigurationAuditContext } from "./guild-configuration-audit.js";
 import type { GuildSettingsChangeResult, GuildSettingsStore } from "./guild-settings.js";
-import { getErrorName } from "./shutdown.js";
+import { safeErrorName as getErrorName } from "./application-runtime.js";
 import { isSupportedThreadType } from "./thread-discord.js";
 
 /** The minimum thread facts the configuration boundary needs from Discord. */
@@ -67,6 +73,7 @@ type Dependencies = {
   >;
   discord: AutoCloseDiscord;
   logger: Pick<Logger, "warn">;
+  failures?: AdministrativeFailureRecorder;
 };
 
 export function createAutomaticCloseConfigurationService({
@@ -74,6 +81,7 @@ export function createAutomaticCloseConfigurationService({
   schedules,
   discord,
   logger,
+  failures,
 }: Dependencies): AutomaticCloseConfigurationService {
   return {
     async show(guildId) {
@@ -87,20 +95,63 @@ export function createAutomaticCloseConfigurationService({
         parentChannelIds,
       };
     },
-    setInactivitySeconds: (guildId, seconds, actorUserId) =>
-      guildSettings.setAutoCloseInactivitySeconds(
-        guildId,
-        seconds,
-        createConfigurationAuditContext(actorUserId),
-      ),
-    setBotMessagesCountAsActivity: (guildId, value, actorUserId) =>
-      guildSettings.setAutoCloseBotMessagesCountAsActivity(
-        guildId,
-        value,
-        createConfigurationAuditContext(actorUserId),
-      ),
+    async setInactivitySeconds(guildId, seconds, actorUserId) {
+      validateAutoCloseInactivitySeconds(seconds);
+      const context = createConfigurationAuditContext(actorUserId);
+      const attempt: AdministrativeAttempt = { operationId: context.auditId };
+      const result = await guildSettings.setAutoCloseInactivitySeconds(guildId, seconds, {
+        ...context,
+        ...(failures ? { administrativeAttempt: attempt } : {}),
+      });
+      const failure = confirmedAdministrativeDatabaseFailure(attempt);
+      if (result.outcome === "UNCONFIRMED" && failure)
+        await failures
+          ?.record(attempt, guildId, actorUserId, {
+            operationCode: "AUTO_CLOSE_INACTIVITY_SET",
+            targetType: "GUILD",
+            targetId: guildId,
+            ...failure,
+          })
+          .catch(() => undefined);
+      return result;
+    },
+    async setBotMessagesCountAsActivity(guildId, value, actorUserId) {
+      const context = createConfigurationAuditContext(actorUserId);
+      const attempt: AdministrativeAttempt = { operationId: context.auditId };
+      const result = await guildSettings.setAutoCloseBotMessagesCountAsActivity(guildId, value, {
+        ...context,
+        ...(failures ? { administrativeAttempt: attempt } : {}),
+      });
+      const failure = confirmedAdministrativeDatabaseFailure(attempt);
+      if (result.outcome === "UNCONFIRMED" && failure)
+        await failures
+          ?.record(attempt, guildId, actorUserId, {
+            operationCode: "AUTO_CLOSE_BOT_MESSAGES_SET",
+            targetType: "GUILD",
+            targetId: guildId,
+            ...failure,
+          })
+          .catch(() => undefined);
+      return result;
+    },
     async addParentChannel(guildId, parentChannelId, actorUserId) {
-      const configured = await schedules.listParentChannels(guildId);
+      const identity = createConfigurationAuditContext(actorUserId);
+      const attempt: AdministrativeAttempt = { operationId: identity.auditId };
+      let configured: string[];
+      try {
+        configured = await schedules.listParentChannels(guildId);
+      } catch {
+        await failures
+          ?.record(attempt, guildId, actorUserId, {
+            operationCode: "AUTO_CLOSE_PARENT_ADD",
+            targetType: "PARENT_CHANNEL",
+            targetId: parentChannelId,
+            failureStage: "DATABASE_READ",
+            failureReasonCode: "REQUIRED_STATE_READ_FAILED",
+          })
+          .catch(() => undefined);
+        return { outcome: "UNCONFIRMED" };
+      }
       if (configured.includes(parentChannelId)) {
         // Skip enumeration and leave every existing baseline untouched.
         return { outcome: "ALREADY_ENABLED" };
@@ -110,15 +161,28 @@ export function createAutomaticCloseConfigurationService({
       try {
         summaries = await discord.fetchActiveThreadSummaries(guildId);
       } catch (error) {
-        logger.warn(
-          {
-            event: "automatic_close_parent_enumeration_failed",
-            guildId,
-            parentChannelId,
-            errorName: getErrorName(error),
-          },
-          "Automatic close parent enable could not enumerate active threads",
-        );
+        try {
+          logger.warn(
+            {
+              event: "automatic_close_parent_enumeration_failed",
+              guildId,
+              parentChannelId,
+              errorName: getErrorName(error),
+            },
+            "Automatic close parent enable could not enumerate active threads",
+          );
+        } catch {
+          /* Logging cannot change the enumeration result. */
+        }
+        await failures
+          ?.record(attempt, guildId, actorUserId, {
+            operationCode: "AUTO_CLOSE_PARENT_ADD",
+            targetType: "PARENT_CHANNEL",
+            targetId: parentChannelId,
+            failureStage: "DISCORD_ENUMERATION",
+            failureReasonCode: "ACTIVE_THREAD_ENUMERATION_FAILED",
+          })
+          .catch(() => undefined);
         return { outcome: "ENUMERATION_FAILED" };
       }
 
@@ -135,17 +199,41 @@ export function createAutomaticCloseConfigurationService({
         parentChannelId,
         enabledAt,
         activeThreadIds,
-        ...createConfigurationAuditContext(actorUserId, enabledAt),
+        actorUserId,
+        occurredAt: enabledAt,
+        auditId: attempt.operationId,
+        ...(failures ? { administrativeAttempt: attempt } : {}),
       });
 
+      const failure = confirmedAdministrativeDatabaseFailure(attempt);
+      if (result.outcome === "UNCONFIRMED" && failure)
+        await failures
+          ?.record(attempt, guildId, actorUserId, {
+            operationCode: "AUTO_CLOSE_PARENT_ADD",
+            targetType: "PARENT_CHANNEL",
+            targetId: parentChannelId,
+            ...failure,
+          })
+          .catch(() => undefined);
       return result;
     },
     async removeParentChannel(guildId, parentChannelId, actorUserId) {
-      const result = await schedules.removeParentChannel(
-        guildId,
-        parentChannelId,
-        createConfigurationAuditContext(actorUserId),
-      );
+      const context = createConfigurationAuditContext(actorUserId);
+      const attempt: AdministrativeAttempt = { operationId: context.auditId };
+      const result = await schedules.removeParentChannel(guildId, parentChannelId, {
+        ...context,
+        ...(failures ? { administrativeAttempt: attempt } : {}),
+      });
+      const failure = confirmedAdministrativeDatabaseFailure(attempt);
+      if (result.outcome === "UNCONFIRMED" && failure)
+        await failures
+          ?.record(attempt, guildId, actorUserId, {
+            operationCode: "AUTO_CLOSE_PARENT_REMOVE",
+            targetType: "PARENT_CHANNEL",
+            targetId: parentChannelId,
+            ...failure,
+          })
+          .catch(() => undefined);
       return {
         outcome:
           result.outcome === "UNCONFIRMED"

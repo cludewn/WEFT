@@ -3,6 +3,7 @@ import {
   guildConfigurationAudits,
 } from "../../src/guild-configuration-audit.js";
 import { linkPreviewAudits } from "../../src/link-preview-persistence.js";
+import { administrativeOperationFailureAudits } from "../../src/administrative-operation-failure-audit.js";
 import { randomUUID } from "node:crypto";
 
 import { asc, eq, inArray, sql } from "drizzle-orm";
@@ -50,6 +51,11 @@ const newId = () => randomUUID();
 // including rows left by an interrupted previous test run.
 async function isolatedTimes(): Promise<{ cutoff: Date; old: Date; recent: Date }> {
   const oldestRows = await Promise.all([
+    database.client
+      .select({ at: administrativeOperationFailureAudits.occurredAt })
+      .from(administrativeOperationFailureAudits)
+      .orderBy(asc(administrativeOperationFailureAudits.occurredAt))
+      .limit(1),
     database.client
       .select({ at: guildConfigurationAudits.occurredAt })
       .from(guildConfigurationAudits)
@@ -158,6 +164,9 @@ beforeAll(async () => {
 afterAll(async () => {
   try {
     await database.client
+      .delete(administrativeOperationFailureAudits)
+      .where(eq(administrativeOperationFailureAudits.guildId, guildId));
+    await database.client
       .delete(guildConfigurationAudits)
       .where(eq(guildConfigurationAudits.guildId, guildId));
     await database.client.delete(linkPreviewAudits).where(eq(linkPreviewAudits.guildId, guildId));
@@ -203,6 +212,21 @@ afterAll(async () => {
 
 async function insertAudit(source: AuditRetentionSource, id: string, at: Date) {
   switch (source) {
+    case "administrative_operation_failure_audits":
+      await database.client.insert(administrativeOperationFailureAudits).values({
+        id,
+        operationId: randomUUID(),
+        guildId,
+        actorUserId: "actor",
+        operationCode: "GUILD_TIMEZONE_SET",
+        failureStage: "DATABASE_TRANSACTION",
+        failureReasonCode: "TRANSACTION_ROLLED_BACK",
+        targetType: "GUILD",
+        targetId: guildId,
+        occurredAt: at,
+        outcome: "FAILURE",
+      });
+      break;
     case "guild_configuration_audits":
       await database.client.insert(guildConfigurationAudits).values(
         configurationAudit({ auditId: id, actorUserId: "actor", occurredAt: at }, guildId, {
@@ -310,6 +334,11 @@ async function insertAudit(source: AuditRetentionSource, id: string, at: Date) {
         occurredAt: at,
         outcome: "SUCCESS",
       });
+      break;
+    default: {
+      const exhaustive: never = source;
+      throw new Error(`Missing audit retention fixture for ${String(exhaustive)}`);
+    }
   }
 }
 
@@ -334,6 +363,7 @@ describe("audit retention PostgreSQL persistence", () => {
       await insertAudit(source, ids[0]!, old);
       await insertAudit(source, ids[1]!, cutoff);
       await insertAudit(source, ids[2]!, recent);
+      expect(await remaining(source, ids)).toEqual([...ids].sort());
       expect(await store.deleteExpiredBatch(source, cutoff, 1)).toBe(1);
       expect(await store.deleteExpiredBatch(source, cutoff, 1)).toBe(0);
       expect(await remaining(source, ids)).toEqual(ids.slice(1).sort());

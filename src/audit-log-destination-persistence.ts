@@ -1,3 +1,8 @@
+import {
+  administrativeGuard,
+  administrativeTransaction,
+  type AdministrativeAttempt,
+} from "./administrative-transaction.js";
 import { and, eq, sql } from "drizzle-orm";
 import { check, index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
@@ -28,6 +33,7 @@ export const auditLogDestinationAudits = pgTable(
 );
 
 export type DestinationChangeInput = {
+  administrativeAttempt?: AdministrativeAttempt;
   guildId: string;
   actorUserId: string;
   newChannelId: string | null;
@@ -58,40 +64,46 @@ export function createAuditLogDestinationStore(database: DatabaseClient): AuditL
     async change(input) {
       let lockedPrevious: string | null | undefined;
       try {
-        return await database.transaction(async (transaction) => {
-          if (input.newChannelId !== null) {
+        return await administrativeTransaction(
+          database,
+          input.administrativeAttempt,
+          async (transaction) => {
+            if (input.newChannelId !== null) {
+              await transaction
+                .insert(guildSettings)
+                .values({ guildId: input.guildId })
+                .onConflictDoNothing({ target: guildSettings.guildId });
+            }
+            const [settings] = await transaction
+              .select({ auditLogChannelId: guildSettings.auditLogChannelId })
+              .from(guildSettings)
+              .where(eq(guildSettings.guildId, input.guildId))
+              .limit(1)
+              .for("update");
+            if (settings === undefined) {
+              if (input.newChannelId === null)
+                return administrativeGuard(input.administrativeAttempt, { outcome: "NO_CHANGE" });
+              throw new Error("Audit destination settings row was not established");
+            }
+            lockedPrevious = settings.auditLogChannelId;
+            if (lockedPrevious === input.newChannelId)
+              return administrativeGuard(input.administrativeAttempt, { outcome: "NO_CHANGE" });
             await transaction
-              .insert(guildSettings)
-              .values({ guildId: input.guildId })
-              .onConflictDoNothing({ target: guildSettings.guildId });
-          }
-          const [settings] = await transaction
-            .select({ auditLogChannelId: guildSettings.auditLogChannelId })
-            .from(guildSettings)
-            .where(eq(guildSettings.guildId, input.guildId))
-            .limit(1)
-            .for("update");
-          if (settings === undefined) {
-            if (input.newChannelId === null) return { outcome: "NO_CHANGE" };
-            throw new Error("Audit destination settings row was not established");
-          }
-          lockedPrevious = settings.auditLogChannelId;
-          if (lockedPrevious === input.newChannelId) return { outcome: "NO_CHANGE" };
-          await transaction
-            .update(guildSettings)
-            .set({ auditLogChannelId: input.newChannelId, updatedAt: input.occurredAt })
-            .where(eq(guildSettings.guildId, input.guildId));
-          await transaction.insert(auditLogDestinationAudits).values({
-            id: input.auditId,
-            guildId: input.guildId,
-            actorUserId: input.actorUserId,
-            previousChannelId: lockedPrevious,
-            newChannelId: input.newChannelId,
-            occurredAt: input.occurredAt,
-            outcome: "SUCCESS",
-          });
-          return { outcome: "CHANGED", previousChannelId: lockedPrevious };
-        });
+              .update(guildSettings)
+              .set({ auditLogChannelId: input.newChannelId, updatedAt: input.occurredAt })
+              .where(eq(guildSettings.guildId, input.guildId));
+            await transaction.insert(auditLogDestinationAudits).values({
+              id: input.auditId,
+              guildId: input.guildId,
+              actorUserId: input.actorUserId,
+              previousChannelId: lockedPrevious,
+              newChannelId: input.newChannelId,
+              occurredAt: input.occurredAt,
+              outcome: "SUCCESS",
+            });
+            return { outcome: "CHANGED", previousChannelId: lockedPrevious };
+          },
+        );
       } catch {
         if (lockedPrevious === undefined) return { outcome: "UNCONFIRMED" };
         try {

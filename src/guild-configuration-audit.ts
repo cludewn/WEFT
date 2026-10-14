@@ -1,3 +1,4 @@
+import type { AdministrativeAttempt } from "./administrative-transaction.js";
 import { createHash, randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { boolean, check, index, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
@@ -5,6 +6,7 @@ import { boolean, check, index, integer, pgTable, text, timestamp } from "drizzl
 import type { DatabaseClient } from "./database.js";
 
 export type GuildConfigurationAuditContext = {
+  administrativeAttempt?: AdministrativeAttempt;
   auditId: string;
   actorUserId: string;
   occurredAt: Date;

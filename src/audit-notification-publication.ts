@@ -1,3 +1,4 @@
+import { administrativeOperationFailureAudits } from "./administrative-operation-failure-audit.js";
 import { guildConfigurationAudits } from "./guild-configuration-audit.js";
 import { inArray } from "drizzle-orm";
 
@@ -48,6 +49,12 @@ export async function publishExistingAudits(
   try {
     let committed: { id: string }[];
     switch (source) {
+      case "ADMINISTRATIVE_OPERATION_FAILURE":
+        committed = await database
+          .select({ id: administrativeOperationFailureAudits.id })
+          .from(administrativeOperationFailureAudits)
+          .where(inArray(administrativeOperationFailureAudits.id, ids));
+        break;
       case "GUILD_CONFIGURATION":
         committed = await database
           .select({ id: guildConfigurationAudits.id })

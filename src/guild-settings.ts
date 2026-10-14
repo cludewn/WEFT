@@ -1,3 +1,4 @@
+import { administrativeGuard, administrativeTransaction } from "./administrative-transaction.js";
 import { eq, sql } from "drizzle-orm";
 import { boolean, check, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
@@ -60,6 +61,7 @@ export type GuildSettingsChangeResult =
 
 export type GuildSettingsStore = {
   getOrCreate: (guildId: string) => Promise<GuildSettings>;
+  readTimezone?: (guildId: string) => Promise<string>;
   setTimezone: (
     guildId: string,
     timezone: string,
@@ -232,7 +234,9 @@ export function createGuildSettingsStore(
     let changedSettings: GuildSettings | undefined;
     let result: GuildSettingsChangeResult;
     try {
-      result = await database.transaction(
+      result = await administrativeTransaction(
+        database,
+        context.administrativeAttempt,
         async (transaction): Promise<GuildSettingsChangeResult> => {
           await transaction
             .insert(guildSettings)
@@ -246,7 +250,11 @@ export function createGuildSettingsStore(
             .for("update");
           if (current === undefined) throw new Error("Guild settings row was not established");
           const previous = current[key];
-          if (previous === value) return { outcome: "NO_CHANGE", settings: current };
+          if (previous === value)
+            return administrativeGuard(context.administrativeAttempt, {
+              outcome: "NO_CHANGE",
+              settings: current,
+            });
           expected = configurationAudit(context, guildId, {
             action: "SET",
             settingType,
@@ -281,6 +289,14 @@ export function createGuildSettingsStore(
 
   return {
     getOrCreate,
+    async readTimezone(guildId) {
+      const [settings] = await database
+        .select({ timezone: guildSettings.timezone })
+        .from(guildSettings)
+        .where(eq(guildSettings.guildId, guildId))
+        .limit(1);
+      return settings?.timezone ?? DEFAULT_GUILD_TIMEZONE;
+    },
     setTimezone: async (guildId, value, audit) =>
       change(guildId, "timezone", validateTimezone(value), "TIMEZONE", audit),
     setClosedPrefix: async (guildId, value, audit) =>

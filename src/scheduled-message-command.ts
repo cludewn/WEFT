@@ -1,3 +1,9 @@
+import {
+  confirmedAdministrativeDatabaseFailure,
+  type AdministrativeFailureRecorder,
+  type ScheduleAdministrativeOperation,
+} from "./administrative-operation-failure-audit.js";
+import type { AdministrativeAttempt } from "./administrative-transaction.js";
 import { randomUUID } from "node:crypto";
 
 import type { Logger } from "pino";
@@ -205,7 +211,8 @@ type Dependencies = {
     "create" | "find" | "editPayload" | "editRecurrence" | "cancel"
   >;
   recurringWorker?: Pick<RecurringMessageWorker, "project">;
-  guildSettings?: Pick<GuildSettingsStore, "getOrCreate">;
+  guildSettings?: Pick<GuildSettingsStore, "getOrCreate" | "readTimezone">;
+  failures?: AdministrativeFailureRecorder;
   generateId?: () => string;
   now?: () => Date;
 };
@@ -219,9 +226,17 @@ export function createScheduledMessageCommandService({
   recurring,
   recurringWorker,
   guildSettings,
+  failures,
   generateId = randomUUID,
   now = () => new Date(),
 }: Dependencies): ScheduledMessageCommandService {
+  const warn = (fields: Record<string, unknown>, message: string): void => {
+    try {
+      logger.warn(fields, message);
+    } catch {
+      /* Preserve the business result and its owner. */
+    }
+  };
   async function establishSchedule(schedule: OneTimeScheduleInput, guildId: string) {
     let timezone: string | undefined;
     if (schedule.kind === "AT") {
@@ -240,11 +255,70 @@ export function createScheduledMessageCommandService({
     return resolved.ok ? { ...resolved, establishedAt } : resolved;
   }
 
+  const recordScheduleFailure = async (
+    attempt: AdministrativeAttempt,
+    input: { guildId: string; actorUserId: string; scheduledActionId: string },
+    operationCode: ScheduleAdministrativeOperation,
+  ) => {
+    const failure = confirmedAdministrativeDatabaseFailure(attempt);
+    if (failure)
+      await failures
+        ?.record(attempt, input.guildId, input.actorUserId, {
+          operationCode,
+          targetType: "SCHEDULE",
+          targetId: input.scheduledActionId,
+          ...failure,
+        })
+        .catch(() => undefined);
+  };
+  const recordCreationFailure = async (
+    attempt: AdministrativeAttempt,
+    input: { guildId: string; actorUserId: string; channelId: string },
+    operationCode: "ONE_TIME_MESSAGE_CREATE" | "RECURRING_MESSAGE_CREATE",
+  ) => {
+    const failure = confirmedAdministrativeDatabaseFailure(attempt);
+    if (failure)
+      await failures
+        ?.record(attempt, input.guildId, input.actorUserId, {
+          operationCode,
+          targetType: "CHANNEL",
+          targetId: input.channelId,
+          ...failure,
+        })
+        .catch(() => undefined);
+  };
+
   return {
     async create(input) {
       const validation = validateManagedMessagePayload(input.payload);
       if (!validation.ok) return { outcome: "FAILURE", code: validation.code };
 
+      let preliminaryEligible = false;
+      let candidateId: string | undefined;
+      let attempt: AdministrativeAttempt | undefined;
+      const observeEligibility = async () => {
+        try {
+          let timezone: string | undefined;
+          if (input.schedule.kind === "AT") {
+            if (!guildSettings?.readTimezone) return;
+            try {
+              timezone = normalizeRecurringTimezone(
+                await guildSettings.readTimezone(input.guildId),
+              );
+            } catch {
+              return;
+            }
+            if (timezone === undefined) return;
+          }
+          preliminaryEligible = resolveOneTimeSchedule(input.schedule, now(), timezone).ok;
+          if (preliminaryEligible) {
+            candidateId = generateId();
+            attempt = { operationId: generateId() };
+          }
+        } catch {
+          /* Unavailable audit-only evidence cannot reject the business request. */
+        }
+      };
       let authorization;
       try {
         authorization = await discord.authorizeCreation({
@@ -252,16 +326,41 @@ export function createScheduledMessageCommandService({
           channelId: input.channelId,
           actorUserId: input.actorUserId,
           payload: validation.payload,
+          ...(failures ? { afterActorAuthorized: observeEligibility } : {}),
         });
       } catch {
         return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
       }
-      if (authorization.outcome === "FAILURE") return authorization;
+      if (authorization.outcome === "FAILURE") {
+        if (preliminaryEligible && attempt && authorization.administrativeFailure)
+          await failures
+            ?.record(attempt, input.guildId, input.actorUserId, {
+              operationCode: "ONE_TIME_MESSAGE_CREATE",
+              targetType: "CHANNEL",
+              targetId: input.channelId,
+              ...authorization.administrativeFailure,
+            })
+            .catch(() => undefined);
+        return { outcome: "FAILURE", code: authorization.code };
+      }
 
-      const scheduledActionId = generateId();
-      const auditId = generateId();
+      const scheduledActionId = candidateId ?? generateId();
+      const auditId = attempt?.operationId ?? generateId();
       const resolved = await establishSchedule(input.schedule, input.guildId);
-      if (!resolved.ok) return { outcome: "FAILURE", code: resolved.code };
+      if (!resolved.ok) {
+        if (preliminaryEligible && attempt && resolved.code === "TIMEZONE_UNAVAILABLE")
+          await failures
+            ?.record(attempt, input.guildId, input.actorUserId, {
+              operationCode: "ONE_TIME_MESSAGE_CREATE",
+              targetType: "CHANNEL",
+              targetId: input.channelId,
+              failureStage: "DATABASE_READ",
+              failureReasonCode: "REQUIRED_STATE_READ_FAILED",
+            })
+            .catch(() => undefined);
+        return { outcome: "FAILURE", code: resolved.code };
+      }
+      attempt ??= { operationId: auditId };
       const { executeAt, establishedAt } = resolved;
 
       let definition: ScheduledMessageDefinition;
@@ -269,6 +368,7 @@ export function createScheduledMessageCommandService({
         definition = await store.create({
           scheduledActionId,
           auditId,
+          ...(failures ? { administrativeAttempt: attempt } : {}),
           guildId: input.guildId,
           channelId: input.channelId,
           actorId: input.actorUserId,
@@ -277,16 +377,21 @@ export function createScheduledMessageCommandService({
           occurredAt: establishedAt,
         });
       } catch {
-        logger.warn(
-          {
-            event: "scheduled_message_command_creation_unconfirmed",
-            scheduledActionId,
-            guildId: input.guildId,
-            channelId: input.channelId,
-            auditId,
-          },
-          "Scheduled message command creation could not be confirmed",
-        );
+        await recordCreationFailure(attempt, input, "ONE_TIME_MESSAGE_CREATE");
+        try {
+          warn(
+            {
+              event: "scheduled_message_command_creation_unconfirmed",
+              scheduledActionId,
+              guildId: input.guildId,
+              channelId: input.channelId,
+              auditId,
+            },
+            "Scheduled message command creation could not be confirmed",
+          );
+        } catch {
+          /* Preserve the original result. */
+        }
         return { outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED" };
       }
 
@@ -302,7 +407,7 @@ export function createScheduledMessageCommandService({
         deliveryPendingReconciliation = true;
       }
       if (deliveryPendingReconciliation) {
-        logger.warn(
+        warn(
           {
             event: "scheduled_message_command_delivery_pending",
             scheduledActionId: definition.action.id,
@@ -333,14 +438,46 @@ export function createScheduledMessageCommandService({
       }
       const payload = validateManagedMessagePayload(input.payload);
       if (!payload.ok) return { outcome: "FAILURE", code: payload.code };
+      let attempt: AdministrativeAttempt | undefined;
       try {
         const authorization = await discord.authorizeCreation({
           guildId: input.guildId,
           channelId: input.channelId,
           actorUserId: input.actorUserId,
           payload: payload.payload,
+          ...(failures
+            ? {
+                afterActorAuthorized: () => {
+                  try {
+                    if (
+                      validateRecurrence({
+                        frequency: parsed.frequency,
+                        weekdayMask: parsed.weekdayMask,
+                        localTime: parsed.localTime,
+                        timezone,
+                      }).ok
+                    )
+                      attempt = { operationId: generateId() };
+                  } catch {
+                    /* Audit-only qualification cannot reject the business request. */
+                  }
+                  return Promise.resolve();
+                },
+              }
+            : {}),
         });
-        if (authorization.outcome === "FAILURE") return authorization;
+        if (authorization.outcome === "FAILURE") {
+          if (attempt && authorization.administrativeFailure)
+            await failures
+              ?.record(attempt, input.guildId, input.actorUserId, {
+                operationCode: "RECURRING_MESSAGE_CREATE",
+                targetType: "CHANNEL",
+                targetId: input.channelId,
+                ...authorization.administrativeFailure,
+              })
+              .catch(() => undefined);
+          return { outcome: "FAILURE", code: authorization.code };
+        }
       } catch {
         return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
       }
@@ -355,11 +492,13 @@ export function createScheduledMessageCommandService({
       const selection = findNextOccurrence(recurrence.definition, 0, effectiveAt);
       const scheduledActionId = generateId();
       const occurrenceId = generateId();
+      attempt ??= { operationId: generateId() };
       const result = await recurring
         .create({
           scheduledActionId,
           occurrenceId,
-          auditId: generateId(),
+          auditId: attempt.operationId,
+          ...(failures ? { administrativeAttempt: attempt } : {}),
           gapAuditIds: selection.skippedGaps.map(() => generateId()),
           guildId: input.guildId,
           channelId: input.channelId,
@@ -369,13 +508,15 @@ export function createScheduledMessageCommandService({
           effectiveAt,
         })
         .catch(() => ({ outcome: "PERSISTENCE_UNCONFIRMED" }) as const);
-      if (result.outcome !== "COMMITTED")
+      if (result.outcome !== "COMMITTED") {
+        await recordCreationFailure(attempt, input, "RECURRING_MESSAGE_CREATE");
         return {
           outcome:
             result.outcome === "INVALID_RECURRENCE"
               ? "INVALID_RECURRENCE"
               : "PERSISTENCE_UNCONFIRMED",
         };
+      }
       let deliveryPendingReconciliation = true;
       try {
         deliveryPendingReconciliation =
@@ -394,7 +535,7 @@ export function createScheduledMessageCommandService({
         /* reconciliation repairs projection */
       }
       if (deliveryPendingReconciliation) {
-        logger.warn(
+        warn(
           {
             event: "recurring_creation_delivery_pending",
             scheduledActionId,
@@ -443,6 +584,7 @@ export function createScheduledMessageCommandService({
         timezone: parsed.explicitTimezone ?? series.recurrence.timezone,
       });
       if (!validation.ok) return { outcome: "INVALID_RECURRENCE" };
+      const attempt: AdministrativeAttempt = { operationId: generateId() };
       const effectiveAt = now();
       const selection = findNextOccurrence(validation.definition, series.revision + 1, effectiveAt);
       const result = await recurring
@@ -453,14 +595,17 @@ export function createScheduledMessageCommandService({
           recurrence: validation.definition,
           effectiveAt,
           replacementOccurrenceId: generateId(),
-          auditId: generateId(),
+          auditId: attempt.operationId,
+          ...(failures ? { administrativeAttempt: attempt } : {}),
           gapAuditIds: selection.skippedGaps.map(() => generateId()),
         })
         .catch(() => ({ outcome: "PERSISTENCE_UNCONFIRMED" }) as const);
-      if (result.outcome !== "COMMITTED")
+      if (result.outcome !== "COMMITTED") {
+        await recordScheduleFailure(attempt, input, "RECURRING_MESSAGE_RECURRENCE_EDIT");
         return {
           outcome: result.outcome === "NOT_FOUND" ? "NOT_FOUND_OR_WRONG_CONTEXT" : result.outcome,
         };
+      }
       const { effect } = result;
       let deliveryPendingReconciliation = false;
       if (effect.replacementOccurrenceId !== null && effect.replacementScheduledFor !== null) {
@@ -499,7 +644,7 @@ export function createScheduledMessageCommandService({
         }
       }
       if (deliveryPendingReconciliation) {
-        logger.warn(
+        warn(
           {
             event: "recurrence_edit_delivery_pending",
             scheduledActionId: input.scheduledActionId,
@@ -514,6 +659,7 @@ export function createScheduledMessageCommandService({
     },
 
     async cancel(input) {
+      let targetValidated = false;
       if (administration !== undefined && recurring !== undefined) {
         let kind;
         try {
@@ -526,11 +672,22 @@ export function createScheduledMessageCommandService({
           return { outcome: "PERSISTENCE_UNCONFIRMED" };
         }
         if (kind === null) return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" };
+        targetValidated = true;
         if (kind === "RECURRING") {
+          const attempt: AdministrativeAttempt = { operationId: generateId() };
           let series;
           try {
             series = await recurring.find(input.scheduledActionId);
           } catch {
+            await failures
+              ?.record(attempt, input.guildId, input.actorUserId, {
+                operationCode: "RECURRING_MESSAGE_CANCEL",
+                targetType: "SCHEDULE",
+                targetId: input.scheduledActionId,
+                failureStage: "DATABASE_READ",
+                failureReasonCode: "REQUIRED_STATE_READ_FAILED",
+              })
+              .catch(() => undefined);
             return { outcome: "PERSISTENCE_UNCONFIRMED" };
           }
           if (series === undefined) return { outcome: "PERSISTENCE_UNCONFIRMED" };
@@ -541,18 +698,30 @@ export function createScheduledMessageCommandService({
               scheduledActionId: input.scheduledActionId,
               actorId: input.actorUserId,
               expectedRevision: series.revision,
-              auditId: generateId(),
+              auditId: attempt.operationId,
+              ...(failures ? { administrativeAttempt: attempt } : {}),
               occurredAt: now(),
             })
             .catch(() => ({ outcome: "PERSISTENCE_UNCONFIRMED" }) as const);
           if (result.outcome === "COMMITTED")
             return { outcome: "CANCELLED", deliveryCleanupPending: false };
+          await recordScheduleFailure(attempt, input, "RECURRING_MESSAGE_CANCEL");
           return {
             outcome: result.outcome === "CONFLICT" ? "CONFLICT" : "PERSISTENCE_UNCONFIRMED",
           };
         }
       }
+      if (failures && !targetValidated) {
+        try {
+          targetValidated =
+            (await store.findStatus(input.scheduledActionId, input.guildId, input.channelId))
+              .outcome === "FOUND";
+        } catch {
+          /* Unknown scope cannot qualify for administrative failure auditing. */
+        }
+      }
       const auditId = generateId();
+      const attempt: AdministrativeAttempt = { operationId: auditId };
       const occurredAt = now();
       let result: Awaited<ReturnType<ScheduledMessageStore["cancel"]>>;
       try {
@@ -563,11 +732,14 @@ export function createScheduledMessageCommandService({
           actorId: input.actorUserId,
           auditId,
           occurredAt,
+          ...(failures && targetValidated ? { administrativeAttempt: attempt } : {}),
         });
       } catch {
         result = { outcome: "PERSISTENCE_UNCONFIRMED" } as const;
       }
       if (result.outcome !== "CANCELLED" && result.outcome !== "ALREADY_CANCELLED") {
+        if (result.outcome === "PERSISTENCE_UNCONFIRMED")
+          await recordScheduleFailure(attempt, input, "ONE_TIME_MESSAGE_CANCEL");
         return { outcome: result.outcome };
       }
 
@@ -579,7 +751,7 @@ export function createScheduledMessageCommandService({
       }
       const deliveryCleanupPending = cleanup.outcome === "UNCONFIRMED";
       if (deliveryCleanupPending) {
-        logger.warn(
+        warn(
           {
             event: "scheduled_message_command_delivery_cleanup_pending",
             scheduledActionId: input.scheduledActionId,
@@ -660,6 +832,7 @@ export function createScheduledMessageCommandService({
     async edit(input) {
       const validation = validateManagedMessagePayload(input.payload);
       if (!validation.ok) return { outcome: "INVALID_PAYLOAD", code: validation.code };
+      let targetValidated = false;
       if (administration !== undefined && recurring !== undefined) {
         let kind;
         try {
@@ -672,11 +845,22 @@ export function createScheduledMessageCommandService({
           return { outcome: "PERSISTENCE_UNCONFIRMED" };
         }
         if (kind === null) return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" };
+        targetValidated = true;
         if (kind === "RECURRING") {
+          const attempt: AdministrativeAttempt = { operationId: generateId() };
           let current;
           try {
             current = await recurring.find(input.scheduledActionId);
           } catch {
+            await failures
+              ?.record(attempt, input.guildId, input.actorUserId, {
+                operationCode: "RECURRING_MESSAGE_PAYLOAD_EDIT",
+                targetType: "SCHEDULE",
+                targetId: input.scheduledActionId,
+                failureStage: "DATABASE_READ",
+                failureReasonCode: "REQUIRED_STATE_READ_FAILED",
+              })
+              .catch(() => undefined);
             return { outcome: "PERSISTENCE_UNCONFIRMED" };
           }
           if (current === undefined) return { outcome: "CORRUPT" };
@@ -687,7 +871,8 @@ export function createScheduledMessageCommandService({
               actorId: input.actorUserId,
               expectedRevision: input.expectedRevision,
               payload: validation.payload,
-              auditId: generateId(),
+              auditId: attempt.operationId,
+              ...(failures ? { administrativeAttempt: attempt } : {}),
               occurredAt: now(),
             })
             .catch(() => ({ outcome: "PERSISTENCE_UNCONFIRMED" }) as const);
@@ -697,19 +882,34 @@ export function createScheduledMessageCommandService({
             return { outcome: "UNCHANGED", definition: result.series };
           if (result.outcome === "CONFLICT") return { outcome: "CONFLICT" };
           if (result.outcome === "NOT_FOUND") return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" };
+          await recordScheduleFailure(attempt, input, "RECURRING_MESSAGE_PAYLOAD_EDIT");
           return { outcome: "PERSISTENCE_UNCONFIRMED" };
         }
       }
-      return store.edit({
+      if (failures && !targetValidated) {
+        try {
+          targetValidated =
+            (await store.findStatus(input.scheduledActionId, input.guildId, input.channelId))
+              .outcome === "FOUND";
+        } catch {
+          /* Unknown scope cannot qualify for administrative failure auditing. */
+        }
+      }
+      const attempt: AdministrativeAttempt = { operationId: generateId() };
+      const result = await store.edit({
         scheduledActionId: input.scheduledActionId,
         guildId: input.guildId,
         channelId: input.channelId,
         actorId: input.actorUserId,
         expectedRevision: input.expectedRevision,
         payload: validation.payload,
-        auditId: generateId(),
+        auditId: attempt.operationId,
+        ...(failures && targetValidated ? { administrativeAttempt: attempt } : {}),
         occurredAt: now(),
       });
+      if (result.outcome === "PERSISTENCE_UNCONFIRMED")
+        await recordScheduleFailure(attempt, input, "ONE_TIME_MESSAGE_EDIT");
+      return result;
     },
 
     async reschedule(input) {
@@ -737,6 +937,7 @@ export function createScheduledMessageCommandService({
       const resolved = await establishSchedule(input.schedule, input.guildId);
       if (!resolved.ok) return { outcome: resolved.code };
       const { executeAt, establishedAt } = resolved;
+      const attempt: AdministrativeAttempt = { operationId: generateId() };
       const result = await store.reschedule({
         scheduledActionId: input.scheduledActionId,
         guildId: input.guildId,
@@ -744,10 +945,15 @@ export function createScheduledMessageCommandService({
         actorId: input.actorUserId,
         expectedRevision: current.definition.revision,
         executeAt,
-        auditId: generateId(),
+        auditId: attempt.operationId,
+        ...(failures ? { administrativeAttempt: attempt } : {}),
         occurredAt: establishedAt,
       });
-      if (result.outcome !== "RESCHEDULED") return result;
+      if (result.outcome !== "RESCHEDULED") {
+        if (result.outcome === "PERSISTENCE_UNCONFIRMED")
+          await recordScheduleFailure(attempt, input, "ONE_TIME_MESSAGE_RESCHEDULE");
+        return result;
+      }
 
       let authoritative: ScheduledMessageDefinition | undefined;
       try {
@@ -769,7 +975,7 @@ export function createScheduledMessageCommandService({
         }
       }
       if (deliveryPendingReconciliation) {
-        logger.warn(
+        warn(
           {
             event: "scheduled_message_reschedule_delivery_pending",
             scheduledActionId: input.scheduledActionId,

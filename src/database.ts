@@ -1,3 +1,5 @@
+import { bindAdministrativePool } from "./administrative-transaction.js";
+import { administrativeOperationFailureAudits } from "./administrative-operation-failure-audit.js";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
@@ -34,6 +36,7 @@ export function createDatabase(config: DatabaseConfig) {
 
   const client = drizzle(pool, {
     schema: {
+      administrativeOperationFailureAudits,
       auditLogDestinationAudits,
       autoCloseParentChannels,
       autoCloseThreadActivity,
@@ -53,6 +56,8 @@ export function createDatabase(config: DatabaseConfig) {
       threadAudits,
     },
   });
+
+  bindAdministrativePool(client, pool);
 
   return {
     client,

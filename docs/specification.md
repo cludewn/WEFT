@@ -1307,7 +1307,97 @@ Audit coverage includes:
 - authorization-related configuration changes,
 - failed administrative operations.
 
-The initial audit retention period is fixed globally at 90 * 24 hours. A process-local cleanup sweep is scheduled shortly after startup without delaying readiness, then 24 hours after each completed sweep. Every sweep uses one cutoff and deletes rows whose audit timestamp is strictly older than that cutoff, in bounded batches. The eight covered sources are thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, audit-log-destination, link-preview mode, and guild-configuration audits. Each batch deletes at most 500 rows ordered by audit timestamp and ID; rows equal to the cutoff remain. Cleanup is periodic, not an exact expiration deadline.
+#### Confirmed administrative execution failures (Issue #104)
+
+`administrative_operation_failure_audits` records only sufficiently evidenced `FAILURE` for an
+authorized administrative attempt whose required input, target and invoking-actor authorization
+have been validated. The application owner creates one stable operation UUID before the first
+eligible execution boundary. The separate failure audit UUID identifies its independent record;
+`operation_id` is unique. Primary success audit candidates reuse the operation identity where
+practical, preserving their existing timestamp semantics. A handler, Discord boundary or business
+store never independently inserts this failure history.
+
+The covered operation codes and verified targets are:
+
+| Operation codes                                                                                                                                                                      | Target                                                                                |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `GUILD_TIMEZONE_SET`, `GUILD_CLOSED_PREFIX_SET`, `AUTO_CLOSE_INACTIVITY_SET`, `AUTO_CLOSE_BOT_MESSAGES_SET`, `AUDIT_DESTINATION_DISABLE`, `LINK_PREVIEW_MODE_SET`                    | GUILD / guild ID                                                                      |
+| `AUTO_CLOSE_PARENT_ADD`, `AUTO_CLOSE_PARENT_REMOVE`                                                                                                                                  | PARENT_CHANNEL / verified parent ID                                                   |
+| `THREAD_TRACK`, `THREAD_UNTRACK`, `THREAD_CLOSE_AFTER_SET`, `THREAD_CANCEL_CLOSE`, `MANUAL_CLOSE_PREPARATION`, `BULK_CLOSE_PREPARATION`                                              | THREAD / verified thread ID                                                           |
+| `ONE_TIME_MESSAGE_CREATE`, `RECURRING_MESSAGE_CREATE`                                                                                                                                | CHANNEL / verified channel ID                                                         |
+| `ONE_TIME_MESSAGE_CANCEL`, `ONE_TIME_MESSAGE_EDIT`, `ONE_TIME_MESSAGE_RESCHEDULE`, `RECURRING_MESSAGE_CANCEL`, `RECURRING_MESSAGE_PAYLOAD_EDIT`, `RECURRING_MESSAGE_RECURRENCE_EDIT` | SCHEDULE / UUID scoped to the current guild/channel                                   |
+| `AUDIT_DESTINATION_SET`                                                                                                                                                              | CHANNEL / verified ID, or NULL for a required Discord read that cannot confirm the ID |
+
+Close-after creation and replacement share one operation code while retaining their distinct
+existing successful results. Bulk preparation has one operation identity per admitted thread,
+without an aggregate failure audit or a duplicate `THREAD_CANCEL_CLOSE` failure.
+
+The constrained failure stage/reason pairs are:
+
+| Stage / reason                                                                      | Eligible operations and evidence                                                                                         |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `DATABASE_START` / `TRANSACTION_START_FAILED`                                       | All 23 operations; the transaction callback never entered                                                                |
+| `DATABASE_TRANSACTION` / `TRANSACTION_ROLLED_BACK`                                  | All 23 operations; callback failure, no COMMIT attempt, same-connection normal ROLLBACK acknowledgement                  |
+| `DATABASE_COMMIT` / `COMMIT_REJECTED`                                               | All 23 operations; allowlisted server rejection proving noncommit and confirmed transaction termination                  |
+| `DATABASE_READ` / `REQUIRED_STATE_READ_FAILED`                                      | Parent add, eligible one-time create formal timezone read, scoped recurring cancel and payload-edit required state reads |
+| `DISCORD_ENUMERATION` / `ACTIVE_THREAD_ENUMERATION_FAILED`                          | Authorized parent add; no parent or baseline business-state changes                                                      |
+| `DISCORD_PREFLIGHT` / `BOT_PERMISSION_MISSING` or `BOT_CONTEXT_UNAVAILABLE`         | Destination set, close-after set, one-time create and recurring create, after positive actor/context validation          |
+| `DISCORD_READ` / `REQUIRED_RESOURCE_READ_FAILED` or `REQUIRED_RESOURCE_UNAVAILABLE` | The same four preflight operations, after positive actor/context validation                                              |
+
+Result names alone never establish eligibility. Invalid syntax, payload, time, guild/resource
+context, denied or unverified actor authorization, normalized no-ops, baseline-only repairs,
+revision conflicts, claim losers and existing operation ownership are excluded. A later required
+actor check that denies or cannot verify authorization does not reuse an earlier permission fact.
+Track/untrack acquire no new bot-permission requirement. Modal submission retains its current
+context and permission checks.
+
+`SUCCESS` remains the existing feature-specific success audit. New `FAILURE` means the identified
+attempt demonstrably did not complete its intended administrative result. `PARTIAL` is reserved
+for a separately specified managed-message follow-up and is absent from this schema.
+`UNCONFIRMED` leaves an outcome or required effect unknown; `PENDING` retains ongoing execution or
+finalization. Neither produces a new failure record. Existing lifecycle and background terminal
+failure codes keep their previous meaning, including codes for unconfirmed Discord outcomes.
+
+An opaque rejected transaction Promise is insufficient. The scoped administrative boundary
+observes public node-postgres BEGIN/COMMIT/ROLLBACK commands on one PoolClient, records COMMIT
+attempt immediately before invoking it, and destroys a connection with unknown termination.
+A successful ROLLBACK after a possible COMMIT cannot negate that COMMIT. If commit remains possible,
+only exact historical success audit identity and contents can confirm success; missing, mismatched
+or unreadable evidence stays `UNCONFIRMED`. Current setting or schedule state alone is not proof.
+A confirmed commit followed by projection, cleanup or an auxiliary read failure remains committed.
+No business mutation, compensation, scheduler or recovery operation is blindly retried by auditing.
+
+One-time creation observes audit-only eligibility with the same domain validator after resource
+and actor confirmation but before bot preflight. AT reads guild timezone without creating settings
+and uses the existing UTC default for missing settings. Failed or unavailable preliminary evidence
+does not reject the business request early. Formal timezone loading and time establishment remain
+after the full creation preflight. The formally established instant, timezone interpretation,
+DST gap/overlap rejection, horizon, relative scheduling and response contracts remain authoritative;
+a formally rejected request creates no failure audit. If formal validation succeeds without
+preliminary eligibility, identity is established before the subsequent schedule transaction.
+
+After the business transaction ends, the application owner awaits one independent best-effort
+INSERT and confirms its RETURNING row or exact same-ID historical record, including every field,
+NULL shape and timestamp. ID/operation collisions are not suppressed. Audit insertion or
+confirmation failure emits fixed, non-sensitive diagnostics and leaves the original business
+result intact. Only confirmed records publish notifications outside transactions. Database outages
+and process crashes can leave eligible failures unaudited; there is no spool, retry queue or backfill.
+Admitted handlers and retained lifecycle work own this wait; the existing notification drain owns
+delivery. Interaction reply failure changes neither the business result nor committed history.
+
+Administrative-failure notification projection selects only guild, verified actor, fixed operation,
+stage/reason, FAILURE and timestamp with the existing source/audit reference. It selects no target
+ID/type/name, configuration values, content, payload, URL, exception, stack or secret. Formatting
+explicitly omits target fields because destination viewers may lack access to the target resource.
+Delivery-time destination and bot/channel checks, mention suppression, stable nonce, one
+best-effort attempt, no retry/replay and shutdown drain are unchanged.
+
+Migration 0021 appends only this constrained table, unique operation identity and `(occurred_at, id)`
+retention index; existing success schemas and historical migrations remain intact. No historical
+failure backfill is performed. Managed-message send/edit execution and compensation auditing remain
+a separate follow-up. Issue #104 alone does not complete release-readiness finding F05.
+
+The initial audit retention period is fixed globally at 90 * 24 hours. A process-local cleanup sweep is scheduled shortly after startup without delaying readiness, then 24 hours after each completed sweep. Every sweep uses one cutoff and deletes rows whose audit timestamp is strictly older than that cutoff, in bounded batches. The nine covered sources are thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, audit-log-destination, link-preview mode, guild-configuration, and administrative-operation-failure audits. Each batch deletes at most 500 rows ordered by audit timestamp and ID; rows equal to the cutoff remain. Cleanup is periodic, not an exact expiration deadline.
 
 Retention deletes only audit history. It does not delete or change active schedules, managed resources, configuration, or recovery state, and it creates no audit notifications. A source cleanup failure does not invalidate application operations; outstanding work waits for a later sweep. Shutdown drains an in-flight batch before PostgreSQL closes, subject to the existing process-wide shutdown deadline.
 
