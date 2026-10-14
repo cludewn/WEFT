@@ -1,3 +1,4 @@
+import { guildConfigurationAudits } from "./guild-configuration-audit.js";
 import { inArray } from "drizzle-orm";
 
 import { linkPreviewAudits, type LinkPreviewStore } from "./link-preview-persistence.js";
@@ -47,6 +48,12 @@ export async function publishExistingAudits(
   try {
     let committed: { id: string }[];
     switch (source) {
+      case "GUILD_CONFIGURATION":
+        committed = await database
+          .select({ id: guildConfigurationAudits.id })
+          .from(guildConfigurationAudits)
+          .where(inArray(guildConfigurationAudits.id, ids));
+        break;
       case "LINK_PREVIEW":
         committed = await database
           .select({ id: linkPreviewAudits.id })

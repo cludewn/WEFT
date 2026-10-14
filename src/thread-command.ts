@@ -349,6 +349,8 @@ function automaticCloseMaintenanceFailureMessage(
       return "You need the Manage Threads permission to use this command.";
     case "CONTEXT_VALIDATION_FAILURE":
       return "WEFT could not verify the current thread or your permissions. Please try again later.";
+    case "UNCONFIRMED":
+      return "WEFT could not confirm the tracking change. Check the thread status before trying again.";
     case "PERSISTENCE_FAILURE":
       return operation === "STATUS"
         ? "WEFT could not load this thread's status. Please try again later."

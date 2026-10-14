@@ -1,3 +1,4 @@
+import { guildConfigurationAudits } from "./guild-configuration-audit.js";
 import { eq } from "drizzle-orm";
 
 import { linkPreviewAudits } from "./link-preview-persistence.js";
@@ -38,6 +39,23 @@ export function createAuditNotificationProjection(database: DatabaseClient) {
   return {
     async load(reference: AuditReference): Promise<AuditNotificationRecord | undefined> {
       switch (reference.source) {
+        case "GUILD_CONFIGURATION": {
+          const [row] = await database
+            .select({
+              guildId: guildConfigurationAudits.guildId,
+              actorUserId: guildConfigurationAudits.actorUserId,
+              event: guildConfigurationAudits.action,
+              settingType: guildConfigurationAudits.settingType,
+              targetType: guildConfigurationAudits.targetType,
+              targetId: guildConfigurationAudits.targetId,
+              outcome: guildConfigurationAudits.outcome,
+              occurredAt: guildConfigurationAudits.occurredAt,
+            })
+            .from(guildConfigurationAudits)
+            .where(eq(guildConfigurationAudits.id, reference.auditId))
+            .limit(1);
+          return row && { ...reference, ...row, actorType: "USER" };
+        }
         case "LINK_PREVIEW": {
           const [row] = await database
             .select({

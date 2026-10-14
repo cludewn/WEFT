@@ -2,7 +2,8 @@ import type { ChannelType } from "discord.js";
 import type { Logger } from "pino";
 
 import type { AutomaticClosePersistenceStore } from "./automatic-close-persistence.js";
-import type { GuildSettings, GuildSettingsStore } from "./guild-settings.js";
+import { createConfigurationAuditContext } from "./guild-configuration-audit.js";
+import type { GuildSettingsChangeResult, GuildSettingsStore } from "./guild-settings.js";
 import { getErrorName } from "./shutdown.js";
 import { isSupportedThreadType } from "./thread-discord.js";
 
@@ -26,18 +27,32 @@ export type AutomaticCloseConfigurationView = {
 export type AddParentChannelResult =
   | { outcome: "ENABLED"; baselinesApplied: number }
   | { outcome: "ALREADY_ENABLED" }
-  | { outcome: "ENUMERATION_FAILED" };
+  | { outcome: "ENUMERATION_FAILED" }
+  | { outcome: "UNCONFIRMED" };
 
-export type RemoveParentChannelResult = { outcome: "REMOVED" } | { outcome: "NOT_CONFIGURED" };
+export type RemoveParentChannelResult = { outcome: "REMOVED" | "NOT_CONFIGURED" | "UNCONFIRMED" };
 
 export type AutomaticCloseConfigurationService = {
   show: (guildId: string) => Promise<AutomaticCloseConfigurationView>;
-  setInactivitySeconds: (guildId: string, seconds: number) => Promise<GuildSettings>;
-  setBotMessagesCountAsActivity: (guildId: string, value: boolean) => Promise<GuildSettings>;
-  addParentChannel: (guildId: string, parentChannelId: string) => Promise<AddParentChannelResult>;
+  setInactivitySeconds: (
+    guildId: string,
+    seconds: number,
+    actorUserId: string,
+  ) => Promise<GuildSettingsChangeResult>;
+  setBotMessagesCountAsActivity: (
+    guildId: string,
+    value: boolean,
+    actorUserId: string,
+  ) => Promise<GuildSettingsChangeResult>;
+  addParentChannel: (
+    guildId: string,
+    parentChannelId: string,
+    actorUserId: string,
+  ) => Promise<AddParentChannelResult>;
   removeParentChannel: (
     guildId: string,
     parentChannelId: string,
+    actorUserId: string,
   ) => Promise<RemoveParentChannelResult>;
 };
 
@@ -72,11 +87,19 @@ export function createAutomaticCloseConfigurationService({
         parentChannelIds,
       };
     },
-    setInactivitySeconds: (guildId, seconds) =>
-      guildSettings.setAutoCloseInactivitySeconds(guildId, seconds),
-    setBotMessagesCountAsActivity: (guildId, value) =>
-      guildSettings.setAutoCloseBotMessagesCountAsActivity(guildId, value),
-    async addParentChannel(guildId, parentChannelId) {
+    setInactivitySeconds: (guildId, seconds, actorUserId) =>
+      guildSettings.setAutoCloseInactivitySeconds(
+        guildId,
+        seconds,
+        createConfigurationAuditContext(actorUserId),
+      ),
+    setBotMessagesCountAsActivity: (guildId, value, actorUserId) =>
+      guildSettings.setAutoCloseBotMessagesCountAsActivity(
+        guildId,
+        value,
+        createConfigurationAuditContext(actorUserId),
+      ),
+    async addParentChannel(guildId, parentChannelId, actorUserId) {
       const configured = await schedules.listParentChannels(guildId);
       if (configured.includes(parentChannelId)) {
         // Skip enumeration and leave every existing baseline untouched.
@@ -99,8 +122,6 @@ export function createAutomaticCloseConfigurationService({
         return { outcome: "ENUMERATION_FAILED" };
       }
 
-      await guildSettings.getOrCreate(guildId);
-
       // Captured after enumeration so a slow Discord response cannot shorten the grace period.
       const enabledAt = new Date();
       const activeThreadIds = summaries
@@ -114,15 +135,25 @@ export function createAutomaticCloseConfigurationService({
         parentChannelId,
         enabledAt,
         activeThreadIds,
+        ...createConfigurationAuditContext(actorUserId, enabledAt),
       });
 
-      return result.outcome === "ALREADY_ENABLED"
-        ? { outcome: "ALREADY_ENABLED" }
-        : { outcome: "ENABLED", baselinesApplied: result.baselinesApplied };
+      return result;
     },
-    async removeParentChannel(guildId, parentChannelId) {
-      const removed = await schedules.removeParentChannel(guildId, parentChannelId);
-      return removed ? { outcome: "REMOVED" } : { outcome: "NOT_CONFIGURED" };
+    async removeParentChannel(guildId, parentChannelId, actorUserId) {
+      const result = await schedules.removeParentChannel(
+        guildId,
+        parentChannelId,
+        createConfigurationAuditContext(actorUserId),
+      );
+      return {
+        outcome:
+          result.outcome === "UNCONFIRMED"
+            ? "UNCONFIRMED"
+            : result.outcome === "CHANGED"
+              ? "REMOVED"
+              : "NOT_CONFIGURED",
+      };
     },
   };
 }

@@ -800,3 +800,54 @@ function ephemeral(content: string) {
     allowedMentions: { parse: [] },
   };
 }
+
+it.each(["track", "untrack"] as const)(
+  "reports %s uncertainty ephemerally without retry",
+  async (operation) => {
+    const maintenance = createMaintenance({
+      track: vi.fn(() => Promise.resolve({ ok: false, code: "UNCONFIRMED" } as const)),
+      untrack: vi.fn(() => Promise.resolve({ ok: false, code: "UNCONFIRMED" } as const)),
+    });
+    const f = createInteraction({ subcommand: operation });
+    await handleThreadCommand(
+      f.interaction,
+      createLifecycle(),
+      logger,
+      undefined,
+      undefined,
+      maintenance,
+    );
+    expect(f.reply).toHaveBeenCalledWith(
+      ephemeral(
+        operation === "track" ? "Tracking thread…" : "Excluding thread from automatic close…",
+      ),
+    );
+    expect(f.editReply).toHaveBeenCalledWith(
+      edited(
+        "WEFT could not confirm the tracking change. Check the thread status before trying again.",
+      ),
+    );
+    expect(maintenance[operation]).toHaveBeenCalledOnce();
+  },
+);
+
+it.each(["track", "untrack"] as const)(
+  "does not replay confirmed %s when Discord edit fails",
+  async (operation) => {
+    const maintenance = createMaintenance();
+    const f = createInteraction({ subcommand: operation });
+    f.editReply.mockRejectedValueOnce(new Error("Discord response lost"));
+    await expect(
+      handleThreadCommand(
+        f.interaction,
+        createLifecycle(),
+        logger,
+        undefined,
+        undefined,
+        maintenance,
+      ),
+    ).rejects.toThrow("Discord response lost");
+    expect(maintenance[operation]).toHaveBeenCalledOnce();
+    expect(f.editReply).toHaveBeenCalledOnce();
+  },
+);

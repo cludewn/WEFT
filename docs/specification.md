@@ -221,7 +221,7 @@ point-in-time check. The Discord channel is never authoritative audit storage.
 
 Newly committed audits from `thread_audits`, `scheduled_thread_close_audits`,
 `managed_message_audits`, `scheduled_message_audits`, `recurring_message_audits`,
-`audit_log_destination_audits`, and `link_preview_audits` are eligible for best-effort notification to the currently configured
+`audit_log_destination_audits`, `link_preview_audits`, and `guild_configuration_audits` are eligible for best-effort notification to the currently configured
 destination. Notification projection loads the committed audit by exact source and ID and uses only
 bounded metadata. Message content, embed fields, names, raw errors, and arbitrary before/after text
 are excluded. Notifications use plain text and suppress all mentions. Each attempt reads the current
@@ -233,6 +233,57 @@ from source and audit ID reduces duplicates; it does not guarantee exactly-once 
 attempted once without retry. There is no replay, backfill, or ordering guarantee. A process crash
 may lose a notification after its PostgreSQL audit commits. Normal graceful shutdown drains accepted
 notification tasks under the existing shared deadline before Discord and PostgreSQL close.
+
+### Successful configuration and thread policy audits (Issue #102)
+
+The following committed actual changes produce one persistent `guild_configuration_audits` record:
+
+- `/config timezone` and `/config closed-prefix`,
+- `/config auto-close inactivity` and `/config auto-close bot-messages`,
+- `/config auto-close add-parent` and `/config auto-close remove-parent`,
+- `/thread track` and `/thread untrack` exclusion-policy transitions.
+
+Each record preserves the invoking actor, guild, action, setting, target type and ID, exact typed
+before/after values, occurrence time, stable operation-specific audit ID, and `SUCCESS` outcome.
+Scalar targets identify the guild; parent membership and thread exclusion targets identify their
+Discord resources. Values use explicit text, integer or boolean column pairs; unused pairs are
+NULL. Fixed database constraints reject invalid action/target/value combinations, NULL ambiguity
+and unchanged success transitions. History has no cascading dependency on removable policy rows.
+Existing destination and preview audits remain separate and unchanged.
+
+Scalar setters normalize and validate input before persistence, establish and lock current guild
+settings inside the transaction, compare the current value, and update only the requested column.
+Each actual configuration or policy mutation commits atomically with its audit. Parent enablement
+also commits its required baselines in that transaction, including a success audit when no
+baselines are needed. Exact no-ops do not update existing rows or their timestamps, insert success
+audits, or publish notifications. Repeated track may repair a missing eligible baseline without
+changing policy; that baseline-only repair produces no policy-change audit. Parent removal preserves
+activity, and untrack preserves activity exactly. Automatic-close eligibility and recovery remain
+unchanged.
+
+An ambiguous transaction is never blindly repeated. Read-only commit confirmation requires the
+exact expected audit ID, guild, actor, action, setting, target, every before/after value and NULL
+shape, timestamp, and successful outcome. Current configuration equality alone is insufficient;
+later valid changes do not erase exact historical evidence. Missing, inconsistent or unreadable
+evidence returns `UNCONFIRMED`: the operation's commit outcome is unknown, rather than proven
+success or failure. Lost no-op or baseline-only repair responses cannot fabricate a success audit.
+Commands acknowledge slow work ephemerally and distinguish confirmed changes, no-ops and unknown
+results. A failed Discord response after confirmed commit cannot reverse or replay the mutation.
+
+Only confirmed actual changes publish `GUILD_CONFIGURATION` references outside the transaction to
+the existing notification owner and shutdown drain. Projection explicitly selects bounded identity,
+action/setting/target, actor, outcome and timestamp metadata; it never selects any before/after value
+column. Closed-prefix text, arbitrary strings, message content, raw errors and secrets cannot enter
+the notification format. Existing delivery-time destination and permission checks, mention
+suppression, stable nonce, best-effort single attempt, no replay, and no exactly-once guarantee apply.
+Notification failure never undoes the configuration commit. No-ops, repairs, rollbacks and
+`UNCONFIRMED` results are not published. The new source participates in the existing 90-day retention.
+
+Append-only migration 0020 adds only the new audit table and `(occurred_at, id)` retention index.
+It preserves existing configuration, policy, activity and audit history and performs no backfill.
+Development and production retain explicit migration workflows; normal startup does not apply WEFT
+migrations. Failed administrative-operation audit coverage remains a separate follow-up to Audit
+#93 finding F05; Issue #102 alone does not complete F05.
 
 ### Permission-aware message-link previews
 
@@ -1256,7 +1307,7 @@ Audit coverage includes:
 - authorization-related configuration changes,
 - failed administrative operations.
 
-The initial audit retention period is fixed globally at 90 * 24 hours. A process-local cleanup sweep is scheduled shortly after startup without delaying readiness, then 24 hours after each completed sweep. Every sweep uses one cutoff and deletes rows whose audit timestamp is strictly older than that cutoff, in bounded batches. The seven covered sources are thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, audit-log-destination, and link-preview mode audits. Cleanup is periodic, not an exact expiration deadline.
+The initial audit retention period is fixed globally at 90 * 24 hours. A process-local cleanup sweep is scheduled shortly after startup without delaying readiness, then 24 hours after each completed sweep. Every sweep uses one cutoff and deletes rows whose audit timestamp is strictly older than that cutoff, in bounded batches. The eight covered sources are thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, audit-log-destination, link-preview mode, and guild-configuration audits. Each batch deletes at most 500 rows ordered by audit timestamp and ID; rows equal to the cutoff remain. Cleanup is periodic, not an exact expiration deadline.
 
 Retention deletes only audit history. It does not delete or change active schedules, managed resources, configuration, or recovery state, and it creates no audit notifications. A source cleanup failure does not invalidate application operations; outstanding work waits for a later sweep. Shutdown drains an in-flight batch before PostgreSQL closes, subject to the existing process-wide shutdown deadline.
 

@@ -531,6 +531,43 @@ describe("audit notification Discord boundary", () => {
     const client = { user: { id: "bot" }, channels: { fetch: fetchChannel } } as unknown as Client;
     return { boundary: createAuditNotificationDiscord(client), fetchChannel, fetchMember, send };
   }
+  it("delivers the new source through current-destination checks and drain without replay", async () => {
+    const current = fixture({ sendFails: true });
+    const audit: AuditNotificationRecord = {
+      source: "GUILD_CONFIGURATION",
+      auditId,
+      guildId,
+      event: "SET",
+      outcome: "SUCCESS",
+      actorType: "USER",
+      actorUserId: actorId,
+      settingType: "CLOSED_PREFIX",
+      targetType: "GUILD",
+      targetId: guildId,
+      occurredAt: record.occurredAt,
+    };
+    const load = vi.fn(() => Promise.resolve(audit));
+    const readDestination = vi.fn(() => Promise.resolve("7"));
+    const dispatcher = createAuditNotificationDispatcher({
+      projection: { load },
+      readDestination,
+      discord: current.boundary,
+      logger: { warn: vi.fn() },
+    });
+    dispatcher.publish({ source: "GUILD_CONFIGURATION", auditId });
+    await dispatcher.drain();
+    await dispatcher.drain();
+    expect(load).toHaveBeenCalledExactlyOnceWith({ source: "GUILD_CONFIGURATION", auditId });
+    expect(readDestination).toHaveBeenCalledExactlyOnceWith(guildId);
+    expect(current.fetchChannel).toHaveBeenCalledExactlyOnceWith("7", { force: true });
+    expect(current.fetchMember).toHaveBeenCalledExactlyOnceWith({ user: "bot", force: true });
+    expect(current.send).toHaveBeenCalledExactlyOnceWith({
+      content: formatAuditNotification(audit)!.content,
+      allowedMentions: { parse: [] },
+      nonce: formatAuditNotification(audit)!.nonce,
+      enforceNonce: true,
+    });
+  });
   const input = { guildId, destinationId: "7", content: "WEFT audit", nonce: "wa_stable" };
 
   it.each([ChannelType.GuildText, ChannelType.GuildAnnouncement])(

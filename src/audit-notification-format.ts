@@ -7,7 +7,8 @@ export type AuditSource =
   | "SCHEDULED_MESSAGE"
   | "RECURRING_MESSAGE"
   | "AUDIT_LOG_DESTINATION"
-  | "LINK_PREVIEW";
+  | "LINK_PREVIEW"
+  | "GUILD_CONFIGURATION";
 
 export type AuditReference = Readonly<{ source: AuditSource; auditId: string }>;
 
@@ -29,6 +30,9 @@ export type AuditNotificationRecord = AuditReference & {
   newDestinationId?: string;
   previousMode?: string;
   newMode?: string;
+  settingType?: string;
+  targetType?: string;
+  targetId?: string;
 };
 
 const safeIdentifier = /^[A-Za-z0-9_-]{1,64}$/;
@@ -53,6 +57,9 @@ export function formatAuditNotification(
     ["New destination ID", record.newDestinationId],
     ["Previous mode", record.previousMode],
     ["New mode", record.newMode],
+    ["Setting", record.settingType],
+    ["Target type", record.targetType],
+    ["Target ID", record.targetId],
     ["Audit ID", record.auditId],
   ];
   if (

@@ -66,7 +66,11 @@ describe("automatic close thread maintenance service", () => {
       },
       trackThread: vi.fn(() => {
         order.push("persistence");
-        return Promise.resolve({ exclusionRemoved: true, parentEnabled: true });
+        return Promise.resolve({
+          outcome: "CHANGED" as const,
+          exclusionRemoved: true,
+          parentEnabled: true,
+        });
       }),
     });
 
@@ -78,6 +82,9 @@ describe("automatic close thread maintenance service", () => {
       threadId,
       parentChannelId,
       trackedAt,
+      actorUserId: actorId,
+      auditId: expect.any(String) as string,
+      occurredAt: trackedAt,
     });
   });
 
@@ -90,7 +97,13 @@ describe("automatic close thread maintenance service", () => {
     "maps track persistence (removed=%s, parent=%s)",
     async (exclusionRemoved, parentEnabled, outcome) => {
       const fixture = createFixture({
-        trackThread: vi.fn(() => Promise.resolve({ exclusionRemoved, parentEnabled })),
+        trackThread: vi.fn(() =>
+          Promise.resolve({
+            outcome: exclusionRemoved ? ("CHANGED" as const) : ("NO_CHANGE" as const),
+            exclusionRemoved,
+            parentEnabled,
+          }),
+        ),
       });
 
       await expect(fixture.service.track(guildId, threadId, actorId)).resolves.toEqual({
@@ -107,14 +120,24 @@ describe("automatic close thread maintenance service", () => {
     [false, "ALREADY_EXCLUDED"],
   ] as const)("maps untrack persistence (%s)", async (changed, outcome) => {
     const fixture = createFixture({
-      addThreadExclusion: vi.fn(() => Promise.resolve(changed)),
+      addThreadExclusion: vi.fn(() =>
+        Promise.resolve({ outcome: changed ? ("CHANGED" as const) : ("NO_CHANGE" as const) }),
+      ),
     });
 
     await expect(fixture.service.untrack(guildId, threadId, actorId)).resolves.toEqual({
       ok: true,
       outcome,
     });
-    expect(fixture.persistence.addThreadExclusion).toHaveBeenCalledWith(guildId, threadId);
+    expect(fixture.persistence.addThreadExclusion).toHaveBeenCalledWith(
+      guildId,
+      threadId,
+      expect.objectContaining({
+        actorUserId: actorId,
+        auditId: expect.any(String) as string,
+        occurredAt: expect.any(Date) as Date,
+      }),
+    );
     expect(fixture.scheduledActions.findCurrentThreadClose).not.toHaveBeenCalled();
   });
 
@@ -130,7 +153,7 @@ describe("automatic close thread maintenance service", () => {
 
       await expect(fixture.service[operation](guildId, threadId, actorId)).resolves.toEqual({
         ok: false,
-        code: "PERSISTENCE_FAILURE",
+        code: operation === "status" ? "PERSISTENCE_FAILURE" : "UNCONFIRMED",
       });
       const logged = JSON.stringify(fixture.logger.warn.mock.calls);
       expect(logged).toContain(`"operation":"${operation.toUpperCase()}"`);
@@ -215,8 +238,15 @@ function createFixture(options: FixtureOptions = {}) {
   const persistence = {
     trackThread:
       options.trackThread ??
-      vi.fn(() => Promise.resolve({ exclusionRemoved: true, parentEnabled: true })),
-    addThreadExclusion: options.addThreadExclusion ?? vi.fn(() => Promise.resolve(true)),
+      vi.fn(() =>
+        Promise.resolve({
+          outcome: "CHANGED" as const,
+          exclusionRemoved: true,
+          parentEnabled: true,
+        }),
+      ),
+    addThreadExclusion:
+      options.addThreadExclusion ?? vi.fn(() => Promise.resolve({ outcome: "CHANGED" as const })),
     findThreadStatus:
       options.findThreadStatus ??
       vi.fn(() =>
@@ -242,3 +272,21 @@ function createFixture(options: FixtureOptions = {}) {
   });
   return { service, persistence, scheduledActions, logger };
 }
+
+it.each(["track", "untrack"] as const)(
+  "preserves explicit %s UNCONFIRMED without retry or scheduling writes",
+  async (operation) => {
+    const f = createFixture({
+      trackThread: vi.fn(() => Promise.resolve({ outcome: "UNCONFIRMED" as const })),
+      addThreadExclusion: vi.fn(() => Promise.resolve({ outcome: "UNCONFIRMED" as const })),
+    });
+    expect(await f.service[operation](guildId, threadId, actorId)).toEqual({
+      ok: false,
+      code: "UNCONFIRMED",
+    });
+    expect(
+      operation === "track" ? f.persistence.trackThread : f.persistence.addThreadExclusion,
+    ).toHaveBeenCalledOnce();
+    expect(f.scheduledActions.findCurrentThreadClose).not.toHaveBeenCalled();
+  },
+);

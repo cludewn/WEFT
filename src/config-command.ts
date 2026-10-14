@@ -12,6 +12,7 @@ import type {
   InteractionReplyOptions,
 } from "discord.js";
 
+import { createConfigurationAuditContext } from "./guild-configuration-audit.js";
 import type { LinkPreviewConfiguration } from "./link-preview-configuration.js";
 import { LINK_PREVIEW_MODES } from "./link-preview.js";
 import type { AuditLogDestinationService } from "./audit-log-destination.js";
@@ -25,6 +26,8 @@ import {
   InvalidClosedPrefixError,
   InvalidTimezoneError,
   parseAutoCloseInactivityInput,
+  validateTimezone,
+  validateClosedPrefix,
   type GuildSettingsStore,
 } from "./guild-settings.js";
 
@@ -276,20 +279,14 @@ export async function handleConfigCommand(
     return;
   }
 
+  if (subcommand !== "timezone" && subcommand !== "closed-prefix") {
+    throw new Error(`Unsupported config subcommand: ${subcommand}`);
+  }
   const value = interaction.options.getString("value", true);
 
+  let normalized: string;
   try {
-    if (subcommand === "timezone") {
-      const settings = await store.setTimezone(interaction.guildId, value);
-      await interaction.reply(ephemeralReply(`Timezone set to ${settings.timezone}.`));
-      return;
-    }
-
-    if (subcommand === "closed-prefix") {
-      const settings = await store.setClosedPrefix(interaction.guildId, value);
-      await interaction.reply(ephemeralReply(`Closed prefix set to ${settings.closedPrefix}.`));
-      return;
-    }
+    normalized = subcommand === "timezone" ? validateTimezone(value) : validateClosedPrefix(value);
   } catch (error) {
     if (error instanceof InvalidTimezoneError || error instanceof InvalidClosedPrefixError) {
       await interaction.reply(ephemeralReply(error.message));
@@ -297,9 +294,27 @@ export async function handleConfigCommand(
     }
     throw error;
   }
-
-  throw new Error(`Unsupported config subcommand: ${subcommand}`);
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  let response: string;
+  try {
+    const audit = createConfigurationAuditContext(interaction.user.id);
+    const result =
+      subcommand === "timezone"
+        ? await store.setTimezone(interaction.guildId, normalized, audit)
+        : await store.setClosedPrefix(interaction.guildId, normalized, audit);
+    response =
+      result.outcome === "UNCONFIRMED"
+        ? CONFIGURATION_UNCONFIRMED
+        : `${subcommand === "timezone" ? "Timezone" : "Closed prefix"} set to ${subcommand === "timezone" ? result.settings.timezone : result.settings.closedPrefix}.${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+  } catch {
+    response = CONFIGURATION_UNCONFIRMED;
+  }
+  // Interaction failure cannot replay or reverse the already completed database operation.
+  await interaction.editReply(editReply(response));
 }
+
+const CONFIGURATION_UNCONFIRMED =
+  "WEFT could not confirm the configuration change. Check the setting before trying again.";
 
 async function handleAutomaticCloseSubcommand(
   interaction: ChatInputCommandInteraction,
@@ -334,25 +349,43 @@ async function handleAutomaticCloseSubcommand(
       throw error;
     }
 
-    const settings = await automaticClose.setInactivitySeconds(guildId, seconds);
-    await interaction.reply(
-      ephemeralReply(
-        `Automatic close inactivity set to ${formatAutoCloseInactivitySeconds(settings.autoCloseInactivitySeconds)}.`,
-      ),
-    );
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    let response: string;
+    try {
+      const result = await automaticClose.setInactivitySeconds(
+        guildId,
+        seconds,
+        interaction.user.id,
+      );
+      response =
+        result.outcome === "UNCONFIRMED"
+          ? CONFIGURATION_UNCONFIRMED
+          : `Automatic close inactivity set to ${formatAutoCloseInactivitySeconds(result.settings.autoCloseInactivitySeconds)}.${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+    } catch {
+      response = CONFIGURATION_UNCONFIRMED;
+    }
+    await interaction.editReply(editReply(response));
     return;
   }
 
   if (subcommand === "bot-messages") {
     const value = interaction.options.getBoolean("value", true);
-    const settings = await automaticClose.setBotMessagesCountAsActivity(guildId, value);
-    await interaction.reply(
-      ephemeralReply(
-        settings.autoCloseBotMessagesCountAsActivity
-          ? "Bot messages now count as thread activity."
-          : "Bot messages no longer count as thread activity.",
-      ),
-    );
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    let response: string;
+    try {
+      const result = await automaticClose.setBotMessagesCountAsActivity(
+        guildId,
+        value,
+        interaction.user.id,
+      );
+      response =
+        result.outcome === "UNCONFIRMED"
+          ? CONFIGURATION_UNCONFIRMED
+          : `${result.settings.autoCloseBotMessagesCountAsActivity ? "Bot messages now count as thread activity." : "Bot messages no longer count as thread activity."}${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+    } catch {
+      response = CONFIGURATION_UNCONFIRMED;
+    }
+    await interaction.editReply(editReply(response));
     return;
   }
 
@@ -368,15 +401,39 @@ async function handleAutomaticCloseSubcommand(
     }
 
     await interaction.reply(ephemeralReply("Enabling automatic close for this channel..."));
-    const result = await automaticClose.addParentChannel(guildId, channel.id);
-    await interaction.editReply(editReply(addParentChannelMessage(result, channel.id)));
+    let response: string;
+    try {
+      const result = await automaticClose.addParentChannel(
+        guildId,
+        channel.id,
+        interaction.user.id,
+      );
+      response = addParentChannelMessage(result, channel.id);
+    } catch {
+      response = CONFIGURATION_UNCONFIRMED;
+    }
+    await interaction.editReply(editReply(response));
     return;
   }
 
   if (subcommand === "remove-parent") {
     const channel = interaction.options.getChannel("channel", true);
-    await automaticClose.removeParentChannel(guildId, channel.id);
-    await interaction.reply(ephemeralReply(`Automatic close is not enabled for <#${channel.id}>.`));
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    let response: string;
+    try {
+      const result = await automaticClose.removeParentChannel(
+        guildId,
+        channel.id,
+        interaction.user.id,
+      );
+      response =
+        result.outcome === "UNCONFIRMED"
+          ? CONFIGURATION_UNCONFIRMED
+          : `Automatic close is not enabled for <#${channel.id}>.${result.outcome === "NOT_CONFIGURED" ? " (unchanged)" : ""}`;
+    } catch {
+      response = CONFIGURATION_UNCONFIRMED;
+    }
+    await interaction.editReply(editReply(response));
     return;
   }
 
@@ -387,6 +444,7 @@ function addParentChannelMessage(
   result: Awaited<ReturnType<AutomaticCloseConfigurationService["addParentChannel"]>>,
   parentChannelId: string,
 ): string {
+  if (result.outcome === "UNCONFIRMED") return CONFIGURATION_UNCONFIRMED;
   if (result.outcome === "ALREADY_ENABLED") {
     return `Automatic close is already enabled for <#${parentChannelId}>.`;
   }

@@ -1,3 +1,8 @@
+import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import {
+  createGuildSettingsStore,
+  createAutomaticClosePersistenceStore,
+} from "./configuration-fixture.js";
 import { and, eq, inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -7,11 +12,10 @@ import {
   autoCloseThreadActivity,
   autoCloseThreadExclusions,
   autoCloseThreadRetirements,
-  createAutomaticClosePersistenceStore,
 } from "../../src/automatic-close-persistence.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
-import { createGuildSettingsStore, guildSettings } from "../../src/guild-settings.js";
+import { guildSettings } from "../../src/guild-settings.js";
 
 const guildIds = ["execution-guild-one", "execution-guild-default"] as const;
 const threadIds = ["execution-thread-one", "execution-thread-two"] as const;
@@ -173,6 +177,7 @@ describe("automatic close exact episode revalidation", () => {
   it("uses the seven-day missing-settings default without inserting settings", async () => {
     const guildId = guildIds[1];
     await store.addParentChannel(guildId, parentIds[0]);
+    await database.client.delete(guildSettings).where(eq(guildSettings.guildId, guildId));
     await store.recordActivity({
       guildId,
       threadId: threadIds[0],
@@ -455,6 +460,9 @@ function allState() {
 }
 
 async function cleanup(): Promise<void> {
+  await database.client
+    .delete(guildConfigurationAudits)
+    .where(inArray(guildConfigurationAudits.guildId, guildIds));
   await database.client
     .delete(autoCloseThreadRetirements)
     .where(inArray(autoCloseThreadRetirements.guildId, guildIds));

@@ -1940,7 +1940,7 @@ Destination changes serialize on the `guild_settings` row and atomically write t
 dedicated PostgreSQL audit. An exact no-op changes neither timestamp nor audit history. Ambiguous
 write responses are checked through the stable audit ID; a later destination change does not erase
 that historical proof. PostgreSQL remains authoritative. The configuration-time Discord preflight
-is point-in-time. Phase 9B-2B projects newly committed audits from the seven current audit tables.
+is point-in-time. Phase 9B-2B projects newly committed audits from the eight current audit tables.
 The projection explicitly selects safe metadata, never message content or embed fields. Publication follows successful commit or exact same-ID confirmation;
 recurring operations publish only audit rows actually committed, including gap/skip audits and any
 managed-message audit in a combined transaction. A process-local dispatcher owns asynchronous
@@ -1955,7 +1955,7 @@ Deferred ideas must not be implemented during these phases without an approved s
 
 A process-local retention runtime uses the existing application PostgreSQL client. It schedules an initial sweep after startup without waiting for the backlog before READY, then schedules each later sweep 24 hours after the previous one settles. Single-flight ownership prevents overlapping sweeps. Shutdown marks the runtime as stopping, cancels its timer, and drains its current bounded statement through the existing application quiesce phase before the database closes.
 
-Each sweep captures one instant and subtracts exactly 90 * 24 hours. A dedicated persistence boundary deletes only rows with audit timestamps strictly before that cutoff from the seven explicit audit tables. Each atomic PostgreSQL statement selects at most 500 IDs ordered by timestamp and ID, deletes those rows, and returns IDs only for counting. The five new timestamp-and-ID indexes support this global query shape; the existing audit-log-destination retention index remains. A source failure is logged with bounded metadata and does not stop other sources or affect readiness.
+Each sweep captures one instant and subtracts exactly 90 * 24 hours. A dedicated persistence boundary deletes only rows with audit timestamps strictly before that cutoff from the eight explicit audit tables. Each atomic PostgreSQL statement selects at most 500 IDs ordered by timestamp and ID, deletes those rows, and returns IDs only for counting. The five new timestamp-and-ID indexes support this global query shape; the existing audit-log-destination retention index remains. A source failure is logged with bounded metadata and does not stop other sources or affect readiness.
 
 Audit deletion leaves authoritative schedule, managed-resource, and configuration state untouched. It does not publish audit references or Discord notifications. An already eligible audit may disappear before best-effort notification projection; the existing missing-projection behavior applies. The period is fixed globally for this MVP, cleanup is periodic rather than exact TTL, and per-guild configurability remains unresolved.
 
@@ -2182,3 +2182,75 @@ process shutdown deadline. Do not detach them or add another shutdown coordinato
 cannot resume discovery or execute targets. A late message write cannot reactivate a discarded
 session; the transport continues to serialize the already-issued webhook edits. Other bulk mutation,
 logical-settlement and concurrency ownership remains unchanged.
+
+## Guild configuration and thread policy auditing (Issue #102)
+
+`guild-configuration-audit.ts` owns the focused typed success-audit schema, exact historical evidence
+comparison and automatic-close policy lock key. It is not a generic audit framework. Scalar
+configuration setters receive actor, stable audit ID and occurrence time. Inside one transaction,
+they establish settings, take `SELECT FOR UPDATE`, compare the normalized value, update only the
+target column and timestamp, and insert the exact audit. Destination and preview setters retain the
+same settings-row serialization rule and their existing audit contracts. No-op setters leave
+existing timestamps and audit history untouched.
+
+The complete parent-enable, parent-remove, track and untrack persistence paths share
+`pg_advisory_xact_lock` with one signed bigint key: the first eight SHA-256 bytes of the dedicated
+`weft:automatic-close-policy:v1` domain, a NUL separator and the guild ID. The key is passed as decimal
+text; snowflakes are never converted to Number. Transaction ownership serializes absent as well as
+present parent/exclusion rows. No low-level unaudited policy writer remains in the production store.
+Existing integration fixtures adapt their setup API to these audited production paths.
+
+Lock order is settings establishment before policy lock for parent add, then parent insert,
+activity baselines and audit. Parent remove takes policy lock, deletes parent and inserts audit.
+Track takes policy lock, deletes exclusion, reads parent, writes any required activity and inserts
+audit only for exclusion removal. Untrack takes policy lock, inserts exclusion and then audit.
+No policy-owned path subsequently acquires a settings-row lock, and activity writers acquire no
+policy/settings locks. Parent-enable and missing-baseline multi-row INSERT SELECT statements both
+order candidate thread IDs with `COLLATE "C"` inside SQL before conflict handling. Single-thread
+message, re-entry and activity writers lock only their activity row. The separate scheduled-close
+advisory domain and worker/recovery/eligibility behavior remain unchanged.
+
+Discord enumeration and fresh thread authorization finish outside all transactions. Capture parent
+`enabledAt` only after successful enumeration and track time after current context/permission
+validation. Parent enablement deduplicates active thread IDs, skips excluded threads and applies a
+monotonic floor. Equal/newer activity keeps its parent and timestamp exactly. Parent plus all
+baselines plus audit commit together, even with zero baselines. Existing parents get no new baseline
+or audit. Parent deletion keeps activity. Exclusion removal gets a policy audit even under a
+disabled parent; track under an enabled parent applies a monotonic floor. Already included threads
+receive missing-only baseline repair without an audit. Untrack only adds exclusion and its audit.
+
+Expected success evidence is constructed from the transition actually observed inside the
+transaction. Each INSERT uses the stable ID without audit-ID conflict suppression. After a rejected
+transaction, exact read-only audit confirmation checks every identity, value, NULL shape, occurrence
+time and `SUCCESS`; it never infers commit from current settings or retries the write. Absent,
+mismatched or unreadable evidence, including lost no-op/repair responses, produces `UNCONFIRMED`.
+Handlers acknowledge before slow persistence, keep responses ephemeral and expose unknown outcomes
+as unknown. A Discord reply/edit failure cannot replay or undo a confirmed change.
+
+Confirmed changes publish `GUILD_CONFIGURATION` outside their transactions through the existing
+process-local publisher, dispatcher and shutdown drain. The notification projection SELECT contains
+only audit identity, guild, actor, action, setting, target, outcome and timestamp. No value columns
+are selected or passed to formatting, including closed-prefix text. Preserve delivery-time
+destination lookup, permission/channel revalidation, suppressed mentions, source/ID nonce, one
+best-effort attempt and absence of retry/replay or exactly-once delivery. Retention adds the eighth
+explicit source with its `(occurred_at, id)` index; the fixed 90 * 24-hour cutoff, strictly older
+comparison, 500-row batches, source failure isolation, startup cleanup, fixed delay after sweep and
+shutdown ownership are unchanged. Authoritative configuration/policy/activity is never deleted.
+
+Migration 0020 is append-only and contains only the new constrained audit table and retention
+index. Its snapshot and journal entry follow 0019 without editing historical SQL, snapshots,
+ordering or timestamps. Upgrade and clean-install tests preserve existing state and audit tables,
+assert no backfill, constraints, retained history after policy removal and repeated migration no-op.
+Keep explicit development `db:migrate` and production `node dist/migrate.js`; do not use push.
+
+Run focused Unit tests before standard Node 24/pnpm checks. Secret-free verification can copy only
+non-secret repository files into an isolated filesystem, expose dependency packages read-only,
+clear inherited configuration, and hide the original repository/home. Block external networking;
+HTTP unit tests need only an isolated loopback network. Vite's implicit environment-file discovery
+must not have access to real `.env` files. Do not run secret-dependent integration, seek database
+credentials or apply migrations automatically. The maintainer must run the complete
+`weft-integration` workflow and obtain an independent final review before commit. Unit/type/schema
+checks alone do not establish PostgreSQL transaction, constraint, lock or migration correctness.
+
+This issue covers successfully committed actual changes only. Comprehensive input/permission and
+other failed administrative-operation auditing remains the separate remaining portion of F05.

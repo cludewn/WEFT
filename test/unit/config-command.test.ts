@@ -141,12 +141,32 @@ describe("config command", () => {
       createPreviewConfig(),
     );
 
-    expect(store.setTimezone).toHaveBeenCalledWith(defaultSettings.guildId, "Asia/Tokyo");
-    expect(store.setClosedPrefix).toHaveBeenCalledWith(defaultSettings.guildId, "[DONE]");
-    expect(timezoneInteraction.reply).toHaveBeenCalledWith(
-      ephemeral("Timezone set to Asia/Tokyo."),
+    expect(store.setTimezone).toHaveBeenCalledWith(
+      defaultSettings.guildId,
+      "Asia/Tokyo",
+      expect.objectContaining({
+        actorUserId: "actor",
+        auditId: expect.any(String) as string,
+        occurredAt: expect.any(Date) as Date,
+      }),
     );
-    expect(prefixInteraction.reply).toHaveBeenCalledWith(ephemeral("Closed prefix set to [DONE]."));
+    expect(store.setClosedPrefix).toHaveBeenCalledWith(
+      defaultSettings.guildId,
+      "[DONE]",
+      expect.objectContaining({
+        actorUserId: "actor",
+        auditId: expect.any(String) as string,
+        occurredAt: expect.any(Date) as Date,
+      }),
+    );
+    expect(timezoneInteraction.editReply).toHaveBeenCalledWith({
+      content: "Timezone set to Asia/Tokyo.",
+      allowedMentions: { parse: [] },
+    });
+    expect(prefixInteraction.editReply).toHaveBeenCalledWith({
+      content: "Closed prefix set to [DONE].",
+      allowedMentions: { parse: [] },
+    });
   });
 
   it.each(["Asia/Tokyo", "America/New_York", "UTC"])(
@@ -154,10 +174,16 @@ describe("config command", () => {
     async (value) => {
       const store = createStore({
         setTimezone: vi.fn<GuildSettingsStore["setTimezone"]>((_guildId, timezone) =>
-          Promise.resolve({ ...defaultSettings, timezone: validateTimezone(timezone) }),
+          Promise.resolve({
+            outcome: "CHANGED" as const,
+            settings: { ...defaultSettings, timezone: validateTimezone(timezone) },
+          }),
         ),
       });
-      const { interaction, reply } = createInteraction({ subcommand: "timezone", value });
+      const { interaction, editReply, deferReply } = createInteraction({
+        subcommand: "timezone",
+        value,
+      });
       await handleConfigCommand(
         interaction,
         store,
@@ -165,9 +191,17 @@ describe("config command", () => {
         createAuditDestination(),
         createPreviewConfig(),
       );
-      expect(store.setTimezone).toHaveBeenCalledWith(defaultSettings.guildId, value);
-      expect(reply).toHaveBeenCalledOnce();
-      expect(reply).toHaveBeenCalledWith(ephemeral(`Timezone set to ${value}.`));
+      expect(store.setTimezone).toHaveBeenCalledWith(
+        defaultSettings.guildId,
+        value,
+        expect.objectContaining({ actorUserId: "actor" }),
+      );
+      expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+      expect(editReply).toHaveBeenCalledOnce();
+      expect(editReply).toHaveBeenCalledWith({
+        content: `Timezone set to ${value}.`,
+        allowedMentions: { parse: [] },
+      });
     },
   );
 
@@ -527,7 +561,7 @@ describe("automatic close configuration command", () => {
 
   it("stores a parsed inactivity duration", async () => {
     const automaticClose = createAutomaticClose();
-    const { interaction, reply } = createInteraction({
+    const { interaction, editReply } = createInteraction({
       group: "auto-close",
       subcommand: "inactivity",
       value: "12h",
@@ -544,8 +578,12 @@ describe("automatic close configuration command", () => {
     expect(automaticClose.setInactivitySeconds).toHaveBeenCalledWith(
       defaultSettings.guildId,
       43_200,
+      "actor",
     );
-    expect(reply).toHaveBeenCalledWith(ephemeral("Automatic close inactivity set to 12h."));
+    expect(editReply).toHaveBeenCalledWith({
+      content: "Automatic close inactivity set to 12h.",
+      allowedMentions: { parse: [] },
+    });
   });
 
   it("rejects malformed and out-of-range inactivity input without persisting", async () => {
@@ -589,10 +627,12 @@ describe("automatic close configuration command", () => {
     expect(automaticClose.setBotMessagesCountAsActivity).toHaveBeenCalledWith(
       defaultSettings.guildId,
       true,
+      "actor",
     );
-    expect(enabled.reply).toHaveBeenCalledWith(
-      ephemeral("Bot messages now count as thread activity."),
-    );
+    expect(enabled.editReply).toHaveBeenCalledWith({
+      content: "Bot messages now count as thread activity.",
+      allowedMentions: { parse: [] },
+    });
   });
 
   it("rejects an unsupported parent channel type before touching persistence", async () => {
@@ -664,7 +704,7 @@ describe("automatic close configuration command", () => {
         Promise.resolve({ outcome: "NOT_CONFIGURED" }),
       ),
     });
-    const { interaction, reply } = createInteraction({
+    const { interaction, editReply } = createInteraction({
       group: "auto-close",
       subcommand: "remove-parent",
       channel: { id: "555", type: ChannelType.GuildText },
@@ -678,8 +718,15 @@ describe("automatic close configuration command", () => {
       createPreviewConfig(),
     );
 
-    expect(automaticClose.removeParentChannel).toHaveBeenCalledWith(defaultSettings.guildId, "555");
-    expect(reply).toHaveBeenCalledWith(ephemeral("Automatic close is not enabled for <#555>."));
+    expect(automaticClose.removeParentChannel).toHaveBeenCalledWith(
+      defaultSettings.guildId,
+      "555",
+      "actor",
+    );
+    expect(editReply).toHaveBeenCalledWith({
+      content: "Automatic close is not enabled for <#555>. (unchanged)",
+      allowedMentions: { parse: [] },
+    });
   });
 });
 
@@ -687,19 +734,28 @@ function createStore(overrides: Partial<GuildSettingsStore> = {}): GuildSettings
   return {
     getOrCreate: vi.fn(() => Promise.resolve(defaultSettings)),
     setTimezone: vi.fn<GuildSettingsStore["setTimezone"]>((_guildId, timezone) =>
-      Promise.resolve({ ...defaultSettings, timezone }),
+      Promise.resolve({ outcome: "CHANGED" as const, settings: { ...defaultSettings, timezone } }),
     ),
     setClosedPrefix: vi.fn<GuildSettingsStore["setClosedPrefix"]>((_guildId, closedPrefix) =>
-      Promise.resolve({ ...defaultSettings, closedPrefix }),
+      Promise.resolve({
+        outcome: "CHANGED" as const,
+        settings: { ...defaultSettings, closedPrefix },
+      }),
     ),
     setAutoCloseInactivitySeconds: vi.fn<GuildSettingsStore["setAutoCloseInactivitySeconds"]>(
       (_guildId, autoCloseInactivitySeconds) =>
-        Promise.resolve({ ...defaultSettings, autoCloseInactivitySeconds }),
+        Promise.resolve({
+          outcome: "CHANGED" as const,
+          settings: { ...defaultSettings, autoCloseInactivitySeconds },
+        }),
     ),
     setAutoCloseBotMessagesCountAsActivity: vi.fn<
       GuildSettingsStore["setAutoCloseBotMessagesCountAsActivity"]
     >((_guildId, autoCloseBotMessagesCountAsActivity) =>
-      Promise.resolve({ ...defaultSettings, autoCloseBotMessagesCountAsActivity }),
+      Promise.resolve({
+        outcome: "CHANGED" as const,
+        settings: { ...defaultSettings, autoCloseBotMessagesCountAsActivity },
+      }),
     ),
     ...overrides,
   };
@@ -763,12 +819,18 @@ function createAutomaticClose(
     ),
     setInactivitySeconds: vi.fn<AutomaticCloseConfigurationService["setInactivitySeconds"]>(
       (_guildId, autoCloseInactivitySeconds) =>
-        Promise.resolve({ ...defaultSettings, autoCloseInactivitySeconds }),
+        Promise.resolve({
+          outcome: "CHANGED" as const,
+          settings: { ...defaultSettings, autoCloseInactivitySeconds },
+        }),
     ),
     setBotMessagesCountAsActivity: vi.fn<
       AutomaticCloseConfigurationService["setBotMessagesCountAsActivity"]
     >((_guildId, autoCloseBotMessagesCountAsActivity) =>
-      Promise.resolve({ ...defaultSettings, autoCloseBotMessagesCountAsActivity }),
+      Promise.resolve({
+        outcome: "CHANGED" as const,
+        settings: { ...defaultSettings, autoCloseBotMessagesCountAsActivity },
+      }),
     ),
     addParentChannel: vi.fn<AutomaticCloseConfigurationService["addParentChannel"]>(() =>
       Promise.resolve({ outcome: "ENABLED", baselinesApplied: 2 }),
@@ -874,6 +936,112 @@ describe("link preview configuration commands", () => {
         content: `Link preview mode: ${mode} (unchanged)`,
         allowedMentions: { parse: [] },
       });
+    },
+  );
+});
+
+describe("configuration acknowledgement and unknown results", () => {
+  it.each([
+    [null, "timezone", "Asia/Tokyo", "setTimezone"],
+    [null, "closed-prefix", "[DONE]", "setClosedPrefix"],
+    ["auto-close", "inactivity", "12h", "setInactivitySeconds"],
+    ["auto-close", "bot-messages", "", "setBotMessagesCountAsActivity"],
+    ["auto-close", "add-parent", "", "addParentChannel"],
+    ["auto-close", "remove-parent", "", "removeParentChannel"],
+  ] as const)(
+    "shows %s/%s UNCONFIRMED as unknown after ephemeral acknowledgement",
+    async (group, subcommand, value, method) => {
+      const store = createStore();
+      const automatic = createAutomaticClose();
+      const target =
+        method === "setTimezone" || method === "setClosedPrefix"
+          ? store[method]
+          : automatic[method];
+      vi.mocked(target).mockResolvedValueOnce({ outcome: "UNCONFIRMED" });
+      const f = createInteraction({
+        group,
+        subcommand,
+        value,
+        channel: { id: "555", type: ChannelType.GuildText },
+      });
+      await handleConfigCommand(
+        f.interaction,
+        store,
+        automatic,
+        createAuditDestination(),
+        createPreviewConfig(),
+      );
+      if (subcommand === "add-parent")
+        expect(f.reply).toHaveBeenCalledWith(
+          ephemeral("Enabling automatic close for this channel..."),
+        );
+      else expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+      expect(f.editReply).toHaveBeenCalledWith({
+        content:
+          "WEFT could not confirm the configuration change. Check the setting before trying again.",
+        allowedMentions: { parse: [] },
+      });
+      expect(target).toHaveBeenCalledOnce();
+    },
+  );
+  it.each(["timezone", "closed-prefix"] as const)(
+    "shows normalized %s no-op as unchanged",
+    async (subcommand) => {
+      const store = createStore();
+      vi.mocked(
+        subcommand === "timezone" ? store.setTimezone : store.setClosedPrefix,
+      ).mockResolvedValueOnce({ outcome: "NO_CHANGE", settings: defaultSettings });
+      const f = createInteraction({
+        subcommand,
+        value: subcommand === "timezone" ? " utc " : " [CLOSED] ",
+      });
+      await handleConfigCommand(
+        f.interaction,
+        store,
+        createAutomaticClose(),
+        createAuditDestination(),
+        createPreviewConfig(),
+      );
+      expect(f.editReply.mock.calls[0]![0]).toEqual({
+        content: `${subcommand === "timezone" ? "Timezone set to UTC." : "Closed prefix set to [CLOSED]."} (unchanged)`,
+        allowedMentions: { parse: [] },
+      });
+    },
+  );
+  it.each([
+    [null, "timezone", "Asia/Tokyo", "setTimezone"],
+    [null, "closed-prefix", "[DONE]", "setClosedPrefix"],
+    ["auto-close", "inactivity", "12h", "setInactivitySeconds"],
+    ["auto-close", "bot-messages", "", "setBotMessagesCountAsActivity"],
+    ["auto-close", "add-parent", "", "addParentChannel"],
+    ["auto-close", "remove-parent", "", "removeParentChannel"],
+  ] as const)(
+    "does not replay %s/%s after final Discord response loss",
+    async (group, subcommand, value, method) => {
+      const store = createStore();
+      const automatic = createAutomaticClose();
+      const f = createInteraction({
+        group,
+        subcommand,
+        value,
+        channel: { id: "555", type: ChannelType.GuildText },
+      });
+      f.editReply.mockRejectedValueOnce(new Error("Discord response lost"));
+      await expect(
+        handleConfigCommand(
+          f.interaction,
+          store,
+          automatic,
+          createAuditDestination(),
+          createPreviewConfig(),
+        ),
+      ).rejects.toThrow("Discord response lost");
+      const target =
+        method === "setTimezone" || method === "setClosedPrefix"
+          ? store[method]
+          : automatic[method];
+      expect(target).toHaveBeenCalledOnce();
+      expect(f.editReply).toHaveBeenCalledOnce();
     },
   );
 });

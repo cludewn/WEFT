@@ -1,12 +1,10 @@
+import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import { createGuildSettingsStore } from "./configuration-fixture.js";
 import { asc, eq, inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  createGuildSettingsStore,
-  guildSettings,
-  type GuildSettingsStore,
-} from "../../src/guild-settings.js";
+import { guildSettings, type GuildSettingsStore } from "../../src/guild-settings.js";
 import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
@@ -711,6 +709,9 @@ function reschedule(
 }
 
 async function cleanup(): Promise<void> {
+  await database.client
+    .delete(guildConfigurationAudits)
+    .where(eq(guildConfigurationAudits.guildId, guildId));
   await database.client.delete(guildSettings).where(eq(guildSettings.guildId, guildId));
   await database.client
     .delete(scheduledMessageAudits)

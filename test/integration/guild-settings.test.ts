@@ -1,3 +1,5 @@
+import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import { createGuildSettingsStore } from "./configuration-fixture.js";
 import { inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -5,7 +7,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
 import {
-  createGuildSettingsStore,
   DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS,
   DEFAULT_CLOSED_PREFIX,
   DEFAULT_GUILD_TIMEZONE,
@@ -69,5 +70,8 @@ describe("guild settings persistence", () => {
 });
 
 async function deleteTestSettings(): Promise<void> {
+  await database.client
+    .delete(guildConfigurationAudits)
+    .where(inArray(guildConfigurationAudits.guildId, guildIds));
   await database.client.delete(guildSettings).where(inArray(guildSettings.guildId, guildIds));
 }

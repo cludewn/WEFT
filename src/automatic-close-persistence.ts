@@ -1,6 +1,16 @@
 import { and, asc, eq, gt, lte, or, sql } from "drizzle-orm";
 import { index, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 
+import type { AuditNotificationPublisher } from "./audit-notification-dispatcher.js";
+import { publishCommittedAudit } from "./audit-notification-publication.js";
+import {
+  automaticClosePolicyLockKey,
+  configurationAudit,
+  confirmConfigurationAudit,
+  guildConfigurationAudits,
+  type GuildConfigurationAudit,
+  type GuildConfigurationAuditContext,
+} from "./guild-configuration-audit.js";
 import type { DatabaseClient } from "./database.js";
 import { DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS, guildSettings } from "./guild-settings.js";
 
@@ -96,7 +106,7 @@ export type RecordThreadActivity = {
   occurredAt: Date;
 };
 
-export type EnableAutoCloseParentChannel = {
+export type EnableAutoCloseParentChannel = GuildConfigurationAuditContext & {
   guildId: string;
   parentChannelId: string;
   enabledAt: Date;
@@ -104,7 +114,9 @@ export type EnableAutoCloseParentChannel = {
 };
 
 export type EnableAutoCloseParentChannelResult =
-  { outcome: "ENABLED"; baselinesApplied: number } | { outcome: "ALREADY_ENABLED" };
+  | { outcome: "ENABLED"; baselinesApplied: number }
+  | { outcome: "ALREADY_ENABLED" }
+  | { outcome: "UNCONFIRMED" };
 
 export type RecordQualifyingMessageActivity = {
   guildId: string;
@@ -130,17 +142,17 @@ export type AutoCloseParentChannelRef = {
   parentChannelId: string;
 };
 
-export type TrackAutomaticCloseThread = {
+export type TrackAutomaticCloseThread = GuildConfigurationAuditContext & {
   guildId: string;
   threadId: string;
   parentChannelId: string;
   trackedAt: Date;
 };
 
-export type TrackAutomaticCloseThreadResult = {
-  exclusionRemoved: boolean;
-  parentEnabled: boolean;
-};
+export type TrackAutomaticCloseThreadResult =
+  | { outcome: "CHANGED" | "NO_CHANGE"; exclusionRemoved: boolean; parentEnabled: boolean }
+  | { outcome: "UNCONFIRMED" };
+export type AutomaticClosePolicyChangeResult = { outcome: "CHANGED" | "NO_CHANGE" | "UNCONFIRMED" };
 
 export type AutomaticCloseThreadStatus = {
   parentEnabled: boolean;
@@ -199,19 +211,16 @@ export type AutomaticClosePersistenceStore = {
   isCandidateEpisodeEligible: (input: RevalidateAutomaticCloseCandidateEpisode) => Promise<boolean>;
   /** Retires an episode without ever replacing a newer retirement with an older one. */
   retireActivityEpisode: (input: AutomaticCloseEpisode) => Promise<void>;
-  /** Returns whether the allowlist changed. Adding an existing pair is a successful no-op. */
-  addParentChannel: (guildId: string, parentChannelId: string) => Promise<boolean>;
-  /** Returns whether the allowlist changed. Removing an absent pair is a successful no-op. */
-  removeParentChannel: (guildId: string, parentChannelId: string) => Promise<boolean>;
-  /** Returns whether the exclusion state changed. */
-  addThreadExclusion: (guildId: string, threadId: string) => Promise<boolean>;
-  /**
-   * Removes an individual exclusion and returns whether the exclusion state changed.
-   *
-   * This is a low-level persistence operation. `trackThread` is the complete command operation
-   * because it also applies the required activity baseline semantics in the same transaction.
-   */
-  removeThreadExclusion: (guildId: string, threadId: string) => Promise<boolean>;
+  removeParentChannel: (
+    guildId: string,
+    parentChannelId: string,
+    audit: GuildConfigurationAuditContext,
+  ) => Promise<AutomaticClosePolicyChangeResult>;
+  addThreadExclusion: (
+    guildId: string,
+    threadId: string,
+    audit: GuildConfigurationAuditContext,
+  ) => Promise<AutomaticClosePolicyChangeResult>;
   /** Removes an exclusion and applies the approved re-entry baseline semantics atomically. */
   trackThread: (input: TrackAutomaticCloseThread) => Promise<TrackAutomaticCloseThreadResult>;
   /** Reads the current automatic-close status without repairing or creating persisted state. */
@@ -262,6 +271,7 @@ export type AutomaticClosePersistenceStore = {
 
 export function createAutomaticClosePersistenceStore(
   database: DatabaseClient,
+  publisher?: AuditNotificationPublisher,
 ): AutomaticClosePersistenceStore {
   return {
     async findInactiveCandidatesPage({ asOf, cursor }) {
@@ -390,104 +400,168 @@ export function createAutomaticClosePersistenceStore(
           setWhere: sql`${autoCloseThreadRetirements.lastActivityAt} < excluded.last_activity_at`,
         });
     },
-    async addParentChannel(guildId, parentChannelId) {
-      const inserted = await database
-        .insert(autoCloseParentChannels)
-        .values({ guildId, parentChannelId })
-        .onConflictDoNothing({
-          target: [autoCloseParentChannels.guildId, autoCloseParentChannels.parentChannelId],
-        })
-        .returning({ guildId: autoCloseParentChannels.guildId });
-      return inserted.length > 0;
+    async removeParentChannel(guildId, parentChannelId, context) {
+      let expected: GuildConfigurationAudit | undefined;
+      let result: AutomaticClosePolicyChangeResult;
+      try {
+        result = await database.transaction(
+          async (tx): Promise<AutomaticClosePolicyChangeResult> => {
+            await tx.execute(
+              sql`select pg_advisory_xact_lock(${automaticClosePolicyLockKey(guildId)}::bigint)`,
+            );
+            const removed = await tx
+              .delete(autoCloseParentChannels)
+              .where(
+                and(
+                  eq(autoCloseParentChannels.guildId, guildId),
+                  eq(autoCloseParentChannels.parentChannelId, parentChannelId),
+                ),
+              )
+              .returning({ guildId: autoCloseParentChannels.guildId });
+            if (removed.length === 0) return { outcome: "NO_CHANGE" };
+            expected = configurationAudit(context, guildId, {
+              action: "REMOVE",
+              settingType: "AUTO_CLOSE_PARENT",
+              targetType: "PARENT_CHANNEL",
+              targetId: parentChannelId,
+              previousBoolean: true,
+              newBoolean: false,
+            });
+            await tx.insert(guildConfigurationAudits).values(expected);
+            return { outcome: "CHANGED" };
+          },
+        );
+      } catch {
+        result = {
+          outcome: (await confirmConfigurationAudit(database, expected))
+            ? "CHANGED"
+            : "UNCONFIRMED",
+        };
+      }
+      if (result.outcome === "CHANGED")
+        publishCommittedAudit(publisher, {
+          source: "GUILD_CONFIGURATION",
+          auditId: context.auditId,
+        });
+      return result;
     },
-    async removeParentChannel(guildId, parentChannelId) {
-      const removed = await database
-        .delete(autoCloseParentChannels)
-        .where(
-          and(
-            eq(autoCloseParentChannels.guildId, guildId),
-            eq(autoCloseParentChannels.parentChannelId, parentChannelId),
-          ),
-        )
-        .returning({ guildId: autoCloseParentChannels.guildId });
-      return removed.length > 0;
-    },
-    async addThreadExclusion(guildId, threadId) {
-      const inserted = await database
-        .insert(autoCloseThreadExclusions)
-        .values({ guildId, threadId })
-        .onConflictDoNothing({
-          target: [autoCloseThreadExclusions.guildId, autoCloseThreadExclusions.threadId],
-        })
-        .returning({ guildId: autoCloseThreadExclusions.guildId });
-      return inserted.length > 0;
-    },
-    async removeThreadExclusion(guildId, threadId) {
-      const removed = await database
-        .delete(autoCloseThreadExclusions)
-        .where(
-          and(
-            eq(autoCloseThreadExclusions.guildId, guildId),
-            eq(autoCloseThreadExclusions.threadId, threadId),
-          ),
-        )
-        .returning({ guildId: autoCloseThreadExclusions.guildId });
-      return removed.length > 0;
-    },
-    async trackThread({ guildId, threadId, parentChannelId, trackedAt }) {
-      return database.transaction(
-        async (dbTransaction): Promise<TrackAutomaticCloseThreadResult> => {
-          const removed = await dbTransaction
-            .delete(autoCloseThreadExclusions)
-            .where(
-              and(
-                eq(autoCloseThreadExclusions.guildId, guildId),
-                eq(autoCloseThreadExclusions.threadId, threadId),
-              ),
-            )
-            .returning({ guildId: autoCloseThreadExclusions.guildId });
-
-          const [parent] = await dbTransaction
-            .select({ parentChannelId: autoCloseParentChannels.parentChannelId })
-            .from(autoCloseParentChannels)
-            .where(
-              and(
-                eq(autoCloseParentChannels.guildId, guildId),
-                eq(autoCloseParentChannels.parentChannelId, parentChannelId),
-              ),
-            )
-            .limit(1);
-
-          const exclusionRemoved = removed.length > 0;
-          const parentEnabled = parent !== undefined;
-          if (!parentEnabled) {
-            return { exclusionRemoved, parentEnabled };
-          }
-
-          if (exclusionRemoved) {
-            const writtenAt = new Date();
-            await dbTransaction.execute(sql`
-            insert into ${autoCloseThreadActivity}
-              (guild_id, thread_id, parent_channel_id, last_activity_at, updated_at)
-            values (${guildId}, ${threadId}, ${parentChannelId}, ${trackedAt}, ${writtenAt})
-            on conflict (guild_id, thread_id) do update
-            set last_activity_at  = excluded.last_activity_at,
-                parent_channel_id = excluded.parent_channel_id,
-                updated_at        = excluded.updated_at
-            where ${autoCloseThreadActivity}.last_activity_at < excluded.last_activity_at
-          `);
-          } else {
-            await dbTransaction
-              .insert(autoCloseThreadActivity)
-              .values({ guildId, threadId, parentChannelId, lastActivityAt: trackedAt })
+    async addThreadExclusion(guildId, threadId, context) {
+      let expected: GuildConfigurationAudit | undefined;
+      let result: AutomaticClosePolicyChangeResult;
+      try {
+        result = await database.transaction(
+          async (tx): Promise<AutomaticClosePolicyChangeResult> => {
+            await tx.execute(
+              sql`select pg_advisory_xact_lock(${automaticClosePolicyLockKey(guildId)}::bigint)`,
+            );
+            const inserted = await tx
+              .insert(autoCloseThreadExclusions)
+              .values({ guildId, threadId })
               .onConflictDoNothing({
-                target: [autoCloseThreadActivity.guildId, autoCloseThreadActivity.threadId],
-              });
-          }
-
-          return { exclusionRemoved, parentEnabled };
-        },
-      );
+                target: [autoCloseThreadExclusions.guildId, autoCloseThreadExclusions.threadId],
+              })
+              .returning({ guildId: autoCloseThreadExclusions.guildId });
+            if (inserted.length === 0) return { outcome: "NO_CHANGE" };
+            expected = configurationAudit(context, guildId, {
+              action: "UNTRACK",
+              settingType: "THREAD_EXCLUSION",
+              targetType: "THREAD",
+              targetId: threadId,
+              previousBoolean: false,
+              newBoolean: true,
+            });
+            await tx.insert(guildConfigurationAudits).values(expected);
+            return { outcome: "CHANGED" };
+          },
+        );
+      } catch {
+        result = {
+          outcome: (await confirmConfigurationAudit(database, expected))
+            ? "CHANGED"
+            : "UNCONFIRMED",
+        };
+      }
+      if (result.outcome === "CHANGED")
+        publishCommittedAudit(publisher, {
+          source: "GUILD_CONFIGURATION",
+          auditId: context.auditId,
+        });
+      return result;
+    },
+    async trackThread(input) {
+      const { guildId, threadId, parentChannelId, trackedAt } = input;
+      let expected: GuildConfigurationAudit | undefined;
+      let committed: TrackAutomaticCloseThreadResult | undefined;
+      let result: TrackAutomaticCloseThreadResult;
+      try {
+        result = await database.transaction(
+          async (tx): Promise<TrackAutomaticCloseThreadResult> => {
+            await tx.execute(
+              sql`select pg_advisory_xact_lock(${automaticClosePolicyLockKey(guildId)}::bigint)`,
+            );
+            const removed = await tx
+              .delete(autoCloseThreadExclusions)
+              .where(
+                and(
+                  eq(autoCloseThreadExclusions.guildId, guildId),
+                  eq(autoCloseThreadExclusions.threadId, threadId),
+                ),
+              )
+              .returning({ guildId: autoCloseThreadExclusions.guildId });
+            const [parent] = await tx
+              .select({ parentChannelId: autoCloseParentChannels.parentChannelId })
+              .from(autoCloseParentChannels)
+              .where(
+                and(
+                  eq(autoCloseParentChannels.guildId, guildId),
+                  eq(autoCloseParentChannels.parentChannelId, parentChannelId),
+                ),
+              )
+              .limit(1);
+            const exclusionRemoved = removed.length > 0;
+            const parentEnabled = parent !== undefined;
+            if (parentEnabled) {
+              if (exclusionRemoved) {
+                await tx.execute(sql`
+                insert into ${autoCloseThreadActivity}
+                  (guild_id, thread_id, parent_channel_id, last_activity_at, updated_at)
+                values (${guildId}, ${threadId}, ${parentChannelId}, ${trackedAt}, ${new Date()})
+                on conflict (guild_id, thread_id) do update
+                set last_activity_at = excluded.last_activity_at,
+                    parent_channel_id = excluded.parent_channel_id, updated_at = excluded.updated_at
+                where ${autoCloseThreadActivity}.last_activity_at < excluded.last_activity_at
+              `);
+              } else {
+                await tx
+                  .insert(autoCloseThreadActivity)
+                  .values({ guildId, threadId, parentChannelId, lastActivityAt: trackedAt })
+                  .onConflictDoNothing({
+                    target: [autoCloseThreadActivity.guildId, autoCloseThreadActivity.threadId],
+                  });
+              }
+            }
+            if (!exclusionRemoved) return { outcome: "NO_CHANGE", exclusionRemoved, parentEnabled };
+            expected = configurationAudit(input, guildId, {
+              action: "TRACK",
+              settingType: "THREAD_EXCLUSION",
+              targetType: "THREAD",
+              targetId: threadId,
+              previousBoolean: true,
+              newBoolean: false,
+            });
+            committed = { outcome: "CHANGED", exclusionRemoved, parentEnabled };
+            await tx.insert(guildConfigurationAudits).values(expected);
+            return committed;
+          },
+        );
+      } catch {
+        if (committed === undefined || !(await confirmConfigurationAudit(database, expected)))
+          return { outcome: "UNCONFIRMED" };
+        result = committed;
+      }
+      if (result.outcome === "CHANGED")
+        publishCommittedAudit(publisher, { source: "GUILD_CONFIGURATION", auditId: input.auditId });
+      return result;
     },
     async findThreadStatus(guildId, threadId, parentChannelId) {
       const [status] = await database
@@ -538,58 +612,72 @@ export function createAutomaticClosePersistenceStore(
         .orderBy(asc(autoCloseParentChannels.parentChannelId));
       return rows.map((row) => row.parentChannelId);
     },
-    async enableParentChannelWithBaselines({
-      guildId,
-      parentChannelId,
-      enabledAt,
-      activeThreadIds,
-    }) {
-      return database.transaction(
-        async (dbTransaction): Promise<EnableAutoCloseParentChannelResult> => {
-          const inserted = await dbTransaction
-            .insert(autoCloseParentChannels)
-            .values({ guildId, parentChannelId })
-            .onConflictDoNothing({
-              target: [autoCloseParentChannels.guildId, autoCloseParentChannels.parentChannelId],
-            })
-            .returning({ guildId: autoCloseParentChannels.guildId });
-
-          if (inserted.length === 0) {
-            return { outcome: "ALREADY_ENABLED" };
-          }
-
-          // A repeated thread ID would make one ON CONFLICT DO UPDATE affect the same row twice.
-          const candidates = [...new Set(activeThreadIds)];
-          if (candidates.length === 0) {
-            return { outcome: "ENABLED", baselinesApplied: 0 };
-          }
-
-          // One statement applies `last_activity_at = max(existing, enabled_at)` for every
-          // supplied thread. Excluded threads are skipped, and a stale or equal baseline leaves
-          // `last_activity_at`, `parent_channel_id`, and `updated_at` untouched.
-          const applied = await dbTransaction.execute(sql`
-            insert into ${autoCloseThreadActivity}
-              (guild_id, thread_id, parent_channel_id, last_activity_at, updated_at)
-            select
-              ${guildId}, candidate.thread_id, ${parentChannelId}, ${enabledAt}, ${new Date()}
-            from unnest(${sql.param(candidates)}::text[]) as candidate(thread_id)
-            where not exists (
-              select 1
-              from ${autoCloseThreadExclusions} as excluded_thread
-              where excluded_thread.guild_id = ${guildId}
-                and excluded_thread.thread_id = candidate.thread_id
-            )
-            on conflict (guild_id, thread_id) do update
-            set last_activity_at  = excluded.last_activity_at,
-                parent_channel_id = excluded.parent_channel_id,
-                updated_at        = excluded.updated_at
-            where ${autoCloseThreadActivity}.last_activity_at < excluded.last_activity_at
-            returning thread_id
-          `);
-
-          return { outcome: "ENABLED", baselinesApplied: applied.rows.length };
-        },
-      );
+    async enableParentChannelWithBaselines(input) {
+      const { guildId, parentChannelId, enabledAt, activeThreadIds } = input;
+      let expected: GuildConfigurationAudit | undefined;
+      let committed: EnableAutoCloseParentChannelResult | undefined;
+      let result: EnableAutoCloseParentChannelResult;
+      try {
+        result = await database.transaction(
+          async (tx): Promise<EnableAutoCloseParentChannelResult> => {
+            // Establish settings before acquiring policy ownership; no policy writer takes this row later.
+            await tx
+              .insert(guildSettings)
+              .values({ guildId })
+              .onConflictDoNothing({ target: guildSettings.guildId });
+            await tx.execute(
+              sql`select pg_advisory_xact_lock(${automaticClosePolicyLockKey(guildId)}::bigint)`,
+            );
+            const inserted = await tx
+              .insert(autoCloseParentChannels)
+              .values({ guildId, parentChannelId })
+              .onConflictDoNothing({
+                target: [autoCloseParentChannels.guildId, autoCloseParentChannels.parentChannelId],
+              })
+              .returning({ guildId: autoCloseParentChannels.guildId });
+            if (inserted.length === 0) return { outcome: "ALREADY_ENABLED" };
+            const candidates = [...new Set(activeThreadIds)];
+            let baselinesApplied = 0;
+            if (candidates.length > 0) {
+              const applied = await tx.execute(sql`
+              insert into ${autoCloseThreadActivity}
+                (guild_id, thread_id, parent_channel_id, last_activity_at, updated_at)
+              select ${guildId}, candidate.thread_id, ${parentChannelId}, ${enabledAt}, ${new Date()}
+              from unnest(${sql.param(candidates)}::text[]) as candidate(thread_id)
+              where not exists (
+                select 1 from ${autoCloseThreadExclusions} as excluded_thread
+                where excluded_thread.guild_id = ${guildId} and excluded_thread.thread_id = candidate.thread_id
+              )
+              order by candidate.thread_id collate "C"
+              on conflict (guild_id, thread_id) do update
+              set last_activity_at = excluded.last_activity_at,
+                  parent_channel_id = excluded.parent_channel_id, updated_at = excluded.updated_at
+              where ${autoCloseThreadActivity}.last_activity_at < excluded.last_activity_at
+              returning thread_id
+            `);
+              baselinesApplied = applied.rows.length;
+            }
+            expected = configurationAudit(input, guildId, {
+              action: "ADD",
+              settingType: "AUTO_CLOSE_PARENT",
+              targetType: "PARENT_CHANNEL",
+              targetId: parentChannelId,
+              previousBoolean: false,
+              newBoolean: true,
+            });
+            committed = { outcome: "ENABLED", baselinesApplied };
+            await tx.insert(guildConfigurationAudits).values(expected);
+            return committed;
+          },
+        );
+      } catch {
+        if (committed === undefined || !(await confirmConfigurationAudit(database, expected)))
+          return { outcome: "UNCONFIRMED" };
+        result = committed;
+      }
+      if (result.outcome === "ENABLED")
+        publishCommittedAudit(publisher, { source: "GUILD_CONFIGURATION", auditId: input.auditId });
+      return result;
     },
     async listAllParentChannels() {
       return database
@@ -699,6 +787,7 @@ export function createAutomaticClosePersistenceStore(
           where excluded_thread.guild_id = ${guildId}
             and excluded_thread.thread_id = candidate.thread_id
         )
+        order by candidate.thread_id collate "C"
         on conflict (guild_id, thread_id) do nothing
         returning thread_id
       `);

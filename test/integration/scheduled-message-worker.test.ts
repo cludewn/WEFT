@@ -1,9 +1,11 @@
+import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import { createGuildSettingsStore } from "./configuration-fixture.js";
 import { eq, inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import type { Logger } from "pino";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { createGuildSettingsStore, guildSettings } from "../../src/guild-settings.js";
+import { guildSettings } from "../../src/guild-settings.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
 import { managedMessageAudits, managedMessages } from "../../src/managed-message-persistence.js";
@@ -1437,6 +1439,9 @@ async function waitFor(
 }
 
 async function cleanup(): Promise<void> {
+  await database.client
+    .delete(guildConfigurationAudits)
+    .where(eq(guildConfigurationAudits.guildId, guildId));
   await database.client.delete(guildSettings).where(eq(guildSettings.guildId, guildId));
   await database.client
     .delete(managedMessageAudits)

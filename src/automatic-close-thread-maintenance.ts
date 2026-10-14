@@ -1,3 +1,4 @@
+import { createConfigurationAuditContext } from "./guild-configuration-audit.js";
 import type { Logger } from "pino";
 
 import type {
@@ -27,7 +28,8 @@ export type AutomaticCloseThreadMaintenanceFailureCode =
   | "UNSUPPORTED_CONTEXT"
   | "USER_MISSING_PERMISSION"
   | "CONTEXT_VALIDATION_FAILURE"
-  | "PERSISTENCE_FAILURE";
+  | "PERSISTENCE_FAILURE"
+  | "UNCONFIRMED";
 
 type MaintenanceFailure = {
   ok: false;
@@ -137,7 +139,9 @@ export function createAutomaticCloseThreadMaintenanceService({
           threadId,
           parentChannelId: inspection.parentChannelId,
           trackedAt,
+          ...createConfigurationAuditContext(actorId, trackedAt),
         });
+        if (result.outcome === "UNCONFIRMED") return { ok: false, code: "UNCONFIRMED" };
         return {
           ok: true,
           outcome: result.exclusionRemoved ? "TRACKED" : "ALREADY_TRACKED",
@@ -153,7 +157,7 @@ export function createAutomaticCloseThreadMaintenanceService({
           "PERSISTENCE_FAILURE",
           error,
         );
-        return { ok: false, code: "PERSISTENCE_FAILURE" };
+        return { ok: false, code: "UNCONFIRMED" };
       }
     },
     async untrack(guildId, threadId, actorId) {
@@ -163,8 +167,16 @@ export function createAutomaticCloseThreadMaintenanceService({
       }
 
       try {
-        const changed = await persistence.addThreadExclusion(guildId, threadId);
-        return { ok: true, outcome: changed ? "EXCLUDED" : "ALREADY_EXCLUDED" };
+        const result = await persistence.addThreadExclusion(
+          guildId,
+          threadId,
+          createConfigurationAuditContext(actorId, now()),
+        );
+        if (result.outcome === "UNCONFIRMED") return { ok: false, code: "UNCONFIRMED" };
+        return {
+          ok: true,
+          outcome: result.outcome === "CHANGED" ? "EXCLUDED" : "ALREADY_EXCLUDED",
+        };
       } catch (error) {
         logFailure(
           logger,
@@ -175,7 +187,7 @@ export function createAutomaticCloseThreadMaintenanceService({
           "PERSISTENCE_FAILURE",
           error,
         );
-        return { ok: false, code: "PERSISTENCE_FAILURE" };
+        return { ok: false, code: "UNCONFIRMED" };
       }
     },
     async status(guildId, threadId, actorId) {
