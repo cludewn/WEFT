@@ -1021,7 +1021,12 @@ function scheduledMessageRescheduleResultMessage(
 
 function sendResultMessage(result: ManagedMessageSendResult): string {
   if (result.outcome === "SUCCESS") return "Managed message sent.";
+  if (result.outcome === "UNCONFIRMED") {
+    return `WEFT sent message \`${result.messageId}\`, but could not confirm whether it is managed. WEFT did not attempt removal. Check its state before retrying or deleting it.`;
+  }
   if (result.outcome === "PARTIAL_FAILURE") {
+    if (result.deletionOutcome === "REJECTED")
+      return `WEFT sent message \`${result.messageId}\`, but could not establish it as managed. Discord rejected removal; manual cleanup may be required.`;
     return `WEFT sent message \`${result.messageId}\`, but could not establish it as managed or confirm its removal. The message may still exist; manual cleanup may be required.`;
   }
   switch (result.code) {
@@ -1055,6 +1060,8 @@ function sendResultMessage(result: ManagedMessageSendResult): string {
       return "Discord rejected the managed message. The message was not sent.";
     case "SEND_UNCONFIRMED":
       return "WEFT could not confirm whether Discord sent the message. Check the channel before retrying.";
+    case "PERSISTENCE_UNCONFIRMED_ALREADY_ABSENT":
+      return "WEFT sent the message but could not establish it as managed. The message is already absent.";
     case "PERSISTENCE_UNCONFIRMED_COMPENSATED":
       return "WEFT sent the message but could not establish it as managed, so the sent message was removed.";
   }

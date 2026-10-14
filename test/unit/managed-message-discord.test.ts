@@ -129,7 +129,7 @@ describe("managed message send diagnostics", () => {
         ).resolves.toEqual(
           deleteConfirmed
             ? { outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED_COMPENSATED" }
-            : { outcome: "PARTIAL_FAILURE", messageId: raw.id },
+            : { outcome: "PARTIAL_FAILURE", messageId: raw.id, deletionOutcome: "UNCONFIRMED" },
         );
         expect(store.create).not.toHaveBeenCalled();
         expect(store.confirmCreation).not.toHaveBeenCalled();
@@ -252,7 +252,10 @@ describe("managed message Discord boundary", () => {
         outcome: "SUCCESS",
         messageId: "message-id",
       });
-      expect(store.create).toHaveBeenCalledExactlyOnceWith(creation);
+      expect(store.create).toHaveBeenCalledExactlyOnceWith(
+        creation,
+        expect.objectContaining({ operationId: creation.auditId }),
+      );
       if (responseLost) expect(store.confirmCreation).toHaveBeenCalledExactlyOnceWith(creation);
       else expect(store.confirmCreation).not.toHaveBeenCalled();
       expect(deleteRequest).not.toHaveBeenCalled();
@@ -537,13 +540,44 @@ describe("managed message Discord boundary", () => {
     };
 
     await expect(discord.deleteManagedMessage(message)).resolves.toEqual({ outcome: "DELETED" });
-    await expect(discord.deleteManagedMessage(message)).resolves.toEqual({ outcome: "DELETED" });
+    await expect(discord.deleteManagedMessage(message)).resolves.toEqual({
+      outcome: "ALREADY_ABSENT",
+    });
     await expect(discord.deleteManagedMessage(message)).resolves.toEqual({
       outcome: "UNCONFIRMED",
     });
     expect(deleteRequest).toHaveBeenNthCalledWith(
       1,
       Routes.channelMessage("channel-id", "message-id"),
+    );
+  });
+});
+
+describe("managed send compensation deletion evidence", () => {
+  it.each([
+    [403, "REJECTED"],
+    [404, "REJECTED"],
+    [408, "UNCONFIRMED"],
+    [425, "UNCONFIRMED"],
+    [429, "UNCONFIRMED"],
+    [500, "UNCONFIRMED"],
+  ] as const)("classifies DELETE status %i as %s without replay", async (status, outcome) => {
+    const error = new HTTPError(status, "fixed response", "DELETE", "https://discord.invalid", {
+      body: undefined,
+      files: undefined,
+    });
+    const remove = vi.fn().mockRejectedValueOnce(error);
+    const discord = createManagedMessageDiscord({ rest: { delete: remove } } as unknown as Client);
+    const message = {
+      guildId: "guild-id",
+      channelId: "channel-id",
+      messageId: "message-id",
+      createdAt,
+      payload: sendInput.payload,
+    };
+    expect(await discord.deleteManagedMessage(message)).toEqual({ outcome });
+    expect(remove).toHaveBeenCalledExactlyOnceWith(
+      Routes.channelMessage(message.channelId, message.messageId),
     );
   });
 });

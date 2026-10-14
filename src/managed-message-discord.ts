@@ -114,7 +114,11 @@ export type ManagedMessageDiscordSendResult =
   | { outcome: "SENT"; message: SentManagedMessage }
   | { outcome: "FAILURE"; code: ManagedMessageDiscordFailureCode };
 
-export type ManagedMessageDiscordDeleteResult = { outcome: "DELETED" } | { outcome: "UNCONFIRMED" };
+export type ManagedMessageDiscordDeleteResult =
+  | { outcome: "DELETED" }
+  | { outcome: "ALREADY_ABSENT" }
+  | { outcome: "REJECTED" }
+  | { outcome: "UNCONFIRMED" };
 
 export type ManagedMessageDiscordEditFailureCode =
   | "UNSUPPORTED_TARGET"
@@ -479,7 +483,8 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
         await client.rest.delete(Routes.channelMessage(message.channelId, message.messageId));
         return { outcome: "DELETED" };
       } catch (error) {
-        return isUnknownMessage(error) ? { outcome: "DELETED" } : { outcome: "UNCONFIRMED" };
+        if (isUnknownMessage(error)) return { outcome: "ALREADY_ABSENT" };
+        return { outcome: isConfirmedSendRejection(error) ? "REJECTED" : "UNCONFIRMED" };
       }
     },
 

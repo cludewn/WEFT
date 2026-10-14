@@ -1,6 +1,11 @@
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { check, index, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
+import {
+  administrativeTransaction,
+  type AdministrativeAttempt,
+} from "./administrative-transaction.js";
+
 import type { DatabaseClient } from "./database.js";
 import type { ManagedMessagePayload } from "./managed-message-payload.js";
 
@@ -187,7 +192,7 @@ export type ManagedMessageCompensationSafety = "SAFE" | "UNSAFE";
 
 export type ManagedMessageStore = {
   find: (messageId: string) => Promise<ManagedMessage | undefined>;
-  create: (input: CreateManagedMessage) => Promise<ManagedMessage>;
+  create: (input: CreateManagedMessage, attempt?: AdministrativeAttempt) => Promise<ManagedMessage>;
   confirmCreation: (input: CreateManagedMessage) => Promise<ManagedMessageConfirmation>;
   edit: (input: EditManagedMessage) => Promise<ManagedMessageTransitionResult>;
   confirmEdit: (input: EditManagedMessage) => Promise<ManagedMessageConfirmation>;
@@ -488,8 +493,8 @@ export function createManagedMessageStore(database: DatabaseClient): ManagedMess
         .limit(1);
       return message === undefined ? undefined : toManagedMessage(message);
     },
-    async create(input) {
-      return database.transaction((transaction) =>
+    async create(input, attempt) {
+      return administrativeTransaction(database, attempt, (transaction) =>
         insertManagedMessageCreation(transaction, input),
       );
     },
