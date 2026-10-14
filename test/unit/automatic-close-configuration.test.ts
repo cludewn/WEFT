@@ -39,7 +39,9 @@ describe("automatic close configuration service", () => {
   it("returns an idempotent result without enumerating an already enabled parent", async () => {
     const fixture = createFixture({ configuredParents: [parentChannelId] });
 
-    await expect(fixture.service.addParentChannel(guildId, parentChannelId)).resolves.toEqual({
+    await expect(
+      fixture.service.addParentChannel(guildId, parentChannelId, "actor"),
+    ).resolves.toEqual({
       outcome: "ALREADY_ENABLED",
     });
 
@@ -52,7 +54,9 @@ describe("automatic close configuration service", () => {
     const fixture = createFixture();
     fixture.fetchActiveThreadSummaries.mockRejectedValueOnce(new Error("discord unavailable"));
 
-    await expect(fixture.service.addParentChannel(guildId, parentChannelId)).resolves.toEqual({
+    await expect(
+      fixture.service.addParentChannel(guildId, parentChannelId, "actor"),
+    ).resolves.toEqual({
       outcome: "ENUMERATION_FAILED",
     });
 
@@ -83,7 +87,7 @@ describe("automatic close configuration service", () => {
       ],
     });
 
-    await fixture.service.addParentChannel(guildId, parentChannelId);
+    await fixture.service.addParentChannel(guildId, parentChannelId, "actor");
 
     expect(fixture.schedules.enableParentChannelWithBaselines).toHaveBeenCalledOnce();
     const [input] = vi.mocked(fixture.schedules.enableParentChannelWithBaselines).mock.calls[0]!;
@@ -109,14 +113,17 @@ describe("automatic close configuration service", () => {
     vi.mocked(fixture.schedules.enableParentChannelWithBaselines).mockImplementationOnce(
       (input) => {
         order.push("enable");
+        expect(input.actorUserId).toBe("actor");
+        expect(input.auditId).toEqual(expect.any(String));
+        expect(input.occurredAt).toEqual(input.enabledAt);
         expect(input.enabledAt.getTime()).toBeGreaterThanOrEqual(enumerationCompletedAt);
         return Promise.resolve({ outcome: "ENABLED", baselinesApplied: 0 });
       },
     );
 
-    await fixture.service.addParentChannel(guildId, parentChannelId);
+    await fixture.service.addParentChannel(guildId, parentChannelId, "actor");
 
-    expect(order).toEqual(["enumerate", "get-or-create", "enable"]);
+    expect(order).toEqual(["enumerate", "enable"]);
   });
 
   it("maps a lost enable race to an idempotent result", async () => {
@@ -125,7 +132,9 @@ describe("automatic close configuration service", () => {
       outcome: "ALREADY_ENABLED",
     });
 
-    await expect(fixture.service.addParentChannel(guildId, parentChannelId)).resolves.toEqual({
+    await expect(
+      fixture.service.addParentChannel(guildId, parentChannelId, "actor"),
+    ).resolves.toEqual({
       outcome: "ALREADY_ENABLED",
     });
   });
@@ -137,7 +146,9 @@ describe("automatic close configuration service", () => {
       baselinesApplied: 4,
     });
 
-    await expect(fixture.service.addParentChannel(guildId, parentChannelId)).resolves.toEqual({
+    await expect(
+      fixture.service.addParentChannel(guildId, parentChannelId, "actor"),
+    ).resolves.toEqual({
       outcome: "ENABLED",
       baselinesApplied: 4,
     });
@@ -146,13 +157,21 @@ describe("automatic close configuration service", () => {
   it("maps parent removal outcomes", async () => {
     const fixture = createFixture();
 
-    vi.mocked(fixture.schedules.removeParentChannel).mockResolvedValueOnce(true);
-    await expect(fixture.service.removeParentChannel(guildId, parentChannelId)).resolves.toEqual({
+    vi.mocked(fixture.schedules.removeParentChannel).mockResolvedValueOnce({
+      outcome: "CHANGED" as const,
+    });
+    await expect(
+      fixture.service.removeParentChannel(guildId, parentChannelId, "actor"),
+    ).resolves.toEqual({
       outcome: "REMOVED",
     });
 
-    vi.mocked(fixture.schedules.removeParentChannel).mockResolvedValueOnce(false);
-    await expect(fixture.service.removeParentChannel(guildId, parentChannelId)).resolves.toEqual({
+    vi.mocked(fixture.schedules.removeParentChannel).mockResolvedValueOnce({
+      outcome: "NO_CHANGE" as const,
+    });
+    await expect(
+      fixture.service.removeParentChannel(guildId, parentChannelId, "actor"),
+    ).resolves.toEqual({
       outcome: "NOT_CONFIGURED",
     });
   });
@@ -167,8 +186,12 @@ function createFixture({
 } = {}) {
   const guildSettings = {
     getOrCreate: vi.fn(() => Promise.resolve(settings)),
-    setAutoCloseInactivitySeconds: vi.fn(() => Promise.resolve(settings)),
-    setAutoCloseBotMessagesCountAsActivity: vi.fn(() => Promise.resolve(settings)),
+    setAutoCloseInactivitySeconds: vi.fn(() =>
+      Promise.resolve({ outcome: "CHANGED" as const, settings }),
+    ),
+    setAutoCloseBotMessagesCountAsActivity: vi.fn(() =>
+      Promise.resolve({ outcome: "CHANGED" as const, settings }),
+    ),
   } satisfies Pick<
     GuildSettingsStore,
     "getOrCreate" | "setAutoCloseInactivitySeconds" | "setAutoCloseBotMessagesCountAsActivity"
@@ -179,7 +202,9 @@ function createFixture({
     enableParentChannelWithBaselines: vi.fn<
       AutomaticClosePersistenceStore["enableParentChannelWithBaselines"]
     >(() => Promise.resolve({ outcome: "ENABLED", baselinesApplied: 0 })),
-    removeParentChannel: vi.fn(() => Promise.resolve(true)),
+    removeParentChannel: vi.fn<AutomaticClosePersistenceStore["removeParentChannel"]>(() =>
+      Promise.resolve({ outcome: "CHANGED" as const }),
+    ),
   } satisfies Pick<
     AutomaticClosePersistenceStore,
     "listParentChannels" | "enableParentChannelWithBaselines" | "removeParentChannel"
@@ -199,3 +224,26 @@ function createFixture({
 
   return { service, guildSettings, schedules, fetchActiveThreadSummaries, logger };
 }
+
+it("propagates parent outcome uncertainty with actor and stable identity", async () => {
+  const f = createFixture();
+  vi.mocked(f.schedules.enableParentChannelWithBaselines).mockResolvedValueOnce({
+    outcome: "UNCONFIRMED",
+  });
+  vi.mocked(f.schedules.removeParentChannel).mockResolvedValueOnce({ outcome: "UNCONFIRMED" });
+  expect(await f.service.addParentChannel(guildId, parentChannelId, "actor")).toEqual({
+    outcome: "UNCONFIRMED",
+  });
+  expect(await f.service.removeParentChannel(guildId, parentChannelId, "actor")).toEqual({
+    outcome: "UNCONFIRMED",
+  });
+  expect(f.schedules.removeParentChannel).toHaveBeenCalledExactlyOnceWith(
+    guildId,
+    parentChannelId,
+    expect.objectContaining({
+      actorUserId: "actor",
+      auditId: expect.any(String) as string,
+      occurredAt: expect.any(Date) as Date,
+    }),
+  );
+});

@@ -1,3 +1,7 @@
+import {
+  configurationAudit,
+  guildConfigurationAudits,
+} from "../../src/guild-configuration-audit.js";
 import { linkPreviewAudits } from "../../src/link-preview-persistence.js";
 import { randomUUID } from "node:crypto";
 
@@ -46,6 +50,11 @@ const newId = () => randomUUID();
 // including rows left by an interrupted previous test run.
 async function isolatedTimes(): Promise<{ cutoff: Date; old: Date; recent: Date }> {
   const oldestRows = await Promise.all([
+    database.client
+      .select({ at: guildConfigurationAudits.occurredAt })
+      .from(guildConfigurationAudits)
+      .orderBy(asc(guildConfigurationAudits.occurredAt))
+      .limit(1),
     database.client
       .select({ at: linkPreviewAudits.occurredAt })
       .from(linkPreviewAudits)
@@ -148,6 +157,9 @@ beforeAll(async () => {
 
 afterAll(async () => {
   try {
+    await database.client
+      .delete(guildConfigurationAudits)
+      .where(eq(guildConfigurationAudits.guildId, guildId));
     await database.client.delete(linkPreviewAudits).where(eq(linkPreviewAudits.guildId, guildId));
     await database.client
       .delete(auditLogDestinationAudits)
@@ -191,6 +203,18 @@ afterAll(async () => {
 
 async function insertAudit(source: AuditRetentionSource, id: string, at: Date) {
   switch (source) {
+    case "guild_configuration_audits":
+      await database.client.insert(guildConfigurationAudits).values(
+        configurationAudit({ auditId: id, actorUserId: "actor", occurredAt: at }, guildId, {
+          action: "SET",
+          settingType: "TIMEZONE",
+          targetType: "GUILD",
+          targetId: guildId,
+          previousText: "UTC",
+          newText: "Asia/Tokyo",
+        }),
+      );
+      break;
     case "link_preview_audits":
       await database.client.insert(linkPreviewAudits).values({
         id,

@@ -8,6 +8,7 @@ import {
   autoCloseThreadExclusions,
 } from "./automatic-close-persistence.js";
 import type { DatabaseConfig } from "./config.js";
+import { guildConfigurationAudits } from "./guild-configuration-audit.js";
 import { guildSettings } from "./guild-settings.js";
 import { managedMessageAudits, managedMessages } from "./managed-message-persistence.js";
 import {
@@ -38,6 +39,7 @@ export function createDatabase(config: DatabaseConfig) {
       autoCloseThreadActivity,
       autoCloseThreadExclusions,
       guildSettings,
+      guildConfigurationAudits,
       managedMessageAudits,
       managedMessages,
       managedThreads,

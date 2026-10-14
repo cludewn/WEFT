@@ -1,3 +1,8 @@
+import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import {
+  createGuildSettingsStore,
+  createAutomaticClosePersistenceStore,
+} from "./configuration-fixture.js";
 import { inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -7,12 +12,11 @@ import {
   autoCloseThreadActivity,
   autoCloseThreadExclusions,
   autoCloseThreadRetirements,
-  createAutomaticClosePersistenceStore,
   type AutomaticCloseCandidate,
 } from "../../src/automatic-close-persistence.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
-import { createGuildSettingsStore, guildSettings } from "../../src/guild-settings.js";
+import { guildSettings } from "../../src/guild-settings.js";
 
 const guildIds = ["candidate-guild-a", "candidate-guild-b", "candidate-guild-c"] as const;
 const parentIds = ["candidate-parent-a", "candidate-parent-b"] as const;
@@ -83,6 +87,7 @@ describe("automatic close candidate selection persistence", () => {
 
   it("uses the seven-day default without creating missing guild settings", async () => {
     await store.addParentChannel(guildIds[0], parentIds[0]);
+    await database.client.delete(guildSettings).where(inArray(guildSettings.guildId, guildIds));
     await insertActivities([
       activity("default-exact", parentIds[0], secondsBeforeAsOf(604_800)),
       activity("default-too-new", parentIds[0], secondsBeforeAsOf(604_799)),
@@ -317,6 +322,9 @@ function allRows() {
 }
 
 async function cleanup(): Promise<void> {
+  await database.client
+    .delete(guildConfigurationAudits)
+    .where(inArray(guildConfigurationAudits.guildId, guildIds));
   await database.client
     .delete(autoCloseThreadRetirements)
     .where(inArray(autoCloseThreadRetirements.guildId, guildIds));

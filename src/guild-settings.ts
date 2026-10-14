@@ -1,6 +1,15 @@
 import { eq, sql } from "drizzle-orm";
 import { boolean, check, integer, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
+import type { AuditNotificationPublisher } from "./audit-notification-dispatcher.js";
+import { publishCommittedAudit } from "./audit-notification-publication.js";
+import {
+  configurationAudit,
+  confirmConfigurationAudit,
+  guildConfigurationAudits,
+  type GuildConfigurationAudit,
+  type GuildConfigurationAuditContext,
+} from "./guild-configuration-audit.js";
 import type { DatabaseClient } from "./database.js";
 import { normalizeRecurringTimezone } from "./recurring-message.js";
 
@@ -46,15 +55,31 @@ export const guildSettings = pgTable(
 
 export type GuildSettings = typeof guildSettings.$inferSelect;
 
+export type GuildSettingsChangeResult =
+  { outcome: "CHANGED" | "NO_CHANGE"; settings: GuildSettings } | { outcome: "UNCONFIRMED" };
+
 export type GuildSettingsStore = {
   getOrCreate: (guildId: string) => Promise<GuildSettings>;
-  setTimezone: (guildId: string, timezone: string) => Promise<GuildSettings>;
-  setClosedPrefix: (guildId: string, prefix: string) => Promise<GuildSettings>;
-  setAutoCloseInactivitySeconds: (guildId: string, seconds: number) => Promise<GuildSettings>;
+  setTimezone: (
+    guildId: string,
+    timezone: string,
+    audit: GuildConfigurationAuditContext,
+  ) => Promise<GuildSettingsChangeResult>;
+  setClosedPrefix: (
+    guildId: string,
+    prefix: string,
+    audit: GuildConfigurationAuditContext,
+  ) => Promise<GuildSettingsChangeResult>;
+  setAutoCloseInactivitySeconds: (
+    guildId: string,
+    seconds: number,
+    audit: GuildConfigurationAuditContext,
+  ) => Promise<GuildSettingsChangeResult>;
   setAutoCloseBotMessagesCountAsActivity: (
     guildId: string,
     countsAsActivity: boolean,
-  ) => Promise<GuildSettings>;
+    audit: GuildConfigurationAuditContext,
+  ) => Promise<GuildSettingsChangeResult>;
 };
 
 export class InvalidTimezoneError extends Error {
@@ -168,7 +193,10 @@ export function formatAutoCloseInactivitySeconds(seconds: number): string {
   return `${Math.trunc(seconds / 60)}m`;
 }
 
-export function createGuildSettingsStore(database: DatabaseClient): GuildSettingsStore {
+export function createGuildSettingsStore(
+  database: DatabaseClient,
+  publisher?: AuditNotificationPublisher,
+): GuildSettingsStore {
   const getOrCreate = async (guildId: string): Promise<GuildSettings> => {
     await database
       .insert(guildSettings)
@@ -188,69 +216,90 @@ export function createGuildSettingsStore(database: DatabaseClient): GuildSetting
     return settings;
   };
 
+  type ScalarKey =
+    | "timezone"
+    | "closedPrefix"
+    | "autoCloseInactivitySeconds"
+    | "autoCloseBotMessagesCountAsActivity";
+  const change = async (
+    guildId: string,
+    key: ScalarKey,
+    value: string | number | boolean,
+    settingType: GuildConfigurationAudit["settingType"],
+    context: GuildConfigurationAuditContext,
+  ): Promise<GuildSettingsChangeResult> => {
+    let expected: GuildConfigurationAudit | undefined;
+    let changedSettings: GuildSettings | undefined;
+    let result: GuildSettingsChangeResult;
+    try {
+      result = await database.transaction(
+        async (transaction): Promise<GuildSettingsChangeResult> => {
+          await transaction
+            .insert(guildSettings)
+            .values({ guildId })
+            .onConflictDoNothing({ target: guildSettings.guildId });
+          const [current] = await transaction
+            .select()
+            .from(guildSettings)
+            .where(eq(guildSettings.guildId, guildId))
+            .limit(1)
+            .for("update");
+          if (current === undefined) throw new Error("Guild settings row was not established");
+          const previous = current[key];
+          if (previous === value) return { outcome: "NO_CHANGE", settings: current };
+          expected = configurationAudit(context, guildId, {
+            action: "SET",
+            settingType,
+            targetType: "GUILD",
+            targetId: guildId,
+            ...(typeof value === "string"
+              ? { previousText: previous as string, newText: value }
+              : typeof value === "number"
+                ? { previousInteger: previous as number, newInteger: value }
+                : { previousBoolean: previous as boolean, newBoolean: value }),
+          });
+          const [updated] = await transaction
+            .update(guildSettings)
+            .set({ [key]: value, updatedAt: context.occurredAt })
+            .where(eq(guildSettings.guildId, guildId))
+            .returning();
+          if (updated === undefined) throw new Error("Guild settings update was not confirmed");
+          changedSettings = updated;
+          await transaction.insert(guildConfigurationAudits).values(expected);
+          return { outcome: "CHANGED", settings: updated };
+        },
+      );
+    } catch {
+      if (changedSettings === undefined || !(await confirmConfigurationAudit(database, expected)))
+        return { outcome: "UNCONFIRMED" };
+      result = { outcome: "CHANGED", settings: changedSettings };
+    }
+    if (result.outcome === "CHANGED")
+      publishCommittedAudit(publisher, { source: "GUILD_CONFIGURATION", auditId: context.auditId });
+    return result;
+  };
+
   return {
     getOrCreate,
-    async setTimezone(guildId, value) {
-      const timezone = validateTimezone(value);
-      await getOrCreate(guildId);
-      const [settings] = await database
-        .update(guildSettings)
-        .set({ timezone, updatedAt: new Date() })
-        .where(eq(guildSettings.guildId, guildId))
-        .returning();
-
-      if (settings === undefined) {
-        throw new Error("Guild timezone could not be updated");
-      }
-
-      return settings;
-    },
-    async setClosedPrefix(guildId, value) {
-      const closedPrefix = validateClosedPrefix(value);
-      await getOrCreate(guildId);
-      const [settings] = await database
-        .update(guildSettings)
-        .set({ closedPrefix, updatedAt: new Date() })
-        .where(eq(guildSettings.guildId, guildId))
-        .returning();
-
-      if (settings === undefined) {
-        throw new Error("Guild closed prefix could not be updated");
-      }
-
-      return settings;
-    },
-    async setAutoCloseInactivitySeconds(guildId, value) {
-      const autoCloseInactivitySeconds = validateAutoCloseInactivitySeconds(value);
-      await getOrCreate(guildId);
-      const [settings] = await database
-        .update(guildSettings)
-        .set({ autoCloseInactivitySeconds, updatedAt: new Date() })
-        .where(eq(guildSettings.guildId, guildId))
-        .returning();
-
-      if (settings === undefined) {
-        throw new Error("Guild automatic close inactivity could not be updated");
-      }
-
-      return settings;
-    },
-    async setAutoCloseBotMessagesCountAsActivity(guildId, countsAsActivity) {
-      await getOrCreate(guildId);
-      const [settings] = await database
-        .update(guildSettings)
-        .set({
-          autoCloseBotMessagesCountAsActivity: countsAsActivity,
-          updatedAt: new Date(),
-        })
-        .where(eq(guildSettings.guildId, guildId))
-        .returning();
-
-      if (settings === undefined) {
-        throw new Error("Guild automatic close bot message activity could not be updated");
-      }
-
-      return settings;
-    },
+    setTimezone: async (guildId, value, audit) =>
+      change(guildId, "timezone", validateTimezone(value), "TIMEZONE", audit),
+    setClosedPrefix: async (guildId, value, audit) =>
+      change(guildId, "closedPrefix", validateClosedPrefix(value), "CLOSED_PREFIX", audit),
+    setAutoCloseInactivitySeconds: async (guildId, value, audit) =>
+      change(
+        guildId,
+        "autoCloseInactivitySeconds",
+        validateAutoCloseInactivitySeconds(value),
+        "AUTO_CLOSE_INACTIVITY",
+        audit,
+      ),
+    setAutoCloseBotMessagesCountAsActivity: async (guildId, value, audit) =>
+      change(
+        guildId,
+        "autoCloseBotMessagesCountAsActivity",
+        value,
+        "AUTO_CLOSE_BOT_MESSAGES",
+        audit,
+      ),
   };
 }

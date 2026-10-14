@@ -95,7 +95,6 @@ async function main(): Promise<void> {
   const logger = pino({ level: config.logLevel });
   const database = createDatabase(config.database);
   const pgBoss = createPgBossRuntime(config.database, logger);
-  const guildSettings = createGuildSettingsStore(database.client);
   const managedThreads = createManagedThreadStore(database.client);
   const notificationDispatcher: { current?: ReturnType<typeof createAuditNotificationDispatcher> } =
     {};
@@ -104,6 +103,7 @@ async function main(): Promise<void> {
       reference: Parameters<ReturnType<typeof createAuditNotificationDispatcher>["publish"]>[0],
     ) => notificationDispatcher.current?.publish(reference),
   };
+  const guildSettings = createGuildSettingsStore(database.client, auditPublisher);
   const audits = createThreadAuditStore(database.client, auditPublisher);
   const scheduledActions = createScheduledActionStore(database.client);
   const scheduledThreadCloses = publishScheduledThreadCloseAudits(
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
     createRecurringMessageStore(database.client),
   );
   const recurringRuntimeStore = createRecurringRuntimeStore(database.client, auditPublisher);
-  const automaticCloses = createAutomaticClosePersistenceStore(database.client);
+  const automaticCloses = createAutomaticClosePersistenceStore(database.client, auditPublisher);
   const managedMessageStore = publishManagedMessageAudits(
     database.client,
     auditPublisher,

@@ -1,3 +1,8 @@
+import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import {
+  createGuildSettingsStore,
+  createAutomaticClosePersistenceStore,
+} from "./configuration-fixture.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -6,12 +11,10 @@ import {
   autoCloseParentChannels,
   autoCloseThreadActivity,
   autoCloseThreadExclusions,
-  createAutomaticClosePersistenceStore,
 } from "../../src/automatic-close-persistence.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
 import {
-  createGuildSettingsStore,
   DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS,
   guildSettings,
   InvalidAutoCloseInactivityError,
@@ -703,6 +706,7 @@ describe("automatic close qualifying message activity persistence", () => {
 
   it("falls back to approved defaults when the guild settings row is missing", async () => {
     await store.addParentChannel(guildIds[0], parentChannelIds[0]);
+    await database.client.delete(guildSettings).where(eq(guildSettings.guildId, guildIds[0]));
     await expect(
       database.client.select().from(guildSettings).where(eq(guildSettings.guildId, guildIds[0])),
     ).resolves.toEqual([]);
@@ -1341,6 +1345,9 @@ describe("automatic close thread status persistence", () => {
 });
 
 async function cleanup(): Promise<void> {
+  await database.client
+    .delete(guildConfigurationAudits)
+    .where(inArray(guildConfigurationAudits.guildId, guildIds));
   await database.client
     .delete(autoCloseParentChannels)
     .where(inArray(autoCloseParentChannels.guildId, guildIds));
