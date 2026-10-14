@@ -8,7 +8,8 @@ export type AuditSource =
   | "RECURRING_MESSAGE"
   | "AUDIT_LOG_DESTINATION"
   | "LINK_PREVIEW"
-  | "GUILD_CONFIGURATION";
+  | "GUILD_CONFIGURATION"
+  | "ADMINISTRATIVE_OPERATION_FAILURE";
 
 export type AuditReference = Readonly<{ source: AuditSource; auditId: string }>;
 
@@ -25,6 +26,7 @@ export type AuditNotificationRecord = AuditReference & {
   scheduledActionId?: string;
   occurrenceId?: string;
   failureCode?: string;
+  failureStage?: string;
   skipReason?: string;
   previousDestinationId?: string;
   newDestinationId?: string;
@@ -40,26 +42,28 @@ const safeIdentifier = /^[A-Za-z0-9_-]{1,64}$/;
 export function formatAuditNotification(
   record: AuditNotificationRecord,
 ): { content: string; nonce: string } | undefined {
+  const privateFailure = record.source === "ADMINISTRATIVE_OPERATION_FAILURE";
   const fields: [string, string | undefined][] = [
     ["Source", record.source],
     ["Event", record.event],
     ["Outcome", record.outcome],
     ["Actor", record.actorType],
     ["Actor ID", record.actorUserId],
-    ["Thread ID", record.threadId],
-    ["Channel ID", record.channelId],
-    ["Message ID", record.messageId],
-    ["Scheduled action ID", record.scheduledActionId],
-    ["Occurrence ID", record.occurrenceId],
+    ["Thread ID", privateFailure ? undefined : record.threadId],
+    ["Channel ID", privateFailure ? undefined : record.channelId],
+    ["Message ID", privateFailure ? undefined : record.messageId],
+    ["Scheduled action ID", privateFailure ? undefined : record.scheduledActionId],
+    ["Occurrence ID", privateFailure ? undefined : record.occurrenceId],
     ["Failure code", record.failureCode],
-    ["Skip reason", record.skipReason],
-    ["Previous destination ID", record.previousDestinationId],
-    ["New destination ID", record.newDestinationId],
-    ["Previous mode", record.previousMode],
-    ["New mode", record.newMode],
-    ["Setting", record.settingType],
-    ["Target type", record.targetType],
-    ["Target ID", record.targetId],
+    ["Failure stage", record.failureStage],
+    ["Skip reason", privateFailure ? undefined : record.skipReason],
+    ["Previous destination ID", privateFailure ? undefined : record.previousDestinationId],
+    ["New destination ID", privateFailure ? undefined : record.newDestinationId],
+    ["Previous mode", privateFailure ? undefined : record.previousMode],
+    ["New mode", privateFailure ? undefined : record.newMode],
+    ["Setting", privateFailure ? undefined : record.settingType],
+    ["Target type", privateFailure ? undefined : record.targetType],
+    ["Target ID", privateFailure ? undefined : record.targetId],
     ["Audit ID", record.auditId],
   ];
   if (

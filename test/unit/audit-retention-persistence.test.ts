@@ -1,5 +1,7 @@
-import type { SQL } from "drizzle-orm";
+import { sql, type SQL } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { PgDialect } from "drizzle-orm/pg-core";
+import type { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -7,10 +9,48 @@ import {
   createAuditRetentionStore,
 } from "../../src/audit-retention-persistence.js";
 import type { DatabaseClient } from "../../src/database.js";
+import { administrativeOperationFailureAudits } from "../../src/administrative-operation-failure-audit.js";
 
 const cutoff = new Date("2030-04-01T00:00:00.000Z");
 
 describe("audit retention SQL boundary", () => {
+  it.each([
+    { raw: "2030-01-01 00:00:00.123+00", instant: "2030-01-01T00:00:00.123Z" },
+    { raw: "2030-01-01 09:00:00.123456+09", instant: "2030-01-01T00:00:00.123Z" },
+    { raw: null, instant: null },
+  ])(
+    "explicitly decodes aggregate timestamp strings and empty history: %j",
+    async ({ raw, instant }) => {
+      const query = vi.fn(
+        (config: {
+          rowMode?: string;
+          types: { getTypeParser: (oid: number) => (value: string) => unknown };
+        }) => {
+          const value = raw === null ? null : config.types.getTypeParser(1184)(raw);
+          return Promise.resolve({
+            rows: config.rowMode === "array" ? [[value]] : [{ minimum: value }],
+          });
+        },
+      );
+      // Exercise installed Drizzle parsing and mapping with the public query boundary, without a DB.
+      const database = drizzle({ query } as unknown as Pool);
+      const unconverted = await database.execute<{ minimum: string | null }>(
+        sql`select min(occurred_at) as minimum from administrative_operation_failure_audits`,
+      );
+      expect(unconverted.rows[0]?.minimum).toBe(raw);
+      const [converted] = await database
+        .select({
+          minimum:
+            sql<Date | null>`min(${administrativeOperationFailureAudits.occurredAt})`.mapWith(
+              administrativeOperationFailureAudits.occurredAt,
+            ),
+        })
+        .from(administrativeOperationFailureAudits);
+      expect(converted?.minimum).toEqual(instant === null ? null : new Date(instant));
+      if (instant !== null) expect(converted?.minimum?.getTime()).toBe(Date.parse(instant));
+    },
+  );
+
   it.each(AUDIT_RETENTION_SOURCES)(
     "compiles one parameterized bounded delete for %s",
     async (source) => {

@@ -148,6 +148,13 @@
       "when": 1791906263755,
       "tag": "0020_mixed_thunderbird",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1791959140902,
+      "tag": "0021_parallel_revanche",
+      "breakpoints": true
     }
   ]
 }

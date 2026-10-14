@@ -36,15 +36,15 @@ describe("guild configuration migration artifacts", () => {
       ),
     ).toEqual(["occurred_at", "id"]);
     const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8")) as Journal;
-    expect(journal.entries.at(-2)).toEqual({
+    expect(journal.entries[19]).toEqual({
       idx: 19,
       version: "7",
       when: 1790960743797,
       tag: "0019_wealthy_edwin_jarvis",
       breakpoints: true,
     });
-    expect(journal.entries.at(-1)).toMatchObject({ idx: 20, tag: "0020_mixed_thunderbird" });
-    expect(journal.entries.at(-1)!.when).toBeGreaterThan(journal.entries.at(-2)!.when);
+    expect(journal.entries[20]).toMatchObject({ idx: 20, tag: "0020_mixed_thunderbird" });
+    expect(journal.entries[20]!.when).toBeGreaterThan(journal.entries[19]!.when);
     const migration = await readFile("drizzle/0020_mixed_thunderbird.sql", "utf8");
     expect(migration).not.toMatch(/ALTER|DROP|DELETE|UPDATE|INSERT|REFERENCES/i);
     expect(migration).toContain("is true");

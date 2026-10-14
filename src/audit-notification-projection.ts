@@ -1,3 +1,4 @@
+import { administrativeOperationFailureAudits } from "./administrative-operation-failure-audit.js";
 import { guildConfigurationAudits } from "./guild-configuration-audit.js";
 import { eq } from "drizzle-orm";
 
@@ -39,6 +40,22 @@ export function createAuditNotificationProjection(database: DatabaseClient) {
   return {
     async load(reference: AuditReference): Promise<AuditNotificationRecord | undefined> {
       switch (reference.source) {
+        case "ADMINISTRATIVE_OPERATION_FAILURE": {
+          const [row] = await database
+            .select({
+              guildId: administrativeOperationFailureAudits.guildId,
+              actorUserId: administrativeOperationFailureAudits.actorUserId,
+              event: administrativeOperationFailureAudits.operationCode,
+              failureStage: administrativeOperationFailureAudits.failureStage,
+              failureCode: administrativeOperationFailureAudits.failureReasonCode,
+              outcome: administrativeOperationFailureAudits.outcome,
+              occurredAt: administrativeOperationFailureAudits.occurredAt,
+            })
+            .from(administrativeOperationFailureAudits)
+            .where(eq(administrativeOperationFailureAudits.id, reference.auditId))
+            .limit(1);
+          return row && { ...reference, ...row, actorType: "USER" };
+        }
         case "GUILD_CONFIGURATION": {
           const [row] = await database
             .select({

@@ -1,3 +1,8 @@
+import {
+  administrativeGuard,
+  administrativeTransaction,
+  type AdministrativeAttempt,
+} from "./administrative-transaction.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   type AnyPgColumn,
@@ -962,6 +967,7 @@ export type RecurringMessageSeries = {
 };
 
 export type CreateRecurringMessageSeries = {
+  administrativeAttempt?: AdministrativeAttempt;
   scheduledActionId: string;
   occurrenceId: string;
   auditId: string;
@@ -975,6 +981,7 @@ export type CreateRecurringMessageSeries = {
 };
 
 export type EditRecurringMessagePayload = {
+  administrativeAttempt?: AdministrativeAttempt;
   scheduledActionId: string;
   actorId: string;
   expectedRevision: number;
@@ -984,6 +991,7 @@ export type EditRecurringMessagePayload = {
 };
 
 export type EditRecurringMessageRecurrence = {
+  administrativeAttempt?: AdministrativeAttempt;
   scheduledActionId: string;
   actorId: string;
   expectedRevision: number;
@@ -995,6 +1003,7 @@ export type EditRecurringMessageRecurrence = {
 };
 
 export type CancelRecurringMessageSeries = {
+  administrativeAttempt?: AdministrativeAttempt;
   scheduledActionId: string;
   actorId: string;
   expectedRevision: number;
@@ -1109,9 +1118,25 @@ function assertGapAuditIds(gaps: DstGapCandidate[], ids: string[]): void {
   }
 }
 
+function exactRecurringAdministrativeAudit(
+  actual: RecurringMessageAudit,
+  expected: RecurringMessageAudit | undefined,
+): boolean {
+  if (expected === undefined) return false;
+  return (Object.keys(expected) as (keyof RecurringMessageAudit)[]).every((key) => {
+    const value = expected[key];
+    return value instanceof Date
+      ? actual[key] instanceof Date && (actual[key] as Date).getTime() === value.getTime()
+      : actual[key] === value;
+  });
+}
+
 export function createRecurringMessageStore(database: DatabaseClient): RecurringMessageStore {
-  const find = async (scheduledActionId: string): Promise<RecurringMessageSeries | undefined> => {
-    const [row] = await database
+  const find = async (
+    scheduledActionId: string,
+    reader: Pick<DatabaseClient, "select"> = database,
+  ): Promise<RecurringMessageSeries | undefined> => {
+    const [row] = await reader
       .select({
         action: scheduledActions,
         state: scheduledMessageStates,
@@ -1158,6 +1183,8 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
     id: string,
     scheduledActionId: string,
     matches: (audit: RecurringMessageAudit) => boolean,
+    expected: RecurringMessageAudit | undefined,
+    fallback?: RecurringMessageSeries,
   ): Promise<RecurringMessageSeries | undefined> => {
     const [audit, series] = await Promise.all([
       database
@@ -1166,10 +1193,13 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
         .where(eq(recurringMessageAudits.id, id))
         .limit(1)
         .then((rows) => rows[0]),
-      find(scheduledActionId),
+      find(scheduledActionId).catch(() => fallback),
     ]);
-    return audit !== undefined && audit.scheduledActionId === scheduledActionId && matches(audit)
-      ? series
+    return audit !== undefined &&
+      audit.scheduledActionId === scheduledActionId &&
+      matches(audit) &&
+      exactRecurringAdministrativeAudit(audit, expected)
+      ? (series ?? fallback)
       : undefined;
   };
 
@@ -1180,113 +1210,124 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
       const recurrenceDefinition = validation.definition;
       const selection = findNextOccurrence(recurrenceDefinition, 0, input.effectiveAt);
       assertGapAuditIds(selection.skippedGaps, input.gapAuditIds);
+      let expectedAudit: RecurringMessageAudit | undefined;
+      let committedSnapshot: RecurringMessageSeries | undefined;
       try {
-        const series = await database.transaction(async (transaction) => {
-          const [action] = await transaction
-            .insert(scheduledActions)
-            .values({
-              id: input.scheduledActionId,
-              guildId: input.guildId,
-              actionType: "SEND_MESSAGE",
-              targetId: input.channelId,
-              status: "ACTIVE",
-              executeAt: selection.occurrence.scheduledFor,
-            })
-            .returning();
-          if (action === undefined) throw new Error("Recurring action was not created");
-          const [state] = await transaction
-            .insert(scheduledMessageStates)
-            .values({
-              scheduledActionId: input.scheduledActionId,
-              creatorUserId: input.actorId,
-              retryCount: 0,
-              revision: 0,
-              ...scheduledMessagePayloadToColumns(input.payload),
-              resultMessageId: null,
-            })
-            .returning();
-          if (state === undefined) throw new Error("Recurring message state was not created");
-          const [recurrence] = await transaction
-            .insert(recurringMessageSchedules)
-            .values({
-              scheduledActionId: input.scheduledActionId,
-              ...recurrenceDefinition,
-              definitionRevision: 0,
-              effectiveAt: input.effectiveAt,
-            })
-            .returning();
-          if (recurrence === undefined) throw new Error("Recurring definition was not created");
-          const [occurrence] = await transaction
-            .insert(recurringMessageOccurrences)
-            .values(
-              occurrenceValues(
-                input.scheduledActionId,
-                input.occurrenceId,
-                0,
-                selection.occurrence,
-              ),
-            )
-            .returning();
-          if (occurrence === undefined) throw new Error("Initial occurrence was not created");
-          const payload = scheduledMessagePayloadToColumns(input.payload);
-          await transaction.insert(recurringMessageAudits).values({
-            id: input.auditId,
-            scheduledActionId: input.scheduledActionId,
-            guildId: input.guildId,
-            channelId: input.channelId,
-            event: "SERIES_CREATED",
-            actorType: "USER",
-            actorId: input.actorId,
-            afterRevision: 0,
-            afterContent: payload.content,
-            afterEmbedTitle: payload.embedTitle,
-            afterEmbedDescription: payload.embedDescription,
-            afterEmbedColor: payload.embedColor,
-            afterEmbedImageUrl: payload.embedImageUrl,
-            afterFrequency: recurrenceDefinition.frequency,
-            afterWeekdayMask: recurrenceDefinition.weekdayMask,
-            afterLocalTime: recurrenceDefinition.localTime,
-            afterTimezone: recurrenceDefinition.timezone,
-            afterDefinitionRevision: 0,
-            afterEffectiveAt: input.effectiveAt,
-            selectedNextOccurrenceId: occurrence.id,
-            selectedNextLocalDate: occurrence.intendedLocalDate,
-            selectedNextLocalTime: occurrence.intendedLocalTime,
-            selectedNextScheduledFor: occurrence.scheduledFor,
-            postSeriesStatus: "ACTIVE",
-            occurredAt: input.effectiveAt,
-            outcome: "SUCCESS",
-          });
-          if (selection.skippedGaps.length > 0) {
-            await transaction.insert(recurringMessageAudits).values(
-              selection.skippedGaps.map((gap, index) =>
-                gapAuditValues(
-                  {
-                    scheduledActionId: input.scheduledActionId,
-                    guildId: input.guildId,
-                    channelId: input.channelId,
-                    actorId: input.actorId,
-                    timezone: recurrenceDefinition.timezone,
-                    definitionRevision: 0,
-                    occurredAt: input.effectiveAt,
-                  },
-                  gap,
-                  input.gapAuditIds[index]!,
+        const series = await administrativeTransaction(
+          database,
+          input.administrativeAttempt,
+          async (transaction) => {
+            const [action] = await transaction
+              .insert(scheduledActions)
+              .values({
+                id: input.scheduledActionId,
+                guildId: input.guildId,
+                actionType: "SEND_MESSAGE",
+                targetId: input.channelId,
+                status: "ACTIVE",
+                executeAt: selection.occurrence.scheduledFor,
+              })
+              .returning();
+            if (action === undefined) throw new Error("Recurring action was not created");
+            const [state] = await transaction
+              .insert(scheduledMessageStates)
+              .values({
+                scheduledActionId: input.scheduledActionId,
+                creatorUserId: input.actorId,
+                retryCount: 0,
+                revision: 0,
+                ...scheduledMessagePayloadToColumns(input.payload),
+                resultMessageId: null,
+              })
+              .returning();
+            if (state === undefined) throw new Error("Recurring message state was not created");
+            const [recurrence] = await transaction
+              .insert(recurringMessageSchedules)
+              .values({
+                scheduledActionId: input.scheduledActionId,
+                ...recurrenceDefinition,
+                definitionRevision: 0,
+                effectiveAt: input.effectiveAt,
+              })
+              .returning();
+            if (recurrence === undefined) throw new Error("Recurring definition was not created");
+            const [occurrence] = await transaction
+              .insert(recurringMessageOccurrences)
+              .values(
+                occurrenceValues(
+                  input.scheduledActionId,
+                  input.occurrenceId,
+                  0,
+                  selection.occurrence,
                 ),
-              ),
-            );
-          }
-          return {
-            action,
-            creatorUserId: state.creatorUserId,
-            retryCount: state.retryCount,
-            revision: state.revision,
-            payload: input.payload,
-            resultMessageId: state.resultMessageId,
-            recurrence,
-            occurrence,
-          } satisfies RecurringMessageSeries;
-        });
+              )
+              .returning();
+            if (occurrence === undefined) throw new Error("Initial occurrence was not created");
+            const payload = scheduledMessagePayloadToColumns(input.payload);
+            const [primaryAudit] = await transaction
+              .insert(recurringMessageAudits)
+              .values({
+                id: input.auditId,
+                scheduledActionId: input.scheduledActionId,
+                guildId: input.guildId,
+                channelId: input.channelId,
+                event: "SERIES_CREATED",
+                actorType: "USER",
+                actorId: input.actorId,
+                afterRevision: 0,
+                afterContent: payload.content,
+                afterEmbedTitle: payload.embedTitle,
+                afterEmbedDescription: payload.embedDescription,
+                afterEmbedColor: payload.embedColor,
+                afterEmbedImageUrl: payload.embedImageUrl,
+                afterFrequency: recurrenceDefinition.frequency,
+                afterWeekdayMask: recurrenceDefinition.weekdayMask,
+                afterLocalTime: recurrenceDefinition.localTime,
+                afterTimezone: recurrenceDefinition.timezone,
+                afterDefinitionRevision: 0,
+                afterEffectiveAt: input.effectiveAt,
+                selectedNextOccurrenceId: occurrence.id,
+                selectedNextLocalDate: occurrence.intendedLocalDate,
+                selectedNextLocalTime: occurrence.intendedLocalTime,
+                selectedNextScheduledFor: occurrence.scheduledFor,
+                postSeriesStatus: "ACTIVE",
+                occurredAt: input.effectiveAt,
+                outcome: "SUCCESS",
+              })
+              .returning();
+            expectedAudit = primaryAudit;
+            if (selection.skippedGaps.length > 0) {
+              await transaction.insert(recurringMessageAudits).values(
+                selection.skippedGaps.map((gap, index) =>
+                  gapAuditValues(
+                    {
+                      scheduledActionId: input.scheduledActionId,
+                      guildId: input.guildId,
+                      channelId: input.channelId,
+                      actorId: input.actorId,
+                      timezone: recurrenceDefinition.timezone,
+                      definitionRevision: 0,
+                      occurredAt: input.effectiveAt,
+                    },
+                    gap,
+                    input.gapAuditIds[index]!,
+                  ),
+                ),
+              );
+            }
+            committedSnapshot = {
+              action,
+              creatorUserId: state.creatorUserId,
+              retryCount: state.retryCount,
+              revision: state.revision,
+              payload: input.payload,
+              resultMessageId: state.resultMessageId,
+              recurrence,
+              occurrence,
+            } satisfies RecurringMessageSeries;
+            return committedSnapshot;
+          },
+        );
         return { outcome: "COMMITTED", series };
       } catch {
         const confirmed = await exactAuditCommitted(
@@ -1321,6 +1362,8 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
               audit.outcome === "SUCCESS"
             );
           },
+          expectedAudit,
+          committedSnapshot,
         ).catch(() => undefined);
         return confirmed === undefined
           ? { outcome: "PERSISTENCE_UNCONFIRMED" }
@@ -1331,76 +1374,100 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
     async editPayload(input) {
       let nextRevision = input.expectedRevision + 1;
       let expectedBefore: ReturnType<typeof scheduledMessagePayloadToColumns> | undefined;
+      let expectedAudit: RecurringMessageAudit | undefined;
+      let committedSnapshot: RecurringMessageSeries | undefined;
       try {
-        const result = await database.transaction(async (transaction) => {
-          const [action] = await transaction
-            .select()
-            .from(scheduledActions)
-            .where(eq(scheduledActions.id, input.scheduledActionId))
-            .limit(1)
-            .for("update");
-          if (action === undefined || action.actionType !== "SEND_MESSAGE")
-            return { outcome: "NOT_FOUND" } as const;
-          const [recurrence] = await transaction
-            .select()
-            .from(recurringMessageSchedules)
-            .where(eq(recurringMessageSchedules.scheduledActionId, action.id))
-            .limit(1);
-          const [state] = await transaction
-            .select()
-            .from(scheduledMessageStates)
-            .where(eq(scheduledMessageStates.scheduledActionId, action.id))
-            .limit(1);
-          if (recurrence === undefined || state === undefined)
-            return { outcome: "NOT_FOUND" } as const;
-          if (action.status !== "ACTIVE" || state.revision !== input.expectedRevision)
-            return { outcome: "CONFLICT" } as const;
-          const beforePayload = scheduledMessagePayloadFromColumns(state);
-          const before = scheduledMessagePayloadToColumns(beforePayload);
-          expectedBefore = before;
-          const after = scheduledMessagePayloadToColumns(input.payload);
-          if (
-            before.content === after.content &&
-            before.embedTitle === after.embedTitle &&
-            before.embedDescription === after.embedDescription &&
-            before.embedColor === after.embedColor &&
-            before.embedImageUrl === after.embedImageUrl
-          ) {
-            return { outcome: "UNCHANGED" } as const;
-          }
-          nextRevision = state.revision + 1;
-          await transaction
-            .update(scheduledMessageStates)
-            .set({ ...after, revision: nextRevision })
-            .where(eq(scheduledMessageStates.scheduledActionId, action.id));
-          await transaction.insert(recurringMessageAudits).values({
-            id: input.auditId,
-            scheduledActionId: action.id,
-            guildId: action.guildId,
-            channelId: action.targetId,
-            event: "PAYLOAD_EDITED",
-            actorType: "USER",
-            actorId: input.actorId,
-            beforeRevision: state.revision,
-            afterRevision: nextRevision,
-            beforeContent: before.content,
-            afterContent: after.content,
-            beforeEmbedTitle: before.embedTitle,
-            afterEmbedTitle: after.embedTitle,
-            beforeEmbedDescription: before.embedDescription,
-            afterEmbedDescription: after.embedDescription,
-            beforeEmbedColor: before.embedColor,
-            afterEmbedColor: after.embedColor,
-            beforeEmbedImageUrl: before.embedImageUrl,
-            afterEmbedImageUrl: after.embedImageUrl,
-            postSeriesStatus: "ACTIVE",
-            occurredAt: input.occurredAt,
-            outcome: "SUCCESS",
-          });
-          return { outcome: "COMMITTED" } as const;
-        });
+        const result = await administrativeTransaction(
+          database,
+          input.administrativeAttempt,
+          async (transaction) => {
+            const [action] = await transaction
+              .select()
+              .from(scheduledActions)
+              .where(eq(scheduledActions.id, input.scheduledActionId))
+              .limit(1)
+              .for("update");
+            if (action === undefined || action.actionType !== "SEND_MESSAGE")
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "NOT_FOUND",
+              } as const);
+            const [recurrence] = await transaction
+              .select()
+              .from(recurringMessageSchedules)
+              .where(eq(recurringMessageSchedules.scheduledActionId, action.id))
+              .limit(1);
+            const [state] = await transaction
+              .select()
+              .from(scheduledMessageStates)
+              .where(eq(scheduledMessageStates.scheduledActionId, action.id))
+              .limit(1);
+            if (recurrence === undefined || state === undefined)
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "NOT_FOUND",
+              } as const);
+            if (action.status !== "ACTIVE" || state.revision !== input.expectedRevision)
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "CONFLICT",
+              } as const);
+            const beforeSeries = await find(input.scheduledActionId, transaction);
+            if (beforeSeries === undefined)
+              throw new Error("Recurring series snapshot unavailable");
+            committedSnapshot = beforeSeries;
+            const beforePayload = scheduledMessagePayloadFromColumns(state);
+            const before = scheduledMessagePayloadToColumns(beforePayload);
+            expectedBefore = before;
+            const after = scheduledMessagePayloadToColumns(input.payload);
+            if (
+              before.content === after.content &&
+              before.embedTitle === after.embedTitle &&
+              before.embedDescription === after.embedDescription &&
+              before.embedColor === after.embedColor &&
+              before.embedImageUrl === after.embedImageUrl
+            ) {
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "UNCHANGED",
+              } as const);
+            }
+            nextRevision = state.revision + 1;
+            committedSnapshot = { ...beforeSeries, revision: nextRevision, payload: input.payload };
+            await transaction
+              .update(scheduledMessageStates)
+              .set({ ...after, revision: nextRevision })
+              .where(eq(scheduledMessageStates.scheduledActionId, action.id));
+            const [primaryAudit] = await transaction
+              .insert(recurringMessageAudits)
+              .values({
+                id: input.auditId,
+                scheduledActionId: action.id,
+                guildId: action.guildId,
+                channelId: action.targetId,
+                event: "PAYLOAD_EDITED",
+                actorType: "USER",
+                actorId: input.actorId,
+                beforeRevision: state.revision,
+                afterRevision: nextRevision,
+                beforeContent: before.content,
+                afterContent: after.content,
+                beforeEmbedTitle: before.embedTitle,
+                afterEmbedTitle: after.embedTitle,
+                beforeEmbedDescription: before.embedDescription,
+                afterEmbedDescription: after.embedDescription,
+                beforeEmbedColor: before.embedColor,
+                afterEmbedColor: after.embedColor,
+                beforeEmbedImageUrl: before.embedImageUrl,
+                afterEmbedImageUrl: after.embedImageUrl,
+                postSeriesStatus: "ACTIVE",
+                occurredAt: input.occurredAt,
+                outcome: "SUCCESS",
+              })
+              .returning();
+            expectedAudit = primaryAudit;
+            return { outcome: "COMMITTED" } as const;
+          },
+        );
         if (result.outcome === "NOT_FOUND" || result.outcome === "CONFLICT") return result;
-        const series = await find(input.scheduledActionId);
+        const series =
+          (await find(input.scheduledActionId).catch(() => committedSnapshot)) ?? committedSnapshot;
         if (series === undefined) return { outcome: "PERSISTENCE_UNCONFIRMED" };
         return { outcome: result.outcome, series };
       } catch {
@@ -1430,6 +1497,8 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
               audit.outcome === "SUCCESS"
             );
           },
+          expectedAudit,
+          committedSnapshot,
         ).catch(() => undefined);
         return confirmed === undefined
           ? { outcome: "PERSISTENCE_UNCONFIRMED" }
@@ -1447,195 +1516,213 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
             deferred: boolean;
           }
         | undefined;
+      let expectedPrimaryAudit: RecurringMessageAudit | undefined;
       try {
-        const result = await database.transaction(async (transaction) => {
-          const [action] = await transaction
-            .select()
-            .from(scheduledActions)
-            .where(eq(scheduledActions.id, input.scheduledActionId))
-            .limit(1)
-            .for("update");
-          if (action === undefined || action.actionType !== "SEND_MESSAGE")
-            return { outcome: "NOT_FOUND" } as const;
-          const [recurrence] = await transaction
-            .select()
-            .from(recurringMessageSchedules)
-            .where(eq(recurringMessageSchedules.scheduledActionId, action.id))
-            .limit(1);
-          const [state] = await transaction
-            .select()
-            .from(scheduledMessageStates)
-            .where(eq(scheduledMessageStates.scheduledActionId, action.id))
-            .limit(1);
-          if (recurrence === undefined || state === undefined)
-            return { outcome: "NOT_FOUND" } as const;
-          if (action.status !== "ACTIVE" || state.revision !== input.expectedRevision)
-            return { outcome: "CONFLICT" } as const;
+        const result = await administrativeTransaction(
+          database,
+          input.administrativeAttempt,
+          async (transaction) => {
+            const [action] = await transaction
+              .select()
+              .from(scheduledActions)
+              .where(eq(scheduledActions.id, input.scheduledActionId))
+              .limit(1)
+              .for("update");
+            if (action === undefined || action.actionType !== "SEND_MESSAGE")
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "NOT_FOUND",
+              } as const);
+            const [recurrence] = await transaction
+              .select()
+              .from(recurringMessageSchedules)
+              .where(eq(recurringMessageSchedules.scheduledActionId, action.id))
+              .limit(1);
+            const [state] = await transaction
+              .select()
+              .from(scheduledMessageStates)
+              .where(eq(scheduledMessageStates.scheduledActionId, action.id))
+              .limit(1);
+            if (recurrence === undefined || state === undefined)
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "NOT_FOUND",
+              } as const);
+            if (action.status !== "ACTIVE" || state.revision !== input.expectedRevision)
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "CONFLICT",
+              } as const);
 
-          const lockedValidation = validateRecurrence(input.recurrence);
-          if (!lockedValidation.ok) return { outcome: "INVALID_RECURRENCE" } as const;
-          const recurrenceDefinition = lockedValidation.definition;
-          if (
-            recurrence.frequency === recurrenceDefinition.frequency &&
-            recurrence.weekdayMask === recurrenceDefinition.weekdayMask &&
-            recurrence.localTime.slice(0, 5) === recurrenceDefinition.localTime &&
-            recurrence.timezone === recurrenceDefinition.timezone
-          )
-            return { outcome: "UNCHANGED" } as const;
-          nextRevision = state.revision + 1;
-          const selected = findNextOccurrence(
-            recurrenceDefinition,
-            nextRevision,
-            input.effectiveAt,
-          );
-          confirmationDefinition = recurrenceDefinition;
-          confirmationSelection = selected;
-
-          const [current] = await transaction
-            .select()
-            .from(recurringMessageOccurrences)
-            .where(
-              and(
-                eq(recurringMessageOccurrences.scheduledActionId, action.id),
-                inArray(recurringMessageOccurrences.status, [
-                  "PENDING",
-                  "EXECUTING",
-                  "RETRY_PENDING",
-                ]),
-              ),
+            const lockedValidation = validateRecurrence(input.recurrence);
+            if (!lockedValidation.ok) return { outcome: "INVALID_RECURRENCE" } as const;
+            const recurrenceDefinition = lockedValidation.definition;
+            if (
+              recurrence.frequency === recurrenceDefinition.frequency &&
+              recurrence.weekdayMask === recurrenceDefinition.weekdayMask &&
+              recurrence.localTime.slice(0, 5) === recurrenceDefinition.localTime &&
+              recurrence.timezone === recurrenceDefinition.timezone
             )
-            .limit(1)
-            .for("update");
-          if (current === undefined) throw new Error("Recurring series has no current occurrence");
-          const deferred = current.status !== "PENDING";
-          expectedAudit = {
-            before: recurrence,
-            currentOccurrenceId: current.id,
-            deferred,
-          };
-          if (!deferred) {
-            assertGapAuditIds(selected.skippedGaps, input.gapAuditIds);
-          }
-          const [updatedState] = await transaction
-            .update(scheduledMessageStates)
-            .set({ revision: nextRevision })
-            .where(
-              and(
-                eq(scheduledMessageStates.scheduledActionId, action.id),
-                eq(scheduledMessageStates.revision, state.revision),
-              ),
-            )
-            .returning();
-          if (updatedState === undefined) throw new Error("Recurring revision edit was lost");
-          const [updatedRecurrence] = await transaction
-            .update(recurringMessageSchedules)
-            .set({
-              ...recurrenceDefinition,
-              definitionRevision: nextRevision,
-              effectiveAt: input.effectiveAt,
-              updatedAt: new Date(),
-            })
-            .where(eq(recurringMessageSchedules.scheduledActionId, action.id))
-            .returning();
-          if (updatedRecurrence === undefined)
-            throw new Error("Recurring definition edit was lost");
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "UNCHANGED",
+              } as const);
+            nextRevision = state.revision + 1;
+            const selected = findNextOccurrence(
+              recurrenceDefinition,
+              nextRevision,
+              input.effectiveAt,
+            );
+            confirmationDefinition = recurrenceDefinition;
+            confirmationSelection = selected;
 
-          let replacement: RecurringMessageOccurrence | undefined;
-          if (!deferred) {
-            await transaction
-              .update(recurringMessageOccurrences)
-              .set({
-                status: "SKIPPED",
-                skipReason: "RECURRENCE_EDITED",
-                terminalAt: input.effectiveAt,
-                updatedAt: new Date(),
-              })
+            const [current] = await transaction
+              .select()
+              .from(recurringMessageOccurrences)
               .where(
                 and(
-                  eq(recurringMessageOccurrences.id, current.id),
-                  eq(recurringMessageOccurrences.status, "PENDING"),
+                  eq(recurringMessageOccurrences.scheduledActionId, action.id),
+                  inArray(recurringMessageOccurrences.status, [
+                    "PENDING",
+                    "EXECUTING",
+                    "RETRY_PENDING",
+                  ]),
                 ),
-              );
-            [replacement] = await transaction
-              .insert(recurringMessageOccurrences)
-              .values(
-                occurrenceValues(
-                  action.id,
-                  input.replacementOccurrenceId,
-                  nextRevision,
-                  selected.occurrence,
+              )
+              .limit(1)
+              .for("update");
+            if (current === undefined)
+              throw new Error("Recurring series has no current occurrence");
+            const deferred = current.status !== "PENDING";
+            expectedAudit = {
+              before: recurrence,
+              currentOccurrenceId: current.id,
+              deferred,
+            };
+            if (!deferred) {
+              assertGapAuditIds(selected.skippedGaps, input.gapAuditIds);
+            }
+            const [updatedState] = await transaction
+              .update(scheduledMessageStates)
+              .set({ revision: nextRevision })
+              .where(
+                and(
+                  eq(scheduledMessageStates.scheduledActionId, action.id),
+                  eq(scheduledMessageStates.revision, state.revision),
                 ),
               )
               .returning();
-            if (replacement === undefined)
-              throw new Error("Replacement occurrence was not created");
-            await transaction
-              .update(scheduledActions)
-              .set({ executeAt: replacement.scheduledFor, updatedAt: new Date() })
-              .where(eq(scheduledActions.id, action.id));
-          }
+            if (updatedState === undefined) throw new Error("Recurring revision edit was lost");
+            const [updatedRecurrence] = await transaction
+              .update(recurringMessageSchedules)
+              .set({
+                ...recurrenceDefinition,
+                definitionRevision: nextRevision,
+                effectiveAt: input.effectiveAt,
+                updatedAt: new Date(),
+              })
+              .where(eq(recurringMessageSchedules.scheduledActionId, action.id))
+              .returning();
+            if (updatedRecurrence === undefined)
+              throw new Error("Recurring definition edit was lost");
 
-          await transaction.insert(recurringMessageAudits).values({
-            id: input.auditId,
-            scheduledActionId: action.id,
-            guildId: action.guildId,
-            channelId: action.targetId,
-            event: "RECURRENCE_EDITED",
-            actorType: "USER",
-            actorId: input.actorId,
-            beforeRevision: state.revision,
-            afterRevision: nextRevision,
-            beforeFrequency: recurrence.frequency,
-            afterFrequency: recurrenceDefinition.frequency,
-            beforeWeekdayMask: recurrence.weekdayMask,
-            afterWeekdayMask: recurrenceDefinition.weekdayMask,
-            beforeLocalTime: recurrence.localTime,
-            afterLocalTime: recurrenceDefinition.localTime,
-            beforeTimezone: recurrence.timezone,
-            afterTimezone: recurrenceDefinition.timezone,
-            beforeDefinitionRevision: recurrence.definitionRevision,
-            afterDefinitionRevision: nextRevision,
-            beforeEffectiveAt: recurrence.effectiveAt,
-            afterEffectiveAt: input.effectiveAt,
-            currentOccurrenceId: current.id,
-            deferredMaterialization: deferred,
-            selectedNextOccurrenceId: replacement?.id,
-            selectedNextLocalDate: replacement?.intendedLocalDate,
-            selectedNextLocalTime: replacement?.intendedLocalTime,
-            selectedNextScheduledFor: replacement?.scheduledFor,
-            postSeriesStatus: "ACTIVE",
-            occurredAt: input.effectiveAt,
-            outcome: "SUCCESS",
-          });
-          if (!deferred && selected.skippedGaps.length > 0) {
-            await transaction.insert(recurringMessageAudits).values(
-              selected.skippedGaps.map((gap, index) =>
-                gapAuditValues(
-                  {
-                    scheduledActionId: action.id,
-                    guildId: action.guildId,
-                    channelId: action.targetId,
-                    actorId: input.actorId,
-                    timezone: recurrenceDefinition.timezone,
-                    definitionRevision: nextRevision,
-                    occurredAt: input.effectiveAt,
-                  },
-                  gap,
-                  input.gapAuditIds[index]!,
+            let replacement: RecurringMessageOccurrence | undefined;
+            if (!deferred) {
+              await transaction
+                .update(recurringMessageOccurrences)
+                .set({
+                  status: "SKIPPED",
+                  skipReason: "RECURRENCE_EDITED",
+                  terminalAt: input.effectiveAt,
+                  updatedAt: new Date(),
+                })
+                .where(
+                  and(
+                    eq(recurringMessageOccurrences.id, current.id),
+                    eq(recurringMessageOccurrences.status, "PENDING"),
+                  ),
+                );
+              [replacement] = await transaction
+                .insert(recurringMessageOccurrences)
+                .values(
+                  occurrenceValues(
+                    action.id,
+                    input.replacementOccurrenceId,
+                    nextRevision,
+                    selected.occurrence,
+                  ),
+                )
+                .returning();
+              if (replacement === undefined)
+                throw new Error("Replacement occurrence was not created");
+              await transaction
+                .update(scheduledActions)
+                .set({ executeAt: replacement.scheduledFor, updatedAt: new Date() })
+                .where(eq(scheduledActions.id, action.id));
+            }
+
+            const [primaryAudit] = await transaction
+              .insert(recurringMessageAudits)
+              .values({
+                id: input.auditId,
+                scheduledActionId: action.id,
+                guildId: action.guildId,
+                channelId: action.targetId,
+                event: "RECURRENCE_EDITED",
+                actorType: "USER",
+                actorId: input.actorId,
+                beforeRevision: state.revision,
+                afterRevision: nextRevision,
+                beforeFrequency: recurrence.frequency,
+                afterFrequency: recurrenceDefinition.frequency,
+                beforeWeekdayMask: recurrence.weekdayMask,
+                afterWeekdayMask: recurrenceDefinition.weekdayMask,
+                beforeLocalTime: recurrence.localTime,
+                afterLocalTime: recurrenceDefinition.localTime,
+                beforeTimezone: recurrence.timezone,
+                afterTimezone: recurrenceDefinition.timezone,
+                beforeDefinitionRevision: recurrence.definitionRevision,
+                afterDefinitionRevision: nextRevision,
+                beforeEffectiveAt: recurrence.effectiveAt,
+                afterEffectiveAt: input.effectiveAt,
+                currentOccurrenceId: current.id,
+                deferredMaterialization: deferred,
+                selectedNextOccurrenceId: replacement?.id,
+                selectedNextLocalDate: replacement?.intendedLocalDate,
+                selectedNextLocalTime: replacement?.intendedLocalTime,
+                selectedNextScheduledFor: replacement?.scheduledFor,
+                postSeriesStatus: "ACTIVE",
+                occurredAt: input.effectiveAt,
+                outcome: "SUCCESS",
+              })
+              .returning();
+            expectedPrimaryAudit = primaryAudit;
+            if (!deferred && selected.skippedGaps.length > 0) {
+              await transaction.insert(recurringMessageAudits).values(
+                selected.skippedGaps.map((gap, index) =>
+                  gapAuditValues(
+                    {
+                      scheduledActionId: action.id,
+                      guildId: action.guildId,
+                      channelId: action.targetId,
+                      actorId: input.actorId,
+                      timezone: recurrenceDefinition.timezone,
+                      definitionRevision: nextRevision,
+                      occurredAt: input.effectiveAt,
+                    },
+                    gap,
+                    input.gapAuditIds[index]!,
+                  ),
                 ),
-              ),
-            );
-          }
-          return {
-            outcome: "COMMITTED",
-            effect: {
-              committedRevision: nextRevision,
-              deferredMaterialization: deferred,
-              replacementOccurrenceId: replacement?.id ?? null,
-              replacementScheduledFor: replacement?.scheduledFor ?? null,
-            },
-          } as const;
-        });
+              );
+            }
+            return {
+              outcome: "COMMITTED",
+              effect: {
+                committedRevision: nextRevision,
+                deferredMaterialization: deferred,
+                replacementOccurrenceId: replacement?.id ?? null,
+                replacementScheduledFor: replacement?.scheduledFor ?? null,
+              },
+            } as const;
+          },
+        );
         return result;
       } catch {
         const confirmed = await database
@@ -1647,6 +1734,7 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
           .catch(() => undefined);
         const matches =
           confirmed !== undefined &&
+          exactRecurringAdministrativeAudit(confirmed, expectedPrimaryAudit) &&
           confirmed.scheduledActionId === input.scheduledActionId &&
           expectedAudit !== undefined &&
           confirmationDefinition !== undefined &&
@@ -1700,96 +1788,122 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
     async cancel(input) {
       const nextRevision = input.expectedRevision + 1;
       let expectedCurrent: Pick<RecurringMessageOccurrence, "id" | "status"> | null | undefined;
+      let expectedAudit: RecurringMessageAudit | undefined;
+      let committedSnapshot: RecurringMessageSeries | undefined;
       try {
-        const result = await database.transaction(async (transaction) => {
-          const [action] = await transaction
-            .select()
-            .from(scheduledActions)
-            .where(eq(scheduledActions.id, input.scheduledActionId))
-            .limit(1)
-            .for("update");
-          if (action === undefined || action.actionType !== "SEND_MESSAGE")
-            return { outcome: "NOT_FOUND" } as const;
-          const [recurrence] = await transaction
-            .select()
-            .from(recurringMessageSchedules)
-            .where(eq(recurringMessageSchedules.scheduledActionId, action.id))
-            .limit(1);
-          const [state] = await transaction
-            .select()
-            .from(scheduledMessageStates)
-            .where(eq(scheduledMessageStates.scheduledActionId, action.id))
-            .limit(1);
-          if (recurrence === undefined || state === undefined)
-            return { outcome: "NOT_FOUND" } as const;
-          if (action.status !== "ACTIVE" || state.revision !== input.expectedRevision)
-            return { outcome: "CONFLICT" } as const;
-          const [current] = await transaction
-            .select()
-            .from(recurringMessageOccurrences)
-            .where(
-              and(
-                eq(recurringMessageOccurrences.scheduledActionId, action.id),
-                inArray(recurringMessageOccurrences.status, [
-                  "PENDING",
-                  "EXECUTING",
-                  "RETRY_PENDING",
-                ]),
-              ),
-            )
-            .limit(1)
-            .for("update");
-          expectedCurrent = current ?? null;
-          const [cancelled] = await transaction
-            .update(scheduledActions)
-            .set({ status: "CANCELLED", updatedAt: new Date() })
-            .where(and(eq(scheduledActions.id, action.id), eq(scheduledActions.status, "ACTIVE")))
-            .returning();
-          if (cancelled === undefined) throw new Error("Recurring cancellation was lost");
-          await transaction
-            .update(scheduledMessageStates)
-            .set({ revision: nextRevision })
-            .where(
-              and(
-                eq(scheduledMessageStates.scheduledActionId, action.id),
-                eq(scheduledMessageStates.revision, state.revision),
-              ),
-            );
-          if (current?.status === "PENDING" || current?.status === "RETRY_PENDING") {
+        const result = await administrativeTransaction(
+          database,
+          input.administrativeAttempt,
+          async (transaction) => {
+            const [action] = await transaction
+              .select()
+              .from(scheduledActions)
+              .where(eq(scheduledActions.id, input.scheduledActionId))
+              .limit(1)
+              .for("update");
+            if (action === undefined || action.actionType !== "SEND_MESSAGE")
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "NOT_FOUND",
+              } as const);
+            const [recurrence] = await transaction
+              .select()
+              .from(recurringMessageSchedules)
+              .where(eq(recurringMessageSchedules.scheduledActionId, action.id))
+              .limit(1);
+            const [state] = await transaction
+              .select()
+              .from(scheduledMessageStates)
+              .where(eq(scheduledMessageStates.scheduledActionId, action.id))
+              .limit(1);
+            if (recurrence === undefined || state === undefined)
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "NOT_FOUND",
+              } as const);
+            if (action.status !== "ACTIVE" || state.revision !== input.expectedRevision)
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "CONFLICT",
+              } as const);
+            const beforeSeries = await find(input.scheduledActionId, transaction);
+            if (beforeSeries === undefined)
+              throw new Error("Recurring series snapshot unavailable");
+            const [current] = await transaction
+              .select()
+              .from(recurringMessageOccurrences)
+              .where(
+                and(
+                  eq(recurringMessageOccurrences.scheduledActionId, action.id),
+                  inArray(recurringMessageOccurrences.status, [
+                    "PENDING",
+                    "EXECUTING",
+                    "RETRY_PENDING",
+                  ]),
+                ),
+              )
+              .limit(1)
+              .for("update");
+            expectedCurrent = current ?? null;
+            const [cancelled] = await transaction
+              .update(scheduledActions)
+              .set({ status: "CANCELLED", updatedAt: new Date() })
+              .where(and(eq(scheduledActions.id, action.id), eq(scheduledActions.status, "ACTIVE")))
+              .returning();
+            if (cancelled === undefined) throw new Error("Recurring cancellation was lost");
             await transaction
-              .update(recurringMessageOccurrences)
-              .set({
-                status: "SKIPPED",
-                skipReason: "SERIES_CANCELLED",
-                terminalAt: input.occurredAt,
-                updatedAt: new Date(),
+              .update(scheduledMessageStates)
+              .set({ revision: nextRevision })
+              .where(
+                and(
+                  eq(scheduledMessageStates.scheduledActionId, action.id),
+                  eq(scheduledMessageStates.revision, state.revision),
+                ),
+              );
+            if (current?.status === "PENDING" || current?.status === "RETRY_PENDING") {
+              await transaction
+                .update(recurringMessageOccurrences)
+                .set({
+                  status: "SKIPPED",
+                  skipReason: "SERIES_CANCELLED",
+                  terminalAt: input.occurredAt,
+                  updatedAt: new Date(),
+                })
+                .where(eq(recurringMessageOccurrences.id, current.id));
+            }
+            const [primaryAudit] = await transaction
+              .insert(recurringMessageAudits)
+              .values({
+                id: input.auditId,
+                scheduledActionId: action.id,
+                occurrenceId: current?.id,
+                guildId: action.guildId,
+                channelId: action.targetId,
+                event: "SERIES_CANCELLED",
+                actorType: "USER",
+                actorId: input.actorId,
+                beforeRevision: state.revision,
+                afterRevision: nextRevision,
+                currentOccurrenceId: current?.id,
+                occurrenceSkipReason:
+                  current?.status === "PENDING" || current?.status === "RETRY_PENDING"
+                    ? "SERIES_CANCELLED"
+                    : null,
+                postSeriesStatus: "CANCELLED",
+                occurredAt: input.occurredAt,
+                outcome: "SUCCESS",
               })
-              .where(eq(recurringMessageOccurrences.id, current.id));
-          }
-          await transaction.insert(recurringMessageAudits).values({
-            id: input.auditId,
-            scheduledActionId: action.id,
-            occurrenceId: current?.id,
-            guildId: action.guildId,
-            channelId: action.targetId,
-            event: "SERIES_CANCELLED",
-            actorType: "USER",
-            actorId: input.actorId,
-            beforeRevision: state.revision,
-            afterRevision: nextRevision,
-            currentOccurrenceId: current?.id,
-            occurrenceSkipReason:
-              current?.status === "PENDING" || current?.status === "RETRY_PENDING"
-                ? "SERIES_CANCELLED"
-                : null,
-            postSeriesStatus: "CANCELLED",
-            occurredAt: input.occurredAt,
-            outcome: "SUCCESS",
-          });
-          return { outcome: "COMMITTED" } as const;
-        });
+              .returning();
+            expectedAudit = primaryAudit;
+            committedSnapshot = {
+              ...beforeSeries,
+              action: cancelled,
+              revision: nextRevision,
+              occurrence: current?.status === "EXECUTING" ? current : null,
+            };
+            return { outcome: "COMMITTED" } as const;
+          },
+        );
         if (result.outcome !== "COMMITTED") return result;
-        const series = await find(input.scheduledActionId);
+        const series =
+          (await find(input.scheduledActionId).catch(() => committedSnapshot)) ?? committedSnapshot;
         return series === undefined
           ? { outcome: "PERSISTENCE_UNCONFIRMED" }
           : { outcome: "COMMITTED", series };
@@ -1815,6 +1929,8 @@ export function createRecurringMessageStore(database: DatabaseClient): Recurring
               audit.outcome === "SUCCESS"
             );
           },
+          expectedAudit,
+          committedSnapshot,
         ).catch(() => undefined);
         return confirmed === undefined
           ? { outcome: "PERSISTENCE_UNCONFIRMED" }

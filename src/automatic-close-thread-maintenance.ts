@@ -1,3 +1,8 @@
+import type { AdministrativeAttempt } from "./administrative-transaction.js";
+import {
+  confirmedAdministrativeDatabaseFailure,
+  type AdministrativeFailureRecorder,
+} from "./administrative-operation-failure-audit.js";
 import { createConfigurationAuditContext } from "./guild-configuration-audit.js";
 import type { Logger } from "pino";
 
@@ -9,7 +14,7 @@ import type {
   CurrentScheduledThreadClose,
   ScheduledActionStore,
 } from "./scheduled-action-persistence.js";
-import { getErrorName } from "./shutdown.js";
+import { safeErrorName as getErrorName } from "./application-runtime.js";
 
 export type AutomaticCloseThreadInspection = {
   parentChannelId: string;
@@ -81,6 +86,7 @@ type Dependencies = {
   >;
   scheduledActions: Pick<ScheduledActionStore, "findCurrentThreadClose">;
   logger: Pick<Logger, "warn">;
+  failures?: AdministrativeFailureRecorder;
   now?: () => Date;
 };
 
@@ -91,6 +97,7 @@ export function createAutomaticCloseThreadMaintenanceService({
   persistence,
   scheduledActions,
   logger,
+  failures,
   now = () => new Date(),
 }: Dependencies): AutomaticCloseThreadMaintenanceService {
   const inspect = async (
@@ -134,14 +141,29 @@ export function createAutomaticCloseThreadMaintenanceService({
       try {
         // Capture the baseline only after Discord context and permission validation completes.
         const trackedAt = now();
+        const context = createConfigurationAuditContext(actorId, trackedAt);
+        const attempt: AdministrativeAttempt = { operationId: context.auditId };
         const result = await persistence.trackThread({
           guildId,
           threadId,
           parentChannelId: inspection.parentChannelId,
           trackedAt,
-          ...createConfigurationAuditContext(actorId, trackedAt),
+          ...context,
+          ...(failures ? { administrativeAttempt: attempt } : {}),
         });
-        if (result.outcome === "UNCONFIRMED") return { ok: false, code: "UNCONFIRMED" };
+        if (result.outcome === "UNCONFIRMED") {
+          const failure = confirmedAdministrativeDatabaseFailure(attempt);
+          if (failure)
+            await failures
+              ?.record(attempt, guildId, actorId, {
+                operationCode: "THREAD_TRACK",
+                targetType: "THREAD",
+                targetId: threadId,
+                ...failure,
+              })
+              .catch(() => undefined);
+          return { ok: false, code: "UNCONFIRMED" };
+        }
         return {
           ok: true,
           outcome: result.exclusionRemoved ? "TRACKED" : "ALREADY_TRACKED",
@@ -167,12 +189,25 @@ export function createAutomaticCloseThreadMaintenanceService({
       }
 
       try {
-        const result = await persistence.addThreadExclusion(
-          guildId,
-          threadId,
-          createConfigurationAuditContext(actorId, now()),
-        );
-        if (result.outcome === "UNCONFIRMED") return { ok: false, code: "UNCONFIRMED" };
+        const context = createConfigurationAuditContext(actorId, now());
+        const attempt: AdministrativeAttempt = { operationId: context.auditId };
+        const result = await persistence.addThreadExclusion(guildId, threadId, {
+          ...context,
+          ...(failures ? { administrativeAttempt: attempt } : {}),
+        });
+        if (result.outcome === "UNCONFIRMED") {
+          const failure = confirmedAdministrativeDatabaseFailure(attempt);
+          if (failure)
+            await failures
+              ?.record(attempt, guildId, actorId, {
+                operationCode: "THREAD_UNTRACK",
+                targetType: "THREAD",
+                targetId: threadId,
+                ...failure,
+              })
+              .catch(() => undefined);
+          return { ok: false, code: "UNCONFIRMED" };
+        }
         return {
           ok: true,
           outcome: result.outcome === "CHANGED" ? "EXCLUDED" : "ALREADY_EXCLUDED",
@@ -237,16 +272,20 @@ function logFailure(
   >,
   error: unknown,
 ): void {
-  logger.warn(
-    {
-      event: "automatic_close_thread_maintenance_failed",
-      operation,
-      guildId,
-      threadId,
-      ...(parentChannelId === undefined ? {} : { parentChannelId }),
-      failureCode,
-      errorName: getErrorName(error),
-    },
-    "Automatic close thread maintenance failed",
-  );
+  try {
+    logger.warn(
+      {
+        event: "automatic_close_thread_maintenance_failed",
+        operation,
+        guildId,
+        threadId,
+        ...(parentChannelId === undefined ? {} : { parentChannelId }),
+        failureCode,
+        errorName: getErrorName(error),
+      },
+      "Automatic close thread maintenance failed",
+    );
+  } catch {
+    /* Diagnostics cannot change an administrative result. */
+  }
 }

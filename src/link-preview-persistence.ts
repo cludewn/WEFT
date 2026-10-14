@@ -1,3 +1,8 @@
+import {
+  administrativeGuard,
+  administrativeTransaction,
+  type AdministrativeAttempt,
+} from "./administrative-transaction.js";
 import { and, eq, sql } from "drizzle-orm";
 import { check, index, pgTable, text, timestamp } from "drizzle-orm/pg-core";
 
@@ -35,6 +40,7 @@ export const linkPreviewAudits = pgTable(
 );
 
 export type PreviewModeChangeInput = {
+  administrativeAttempt?: AdministrativeAttempt;
   guildId: string;
   actorUserId: string;
   newMode: LinkPreviewMode;
@@ -68,38 +74,44 @@ export function createLinkPreviewStore(database: DatabaseClient): LinkPreviewSto
       if (!isLinkPreviewMode(input.newMode)) throw new Error("Invalid preview mode");
       let lockedPrevious: LinkPreviewMode | undefined;
       try {
-        return await database.transaction(async (transaction) => {
-          await transaction
-            .insert(guildSettings)
-            .values({ guildId: input.guildId })
-            .onConflictDoNothing({ target: guildSettings.guildId });
-          const [settings] = await transaction
-            .select({ linkPreviewMode: guildSettings.linkPreviewMode })
-            .from(guildSettings)
-            .where(eq(guildSettings.guildId, input.guildId))
-            .limit(1)
-            .for("update");
-          if (settings === undefined) {
-            throw new Error("Preview settings row was not established");
-          }
-          if (!isLinkPreviewMode(settings.linkPreviewMode)) throw new Error("Invalid preview mode");
-          lockedPrevious = settings.linkPreviewMode;
-          if (lockedPrevious === input.newMode) return { outcome: "NO_CHANGE" };
-          await transaction
-            .update(guildSettings)
-            .set({ linkPreviewMode: input.newMode, updatedAt: input.occurredAt })
-            .where(eq(guildSettings.guildId, input.guildId));
-          await transaction.insert(linkPreviewAudits).values({
-            id: input.auditId,
-            guildId: input.guildId,
-            actorUserId: input.actorUserId,
-            previousMode: lockedPrevious,
-            newMode: input.newMode,
-            occurredAt: input.occurredAt,
-            outcome: "SUCCESS",
-          });
-          return { outcome: "CHANGED", previousMode: lockedPrevious };
-        });
+        return await administrativeTransaction(
+          database,
+          input.administrativeAttempt,
+          async (transaction) => {
+            await transaction
+              .insert(guildSettings)
+              .values({ guildId: input.guildId })
+              .onConflictDoNothing({ target: guildSettings.guildId });
+            const [settings] = await transaction
+              .select({ linkPreviewMode: guildSettings.linkPreviewMode })
+              .from(guildSettings)
+              .where(eq(guildSettings.guildId, input.guildId))
+              .limit(1)
+              .for("update");
+            if (settings === undefined) {
+              throw new Error("Preview settings row was not established");
+            }
+            if (!isLinkPreviewMode(settings.linkPreviewMode))
+              throw new Error("Invalid preview mode");
+            lockedPrevious = settings.linkPreviewMode;
+            if (lockedPrevious === input.newMode)
+              return administrativeGuard(input.administrativeAttempt, { outcome: "NO_CHANGE" });
+            await transaction
+              .update(guildSettings)
+              .set({ linkPreviewMode: input.newMode, updatedAt: input.occurredAt })
+              .where(eq(guildSettings.guildId, input.guildId));
+            await transaction.insert(linkPreviewAudits).values({
+              id: input.auditId,
+              guildId: input.guildId,
+              actorUserId: input.actorUserId,
+              previousMode: lockedPrevious,
+              newMode: input.newMode,
+              occurredAt: input.occurredAt,
+              outcome: "SUCCESS",
+            });
+            return { outcome: "CHANGED", previousMode: lockedPrevious };
+          },
+        );
       } catch {
         if (lockedPrevious === undefined) return { outcome: "UNCONFIRMED" };
         try {

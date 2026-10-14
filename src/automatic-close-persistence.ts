@@ -1,3 +1,4 @@
+import { administrativeGuard, administrativeTransaction } from "./administrative-transaction.js";
 import { and, asc, eq, gt, lte, or, sql } from "drizzle-orm";
 import { index, pgTable, primaryKey, text, timestamp } from "drizzle-orm/pg-core";
 
@@ -404,7 +405,9 @@ export function createAutomaticClosePersistenceStore(
       let expected: GuildConfigurationAudit | undefined;
       let result: AutomaticClosePolicyChangeResult;
       try {
-        result = await database.transaction(
+        result = await administrativeTransaction(
+          database,
+          context.administrativeAttempt,
           async (tx): Promise<AutomaticClosePolicyChangeResult> => {
             await tx.execute(
               sql`select pg_advisory_xact_lock(${automaticClosePolicyLockKey(guildId)}::bigint)`,
@@ -418,7 +421,8 @@ export function createAutomaticClosePersistenceStore(
                 ),
               )
               .returning({ guildId: autoCloseParentChannels.guildId });
-            if (removed.length === 0) return { outcome: "NO_CHANGE" };
+            if (removed.length === 0)
+              return administrativeGuard(context.administrativeAttempt, { outcome: "NO_CHANGE" });
             expected = configurationAudit(context, guildId, {
               action: "REMOVE",
               settingType: "AUTO_CLOSE_PARENT",
@@ -449,7 +453,9 @@ export function createAutomaticClosePersistenceStore(
       let expected: GuildConfigurationAudit | undefined;
       let result: AutomaticClosePolicyChangeResult;
       try {
-        result = await database.transaction(
+        result = await administrativeTransaction(
+          database,
+          context.administrativeAttempt,
           async (tx): Promise<AutomaticClosePolicyChangeResult> => {
             await tx.execute(
               sql`select pg_advisory_xact_lock(${automaticClosePolicyLockKey(guildId)}::bigint)`,
@@ -461,7 +467,8 @@ export function createAutomaticClosePersistenceStore(
                 target: [autoCloseThreadExclusions.guildId, autoCloseThreadExclusions.threadId],
               })
               .returning({ guildId: autoCloseThreadExclusions.guildId });
-            if (inserted.length === 0) return { outcome: "NO_CHANGE" };
+            if (inserted.length === 0)
+              return administrativeGuard(context.administrativeAttempt, { outcome: "NO_CHANGE" });
             expected = configurationAudit(context, guildId, {
               action: "UNTRACK",
               settingType: "THREAD_EXCLUSION",
@@ -494,7 +501,9 @@ export function createAutomaticClosePersistenceStore(
       let committed: TrackAutomaticCloseThreadResult | undefined;
       let result: TrackAutomaticCloseThreadResult;
       try {
-        result = await database.transaction(
+        result = await administrativeTransaction(
+          database,
+          input.administrativeAttempt,
           async (tx): Promise<TrackAutomaticCloseThreadResult> => {
             await tx.execute(
               sql`select pg_advisory_xact_lock(${automaticClosePolicyLockKey(guildId)}::bigint)`,
@@ -519,6 +528,8 @@ export function createAutomaticClosePersistenceStore(
               )
               .limit(1);
             const exclusionRemoved = removed.length > 0;
+            if (!exclusionRemoved && input.administrativeAttempt)
+              input.administrativeAttempt.normalGuard = true;
             const parentEnabled = parent !== undefined;
             if (parentEnabled) {
               if (exclusionRemoved) {
@@ -540,7 +551,12 @@ export function createAutomaticClosePersistenceStore(
                   });
               }
             }
-            if (!exclusionRemoved) return { outcome: "NO_CHANGE", exclusionRemoved, parentEnabled };
+            if (!exclusionRemoved)
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "NO_CHANGE",
+                exclusionRemoved,
+                parentEnabled,
+              });
             expected = configurationAudit(input, guildId, {
               action: "TRACK",
               settingType: "THREAD_EXCLUSION",
@@ -618,7 +634,9 @@ export function createAutomaticClosePersistenceStore(
       let committed: EnableAutoCloseParentChannelResult | undefined;
       let result: EnableAutoCloseParentChannelResult;
       try {
-        result = await database.transaction(
+        result = await administrativeTransaction(
+          database,
+          input.administrativeAttempt,
           async (tx): Promise<EnableAutoCloseParentChannelResult> => {
             // Establish settings before acquiring policy ownership; no policy writer takes this row later.
             await tx
@@ -635,7 +653,10 @@ export function createAutomaticClosePersistenceStore(
                 target: [autoCloseParentChannels.guildId, autoCloseParentChannels.parentChannelId],
               })
               .returning({ guildId: autoCloseParentChannels.guildId });
-            if (inserted.length === 0) return { outcome: "ALREADY_ENABLED" };
+            if (inserted.length === 0)
+              return administrativeGuard(input.administrativeAttempt, {
+                outcome: "ALREADY_ENABLED",
+              });
             const candidates = [...new Set(activeThreadIds)];
             let baselinesApplied = 0;
             if (candidates.length > 0) {

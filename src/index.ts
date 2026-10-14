@@ -1,3 +1,5 @@
+import { createAdministrativeFailureRecorder } from "./administrative-operation-failure-audit.js";
+import { createGuildConfigurationService } from "./guild-configuration.js";
 import pino from "pino";
 
 import { createBulkCloseService } from "./bulk-thread-close.js";
@@ -103,6 +105,11 @@ async function main(): Promise<void> {
       reference: Parameters<ReturnType<typeof createAuditNotificationDispatcher>["publish"]>[0],
     ) => notificationDispatcher.current?.publish(reference),
   };
+  const administrativeFailures = createAdministrativeFailureRecorder(
+    database.client,
+    logger,
+    auditPublisher,
+  );
   const guildSettings = createGuildSettingsStore(database.client, auditPublisher);
   const audits = createThreadAuditStore(database.client, auditPublisher);
   const scheduledActions = createScheduledActionStore(database.client);
@@ -144,13 +151,14 @@ async function main(): Promise<void> {
   const auditLogDestination = createAuditLogDestinationService(
     destinationStore,
     createAuditLogDestinationDiscord(discordRuntime.client),
+    administrativeFailures,
   );
   const linkPreviewStore = publishLinkPreviewChanges(
     database.client,
     auditPublisher,
     createLinkPreviewStore(database.client),
   );
-  const linkPreview = createLinkPreviewConfiguration(linkPreviewStore);
+  const linkPreview = createLinkPreviewConfiguration(linkPreviewStore, administrativeFailures);
   const linkPreviews = createLinkPreviewService({
     readMode: linkPreviewStore.read,
     discord: createLinkPreviewDiscord(discordRuntime.client),
@@ -180,6 +188,7 @@ async function main(): Promise<void> {
     schedules: automaticCloses,
     discord: autoCloseDiscord,
     logger,
+    failures: administrativeFailures,
   });
   const automaticCloseActivity = createAutomaticCloseActivityService({
     persistence: automaticCloses,
@@ -190,6 +199,7 @@ async function main(): Promise<void> {
     persistence: automaticCloses,
     scheduledActions,
     logger,
+    failures: administrativeFailures,
   });
   const automaticCloseBaselineReconciler = createAutomaticCloseBaselineReconciler({
     persistence: automaticCloses,
@@ -228,6 +238,7 @@ async function main(): Promise<void> {
     delivery: scheduledThreadCloseWorkers,
     threadLifecycle: discordRuntime.threadLifecycle,
     logger,
+    failures: administrativeFailures,
   });
   const scheduledMessageDiscord = createScheduledMessageDiscord(discordRuntime.client);
   const scheduledMessageExecutor = createScheduledMessageExecutor({
@@ -266,6 +277,7 @@ async function main(): Promise<void> {
     recurringWorker,
     guildSettings,
     logger,
+    failures: administrativeFailures,
   });
   const scheduledThreadCloseReconciler = createScheduledThreadCloseStartupReconciler({
     scheduledActions,
@@ -394,7 +406,7 @@ async function main(): Promise<void> {
       linkPreview,
       automaticCloseConfiguration,
       automaticCloseMaintenance,
-      guildSettings,
+      guildSettings: createGuildConfigurationService(guildSettings, administrativeFailures),
       managedMessages,
       scheduledMessages,
       scheduledThreadClose: scheduledThreadCloseCommand,

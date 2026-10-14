@@ -261,6 +261,84 @@ export function createThreadLifecycleDiscord(client: Client): ThreadLifecycleDis
       };
     },
     actorCanManage: hasRequiredPermissions,
+    async administrativeBotPreflight(guildId, threadId) {
+      // The scheduled-close owner already validated this target and freshly authorized its actor.
+      let thread: ThreadChannel | undefined;
+      try {
+        if (client.user === null)
+          return {
+            ok: false,
+            code: "BOT_MISSING_PERMISSION",
+            failure: {
+              failureStage: "DISCORD_PREFLIGHT",
+              failureReasonCode: "BOT_CONTEXT_UNAVAILABLE",
+            },
+          };
+        thread = await fetchChannel(guildId, threadId);
+        if (thread === undefined || thread.guildId !== guildId)
+          return {
+            ok: false,
+            code: "CONTEXT_VALIDATION_FAILURE",
+            failure: {
+              failureStage: "DISCORD_READ",
+              failureReasonCode: "REQUIRED_RESOURCE_UNAVAILABLE",
+            },
+          };
+        const bot = await thread.guild.members.fetch({ user: client.user.id, force: true });
+        const parent =
+          thread.parentId === null
+            ? null
+            : await thread.guild.channels.fetch(thread.parentId, { force: true });
+        if (parent === null || thread.parent !== parent)
+          return {
+            ok: false,
+            code: "BOT_MISSING_PERMISSION",
+            failure: {
+              failureStage: "DISCORD_READ",
+              failureReasonCode:
+                parent === null ? "REQUIRED_RESOURCE_UNAVAILABLE" : "REQUIRED_RESOURCE_READ_FAILED",
+            },
+          };
+        return thread
+          .permissionsFor(bot)
+          .has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ManageThreads])
+          ? { ok: true }
+          : {
+              ok: false,
+              code: "BOT_MISSING_PERMISSION",
+              failure: {
+                failureStage: "DISCORD_PREFLIGHT",
+                failureReasonCode: "BOT_PERMISSION_MISSING",
+              },
+            };
+      } catch (error) {
+        const original = error instanceof ThreadDiscordReadError ? error.original : error;
+        const confirmedClientError =
+          original instanceof DiscordAPIError &&
+          original.status >= 400 &&
+          original.status < 500 &&
+          ![408, 425, 429].includes(original.status);
+        const unavailable =
+          classifyThreadDiscordReadFailure(error) === "CONFIRMED_UNAVAILABLE" ||
+          (confirmedClientError && original.code === 10_007);
+        const permission =
+          confirmedClientError &&
+          (original.code === MISSING_ACCESS_ERROR_CODE ||
+            original.code === MISSING_PERMISSIONS_ERROR_CODE);
+        return {
+          ok: false,
+          code: "CONTEXT_VALIDATION_FAILURE",
+          failure: permission
+            ? { failureStage: "DISCORD_PREFLIGHT", failureReasonCode: "BOT_PERMISSION_MISSING" }
+            : {
+                failureStage: "DISCORD_READ",
+                failureReasonCode: unavailable
+                  ? "REQUIRED_RESOURCE_UNAVAILABLE"
+                  : "REQUIRED_RESOURCE_READ_FAILED",
+              },
+        };
+      }
+    },
     async botCanManage(guildId, threadId) {
       if (client.user === null) {
         return false;

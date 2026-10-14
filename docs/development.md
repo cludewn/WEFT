@@ -1297,7 +1297,9 @@ Discord active-thread route, filters them in application code by requested paren
 thread type, and only then performs the database work. The enable timestamp is captured after
 successful enumeration and immediately before the database operation, so a slow Discord response
 cannot shorten the resulting grace period. A failed enumeration leaves the parent disabled and
-writes nothing. No PostgreSQL transaction is held across the Discord call.
+changes no parent or baseline business state. An independent administrative failure audit may
+be persisted after authorized enumeration failure. No PostgreSQL transaction is held across the
+Discord call.
 
 The database portion of parent enablement is one transaction. The allowlist row is added only when
 absent, and baselines are applied only when the parent was newly added. Baselines apply
@@ -1940,7 +1942,7 @@ Destination changes serialize on the `guild_settings` row and atomically write t
 dedicated PostgreSQL audit. An exact no-op changes neither timestamp nor audit history. Ambiguous
 write responses are checked through the stable audit ID; a later destination change does not erase
 that historical proof. PostgreSQL remains authoritative. The configuration-time Discord preflight
-is point-in-time. Phase 9B-2B projects newly committed audits from the eight current audit tables.
+is point-in-time. Phase 9B-2B projects newly committed audits from the nine current audit tables.
 The projection explicitly selects safe metadata, never message content or embed fields. Publication follows successful commit or exact same-ID confirmation;
 recurring operations publish only audit rows actually committed, including gap/skip audits and any
 managed-message audit in a combined transaction. A process-local dispatcher owns asynchronous
@@ -1955,7 +1957,7 @@ Deferred ideas must not be implemented during these phases without an approved s
 
 A process-local retention runtime uses the existing application PostgreSQL client. It schedules an initial sweep after startup without waiting for the backlog before READY, then schedules each later sweep 24 hours after the previous one settles. Single-flight ownership prevents overlapping sweeps. Shutdown marks the runtime as stopping, cancels its timer, and drains its current bounded statement through the existing application quiesce phase before the database closes.
 
-Each sweep captures one instant and subtracts exactly 90 * 24 hours. A dedicated persistence boundary deletes only rows with audit timestamps strictly before that cutoff from the eight explicit audit tables. Each atomic PostgreSQL statement selects at most 500 IDs ordered by timestamp and ID, deletes those rows, and returns IDs only for counting. The five new timestamp-and-ID indexes support this global query shape; the existing audit-log-destination retention index remains. A source failure is logged with bounded metadata and does not stop other sources or affect readiness.
+Each sweep captures one instant and subtracts exactly 90 * 24 hours. A dedicated persistence boundary deletes only rows with audit timestamps strictly before that cutoff from the nine explicit audit tables. Each atomic PostgreSQL statement selects at most 500 IDs ordered by timestamp and ID, deletes those rows, and returns IDs only for counting. The five new timestamp-and-ID indexes support this global query shape; the existing audit-log-destination retention index remains. A source failure is logged with bounded metadata and does not stop other sources or affect readiness.
 
 Audit deletion leaves authoritative schedule, managed-resource, and configuration state untouched. It does not publish audit references or Discord notifications. An already eligible audit may disappear before best-effort notification projection; the existing missing-projection behavior applies. The period is fixed globally for this MVP, cleanup is periodic rather than exact TTL, and per-guild configurability remains unresolved.
 
@@ -2254,3 +2256,91 @@ checks alone do not establish PostgreSQL transaction, constraint, lock or migrat
 
 This issue covers successfully committed actual changes only. Comprehensive input/permission and
 other failed administrative-operation auditing remains the separate remaining portion of F05.
+
+## Confirmed administrative failure auditing (Issue #104)
+
+See the specification's operation/target and stage/reason tables for the 23 covered operation/origin
+codes and exclusions. This source records only confirmed FAILURE; SUCCESS remains feature history,
+PARTIAL belongs to the managed-message follow-up, and UNCONFIRMED/PENDING are never converted to
+FAILURE. Input/context/actor rejection, no-ops, baseline repair and normal concurrency guards are
+excluded. A named failure result alone is not evidence.
+
+`administrative-transaction.ts` is a scoped administrative boundary, not a replacement application
+transaction framework. `createDatabase` binds the existing application Pool. Only admitted
+administrative store methods with an attempt use one checked-out client for public BEGIN,
+client-bound Drizzle business queries, COMMIT and ROLLBACK. Callback entry, COMMIT attempt,
+acknowledgement and termination are observed directly; the attempt carries typed evidence separate
+from the business result. Set COMMIT-attempted before calling query. Before-COMMIT callback failure
+requires normal same-client ROLLBACK acknowledgement. Allowlisted server ErrorResponse codes
+`40001`, `40P01`, `23503`, `23505`, `23514`, `23P01`, with severity/routine evidence and confirmed
+termination, permit explicit COMMIT rejection. Unknown-completion, connection, cancellation,
+timeout and opaque errors are excluded. A connection with unknown termination is destroyed rather
+than normally released. Unbound store fakes or non-administrative calls retain Drizzle's existing
+transaction contract and supply no rollback evidence. Workers, claims, automatic-close runtime,
+activity, recovery and reconciliation never acquire this administrative boundary.
+
+Keep the existing scalar row lock, policy advisory lock/order, scheduled-close advisory ownership,
+schedule revisions, claim predicates and atomic success INSERTs. Normal guard evidence excludes a
+later rejected guard/no-op COMMIT from failure auditing. Existing exact success confirmation runs
+after rejection; when COMMIT might have happened, missing/mismatched/unreadable history is unknown,
+not rollback. Scheduled-close and recurring administrative confirmation additionally compares the
+complete primary success row returned inside the transaction, including DB-owned timestamps and
+NULL fields. Recurring edit/cancel keep an in-transaction locked snapshot so a post-commit `find`
+read failure cannot cancel a confirmed change. Delivery projection/cleanup remains pending repair,
+not administrative failure. Same-instant one-time rescheduling still revises and audits.
+
+Owners are the focused guild configuration service (timezone/prefix), automatic-close configuration
+and maintenance services, destination and preview configuration services,
+`ScheduledThreadCloseCommandService`, and `ScheduledMessageCommandService`. They establish stable
+operation identity only after their caller's required validation/authorization and before eligible
+execution. Handlers retain input/context/response handling; Discord returns fixed authorized
+preflight evidence; stores return business results and transaction evidence with existing exact
+success confirmation. Neither inserts new failure history. Preparation runs only inside the
+lifecycle callback after initial validation/admission, with fixed manual/bulk origin and separate
+identity per bulk thread. It does not duplicate cancel-close failure or assume ownership of the
+lifecycle body, pending finalization or background execution.
+
+Creation Discord preflight separates resource/actor confirmation from bot checks through an awaited
+after-actor observation. Only after fresh member fetch, parent refresh and effective actor
+permission does the observation run. One-time AT preliminary eligibility uses a read-only timezone
+lookup and the existing UTC missing-settings default; the same domain validator checks DST and
+horizon. Observation failure is not an early business rejection. Formal establishment remains at
+its previous boundary after full preflight. Formal rejection never audits; formal success can
+establish identity without preliminary evidence before the schedule transaction. The administrative
+command and modal handlers retain current actor/context checks; failed or unverified authorization
+never gains eligibility merely from the bot-related result name. Bot requirements are unchanged.
+
+`administrative-operation-failure-audit.ts` owns explicit unions, schema, independent INSERT, exact
+confirmation and bounded diagnostics. The application owner awaits its recorder after business
+termination and classification. The failure UUID is separate from the attempt UUID; unique
+`operation_id` enforces one row per attempt. RETURNING or a full exact-ID read confirms publication.
+There is no ON CONFLICT suppression, mutation retry, compensation, spool, recovery ownership change
+or failure backfill. Audit insert rejection, ID/operation collision, unavailable confirmation,
+Pino failure or notification publication failure cannot alter the business result. DB outages and
+process crashes can lose otherwise eligible failure history.
+
+`ADMINISTRATIVE_OPERATION_FAILURE` is the ninth notification/retention source. Projection selects
+only guild, actor, operation, stage/reason, outcome and occurrence time; target identity and all
+arbitrary values remain excluded. Formatter also explicitly omits target fields. Existing ingress,
+retained lifecycle ownership, notification drain, current destination/bot validation, nonce,
+suppressed mentions and single-attempt delivery remain in force. Retention preserves exactly
+90 * 24 hours, strict older-than cutoff, equal-cutoff retention, at most 500 ordered rows per batch,
+source isolation, startup sweep and 24-hour delay after completion. It changes no authoritative
+configuration, policy, schedule, lifecycle or recovery state.
+
+Migration 0021 follows `0020_mixed_thunderbird` without changing any historical SQL, snapshot or
+journal entry. It adds the failure table, CHECKs, operation UNIQUE, primary UUID and retention index,
+without cascade FKs or success schema changes. Continue using the one-shot production migration
+runner; never use drizzle-kit push. Upgrade, clean installation, repeat migration no-op and history
+preservation have dedicated integration tests.
+
+Run the new transaction/persistence Unit tests before operation tests and standard non-secret
+checks. Real PostgreSQL tests decorate only public Pool/PoolClient query/connect/release APIs, trace
+actual control commands, and use a separate observer connection to assert committed versus rolled
+back business/history state. They inject success-audit rejection after business mutation, lost
+ROLLBACK/COMMIT responses, real deferred-FK COMMIT rejection, historical confirmation problems and
+independent audit INSERT response loss. Mock Promise rejection alone proves no DB guarantee.
+The maintainer must run the full external suite through `weft-integration`; Codex must not discover
+credentials, read secret files or run that helper. Applicable live Discord checks and an independent
+final review remain required before commit. F05 remains open until managed-message execution and
+compensation follow-up coverage is complete.
