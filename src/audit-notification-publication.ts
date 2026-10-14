@@ -162,8 +162,8 @@ export function publishManagedMessageAudits(
     publishExistingAudits(database, publisher, "MANAGED_MESSAGE", [id]);
   return {
     ...store,
-    async create(input) {
-      const result = await store.create(input);
+    async create(input, attempt) {
+      const result = await store.create(input, attempt);
       await publish(input.auditId);
       return result;
     },

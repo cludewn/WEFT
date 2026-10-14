@@ -1498,11 +1498,12 @@ loop is used.
 Discord send must precede PostgreSQL persistence because the resulting Discord message ID and
 creation timestamp are required managed state. Migration 0009 adds `managed_messages`, keyed by
 the Discord message ID, with creator, exact content, revision 1, `ACTIVE` status, the Discord
-creation timestamp, and a database-owned update timestamp. If the insert rejects, the store does
-not retry the write: it reads by message ID and confirms the exact expected state. A missing,
-conflicting, or unreadable confirmation causes one compensation delete of only the confirmed sent
-message. An unconfirmed compensation is reported as a partial failure with the known message ID.
-Discord and PostgreSQL remain non-atomic.
+creation timestamp, and a database-owned update timestamp. Creation now also inserts its exact
+`CREATED` SUCCESS audit atomically. On rejection, the service does not retry the write. It accepts
+an acknowledged COMMIT or exact read-only confirmation; missing, conflicting or unreadable
+confirmation is not evidence of rollback. Only confirmed noncommit permits one compensation delete
+of the identity verified by the send boundary. Discord and PostgreSQL remain non-atomic. See the
+Issue #107 transaction decision table below.
 
 Phase 7A needs neither `MessageContent` nor `GuildMembers` gateway intent. Message editing,
 revision mutation and conflict handling, managed-message creation/edit audit completion, and
@@ -2344,3 +2345,62 @@ The maintainer must run the full external suite through `weft-integration`; Code
 credentials, read secret files or run that helper. Applicable live Discord checks and an independent
 final review remain required before commit. F05 remains open until managed-message execution and
 compensation follow-up coverage is complete.
+
+## Managed-message send compensation safety (Issue #107)
+
+Only interactive managed-message creation passes a fresh `AdministrativeAttempt` to the existing
+`administrativeTransaction` boundary. Its identity is the already-generated stable creation audit
+ID, used only to carry transaction evidence; it does not invoke the administrative failure audit
+recorder. `ManagedMessageStore.create(input, attempt?)` preserves its original callback and return
+contract. The notification wrapper forwards the same attempt. Callers without an attempt keep the
+original Drizzle transaction behavior and cannot obtain noncommit evidence from rejection.
+`insertManagedMessageCreation` and its atomic managed row/SUCCESS audit INSERTs are unchanged.
+Scheduled/recurring combined creation, workers, recovery, edit and deletion-detection transactions
+remain on their previous boundaries.
+
+The boundary uses the Pool already bound by `createDatabase`, with no new pool or shutdown owner.
+BEGIN, business queries, COMMIT and ROLLBACK use one checked-out client. COMMIT-attempted is set
+before invoking public query, including synchronous errors. Only normal COMMIT acknowledgement
+establishes `COMMITTED`. Before-COMMIT callback failure requires normal ROLLBACK acknowledgement to
+establish `ROLLED_BACK`. `COMMIT_REJECTED` requires an allowlisted server ErrorResponse (`40001`,
+`40P01`, `23503`, `23505`, `23514`, `23P01`), ERROR severity, routine evidence and acknowledged
+termination. Connection loss, unknown completion, cancellation, timeout and opaque rejection stay
+`UNCONFIRMED`. A lost ROLLBACK response is also unconfirmed even when rollback actually executed.
+Unknown termination destroys the connection. Existing ingress awaits the whole service operation,
+including confirmation, compensation and publication; pool closure remains under existing shutdown.
+
+| Evidence                                                                       | Business creation may have committed?     | Delete compensation                                 | Result / further confirmation                       |
+| ------------------------------------------------------------------------------ | ----------------------------------------- | --------------------------------------------------- | --------------------------------------------------- |
+| A: callback never entered (`START_FAILED`)                                     | No, this attempt issued no business query | Eligible                                            | Check exact success first; otherwise compensate     |
+| B: no COMMIT attempt, same-client ROLLBACK acknowledged (`ROLLED_BACK`)        | No                                        | Eligible                                            | Check exact success first; otherwise compensate     |
+| C: explicit COMMIT rejection plus acknowledged termination (`COMMIT_REJECTED`) | No                                        | Eligible                                            | Check exact success first; otherwise compensate     |
+| D: COMMIT acknowledged (`COMMITTED`)                                           | Confirmed                                 | Forbidden                                           | SUCCESS; a later boundary rejection cannot undo it  |
+| E: response loss / unknown termination / no evidence                           | Yes, or noncommit not confirmed           | Forbidden unless separate noncommit evidence exists | Read exact confirmation once; otherwise UNCONFIRMED |
+| F: exact creation confirmation MATCH                                           | Confirmed exact success                   | Forbidden                                           | SUCCESS; existing notification publication          |
+| G: confirmation MISSING, CONFLICT or read failure                              | These reads do not exclude commit         | Only with A, B or C                                 | UNCONFIRMED for E; otherwise one compensation       |
+| Returned payload mismatch before persistence                                   | No creation attempted                     | Eligible                                            | One compensation; no DB write or resend             |
+
+Confirmation still compares every expected creation field against both the managed row and stable
+SUCCESS audit. It neither infers rollback from absent history nor changes historical audit meaning.
+If a later legitimate state transition prevents MATCH, preserve the historical creation audit and
+return UNCONFIRMED after ambiguous COMMIT without deleting. Exact MATCH is success evidence, not a
+prerequisite whose failure grants destructive compensation.
+
+Deletion returns four distinct outcomes: `DELETED`, `ALREADY_ABSENT` (Discord Unknown Message),
+`REJECTED` (definite nontransient 4xx) and `UNCONFIRMED` (connection, timeout, transient or opaque
+failure). The first two produce separate compensated failure codes. The latter two retain the
+specific `deletionOutcome` on PARTIAL_FAILURE; an unexpected boundary rejection is UNCONFIRMED.
+An ambiguous database result instead returns a separate UNCONFIRMED business result and explicitly
+states that no removal was attempted. It does not encourage blind send replay or manual deletion
+of a message that may already be managed. Operational diagnostics remain bounded and omit payload,
+URLs, raw errors and credentials. No new failure/partial audit, notification source, schema,
+migration or dependency is introduced; that audit responsibility remains Issue #106.
+
+Unit coverage drives the production store and administrative boundary through public client query
+fakes, asserting control commands, callback/COMMIT evidence, release ownership and Discord mutation
+counts. Maintainer-only PostgreSQL tests decorate public Pool/PoolClient APIs, distinguish operations
+actually executed from responses lost afterwards, and assert exact injection counts. A separate
+observer checks committed/rolled-back managed rows and SUCCESS audits, including a real deferred-FK
+COMMIT rejection, lost ROLLBACK acknowledgement, read failures and later state changes. Existing
+managed-message migration/constraint tests remain unchanged. Run the full external integration suite
+and independent final review before commit; Codex does not execute external PostgreSQL tests.

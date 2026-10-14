@@ -3,6 +3,11 @@ import { randomBytes, randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 
 import type {
+  AdministrativeAttempt,
+  AdministrativeTransactionEvidence,
+} from "./administrative-transaction.js";
+
+import type {
   ManagedMessageDiscord,
   ManagedMessageDiscordEditFailureCode,
   ManagedMessageDiscordFailureCode,
@@ -31,11 +36,13 @@ export const generateManagedMessageNonce: ManagedMessageNonceGenerator = () =>
 export type ManagedMessageSendFailureCode =
   | ManagedMessagePayloadValidationCode
   | ManagedMessageDiscordFailureCode
-  | "PERSISTENCE_UNCONFIRMED_COMPENSATED";
+  | "PERSISTENCE_UNCONFIRMED_COMPENSATED"
+  | "PERSISTENCE_UNCONFIRMED_ALREADY_ABSENT";
 export type ManagedMessageSendResult =
   | { outcome: "SUCCESS"; messageId: string }
   | { outcome: "FAILURE"; code: ManagedMessageSendFailureCode }
-  | { outcome: "PARTIAL_FAILURE"; messageId: string };
+  | { outcome: "UNCONFIRMED"; messageId: string }
+  | { outcome: "PARTIAL_FAILURE"; messageId: string; deletionOutcome: "REJECTED" | "UNCONFIRMED" };
 
 export type ManagedMessageEditLookupResult =
   | { outcome: "FOUND"; messageId: string; payload: ManagedMessagePayload; revision: number }
@@ -133,7 +140,9 @@ export function createManagedMessageService({
     error?: unknown,
     auditId?: string,
     payloadDiagnostics?: {
-      payloadFailureReason: "PROJECTION_FAILED" | "SEMANTIC_MISMATCH";
+      payloadFailureReason?: "PROJECTION_FAILED" | "SEMANTIC_MISMATCH";
+      transactionEvidence?: AdministrativeTransactionEvidence;
+      deletionOutcome?: "DELETED" | "ALREADY_ABSENT" | "REJECTED" | "UNCONFIRMED";
       projectionFailureReason?: ManagedMessageEmbedProjectionFailureReason;
     },
   ): void {
@@ -152,6 +161,17 @@ export function createManagedMessageService({
       },
       "Managed message operation could not be confirmed",
     );
+  }
+
+  async function compensateSend(
+    message: Parameters<ManagedMessageDiscord["deleteManagedMessage"]>[0],
+  ) {
+    try {
+      return await discord.deleteManagedMessage(message);
+    } catch (error) {
+      warn("managed_message_send_compensation_failed", message, "DELETE_UNCONFIRMED", error);
+      return { outcome: "UNCONFIRMED" } as const;
+    }
   }
 
   async function persistDeletion(
@@ -282,8 +302,8 @@ export function createManagedMessageService({
                   : { projectionFailureReason: discordResult.message.projectionFailureReason }),
               }
             : { payloadFailureReason: "SEMANTIC_MISMATCH" as const };
-        const deleteResult = await discord.deleteManagedMessage(discordResult.message);
-        if (deleteResult.outcome === "DELETED") {
+        const deleteResult = await compensateSend(discordResult.message);
+        if (deleteResult.outcome === "DELETED" || deleteResult.outcome === "ALREADY_ABSENT") {
           warn(
             "managed_message_send_confirmation_compensated",
             discordResult.message,
@@ -292,7 +312,13 @@ export function createManagedMessageService({
             undefined,
             payloadDiagnostics,
           );
-          return { outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED_COMPENSATED" };
+          return {
+            outcome: "FAILURE",
+            code:
+              deleteResult.outcome === "DELETED"
+                ? "PERSISTENCE_UNCONFIRMED_COMPENSATED"
+                : "PERSISTENCE_UNCONFIRMED_ALREADY_ABSENT",
+          };
         }
         warn(
           "managed_message_send_confirmation_partial_failure",
@@ -302,7 +328,11 @@ export function createManagedMessageService({
           undefined,
           payloadDiagnostics,
         );
-        return { outcome: "PARTIAL_FAILURE", messageId: discordResult.message.messageId };
+        return {
+          outcome: "PARTIAL_FAILURE",
+          messageId: discordResult.message.messageId,
+          deletionOutcome: deleteResult.outcome,
+        };
       }
 
       const creation: CreateManagedMessage = {
@@ -314,8 +344,9 @@ export function createManagedMessageService({
         creatorUserId: input.actorUserId,
         payload: validation.payload,
       };
+      const attempt: AdministrativeAttempt = { operationId: creation.auditId };
       try {
-        await store.create(creation);
+        await store.create(creation, attempt);
         return { outcome: "SUCCESS", messageId: creation.messageId };
       } catch (error) {
         warn(
@@ -324,8 +355,15 @@ export function createManagedMessageService({
           "CREATE_REJECTED_OR_UNCONFIRMED",
           error,
           creation.auditId,
+          attempt.transactionEvidence === undefined
+            ? {}
+            : { transactionEvidence: attempt.transactionEvidence },
         );
       }
+
+      // A post-commit notification/publication failure cannot undo acknowledged persistence.
+      if (attempt.transactionEvidence?.disposition === "COMMITTED")
+        return { outcome: "SUCCESS", messageId: creation.messageId };
 
       let confirmation: "MATCH" | "MISSING" | "CONFLICT" | "READ_FAILED";
       try {
@@ -342,19 +380,48 @@ export function createManagedMessageService({
       }
       if (confirmation === "MATCH") return { outcome: "SUCCESS", messageId: creation.messageId };
 
-      const deleteResult = await discord.deleteManagedMessage(discordResult.message);
-      if (deleteResult.outcome === "DELETED") {
+      const disposition = attempt.transactionEvidence?.disposition;
+      if (
+        disposition !== "START_FAILED" &&
+        disposition !== "ROLLED_BACK" &&
+        disposition !== "COMMIT_REJECTED"
+      ) {
+        warn(
+          "managed_message_persistence_unconfirmed",
+          creation,
+          confirmation,
+          undefined,
+          creation.auditId,
+        );
+        return { outcome: "UNCONFIRMED", messageId: creation.messageId };
+      }
+
+      const deleteResult = await compensateSend(discordResult.message);
+      if (deleteResult.outcome === "DELETED" || deleteResult.outcome === "ALREADY_ABSENT") {
         warn(
           "managed_message_persistence_compensated",
           creation,
           confirmation,
           undefined,
           creation.auditId,
+          { deletionOutcome: deleteResult.outcome },
         );
-        return { outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED_COMPENSATED" };
+        return {
+          outcome: "FAILURE",
+          code:
+            deleteResult.outcome === "DELETED"
+              ? "PERSISTENCE_UNCONFIRMED_COMPENSATED"
+              : "PERSISTENCE_UNCONFIRMED_ALREADY_ABSENT",
+        };
       }
-      warn("managed_message_partial_failure", creation, confirmation, undefined, creation.auditId);
-      return { outcome: "PARTIAL_FAILURE", messageId: creation.messageId };
+      warn("managed_message_partial_failure", creation, confirmation, undefined, creation.auditId, {
+        deletionOutcome: deleteResult.outcome,
+      });
+      return {
+        outcome: "PARTIAL_FAILURE",
+        messageId: creation.messageId,
+        deletionOutcome: deleteResult.outcome,
+      };
     },
 
     async findForEdit(input) {

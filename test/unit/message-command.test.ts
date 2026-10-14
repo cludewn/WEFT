@@ -489,6 +489,7 @@ describe("managed message modal submit", () => {
       sendImplementation: () =>
         Promise.resolve({
           outcome: "PARTIAL_FAILURE",
+          deletionOutcome: "UNCONFIRMED",
           messageId: "999999999999999999",
         }),
     });
@@ -497,6 +498,29 @@ describe("managed message modal submit", () => {
     expect(rendered).toContain("999999999999999999");
     expect(rendered).not.toContain("sensitive content");
   });
+
+  it.each([
+    [{ outcome: "UNCONFIRMED", messageId: "999999999999999999" }, "did not attempt removal"],
+    [
+      { outcome: "PARTIAL_FAILURE", messageId: "999999999999999999", deletionOutcome: "REJECTED" },
+      "Discord rejected removal",
+    ],
+    [{ outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED_ALREADY_ABSENT" }, "already absent"],
+  ] as const)(
+    "renders send uncertainty or compensation truthfully %#",
+    async (result, expected) => {
+      const fixture = createModalInteraction({
+        content: "sensitive content",
+        sendImplementation: () => Promise.resolve(result),
+      });
+      await handleManagedMessageModalSubmit(fixture.interaction, fixture.service);
+      const rendered = JSON.stringify(fixture.editReply.mock.calls);
+      expect(rendered).toContain(expected);
+      expect(rendered).not.toContain("sensitive content");
+      expect(rendered).not.toContain("Managed message sent.");
+      expect(fixture.service.send).toHaveBeenCalledOnce();
+    },
+  );
 
   it("rejects malformed owned edit IDs but silently ignores unrelated IDs", async () => {
     const malformed = createModalInteraction({ customId: "managed-message:edit:bad:1" });

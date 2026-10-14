@@ -850,6 +850,34 @@ the send. New managed-message creation commits the managed row and its `CREATED`
 Rows created before creation-audit support remain valid managed messages without fabricated
 historical audit records.
 
+Discord deletion compensation after send is permitted only when this creation attempt did not
+enter its database callback, or when same-connection transaction evidence confirms noncommit:
+ROLLBACK acknowledged before any COMMIT attempt, or an allowlisted explicit server COMMIT rejection
+with acknowledged transaction termination. A rejected transaction Promise alone is not evidence.
+Returned-message payload verification failure before persistence also permits compensation because
+no database creation was attempted. Compensation targets only the identity verified by the send
+boundary, once; it does not resend or blindly retry database creation.
+
+An acknowledged COMMIT or exact creation confirmation establishes success. Exact confirmation
+requires the complete expected managed row and its exact `CREATED` SUCCESS audit, including actor,
+identity, payload, revisions, statuses, NULL shape and occurrence time. Missing, conflicting or
+unreadable confirmation does not prove rollback. A later legitimate edit or deletion detection can
+make the current row differ from creation evidence; historical SUCCESS audits remain intact and
+that mismatch cannot authorize deletion after an ambiguous transaction.
+
+If COMMIT may have succeeded, or transaction termination is unconfirmed, WEFT must not delete the
+Discord message. It returns `UNCONFIRMED` when exact success cannot be established, explicitly
+stating that management status is unknown and removal was not attempted. The Discord message may
+exist without WEFT being able to confirm it as managed. Administrators must check its state before
+retrying or deleting it. This result asserts neither confirmed persistence success nor failure.
+
+When noncommit is confirmed, deletion distinguishes confirmed removal, already absent, confirmed
+rejection and unknown outcome. Confirmed removal or absence yields a compensated failure with
+distinct reasons. Rejected or unconfirmed removal yields a partial failure identifying the known
+message and the removal outcome. A rejected or unresolved deletion Promise never proves removal.
+The existing atomic SUCCESS history and best-effort notifications remain unchanged. This fix adds
+no FAILURE or PARTIAL audit; managed-message execution/compensation auditing remains Issue #106.
+
 User-provided content must not generate mentions by default.
 
 Long-form content should be entered through a Discord modal rather than being forced into a single slash-command text option.
