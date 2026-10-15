@@ -1,3 +1,4 @@
+import { managedMessageExecutionFailureAudits } from "./managed-message-execution-audit.js";
 import { bindAdministrativePool } from "./administrative-transaction.js";
 import { administrativeOperationFailureAudits } from "./administrative-operation-failure-audit.js";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -36,6 +37,7 @@ export function createDatabase(config: DatabaseConfig) {
 
   const client = drizzle(pool, {
     schema: {
+      managedMessageExecutionFailureAudits,
       administrativeOperationFailureAudits,
       auditLogDestinationAudits,
       autoCloseParentChannels,

@@ -22,6 +22,10 @@ import { createBulkCloseService } from "../../src/bulk-thread-close.js";
 import type { BulkThreadCloseHooks } from "../../src/thread-lifecycle.js";
 import type { AuditRetentionStore } from "../../src/audit-retention-persistence.js";
 import { createAuditRetentionRuntime } from "../../src/audit-retention-runtime.js";
+import { createManagedMessageService } from "../../src/managed-message.js";
+import type { ManagedMessageDiscord } from "../../src/managed-message-discord.js";
+import { createManagedMessageStore } from "../../src/managed-message-persistence.js";
+import type { DatabaseClient } from "../../src/database.js";
 
 import {
   createApplicationRuntime,
@@ -104,6 +108,53 @@ function createFixture(overrides: Partial<ApplicationRuntimeDependencies> = {}) 
 afterEach(() => vi.useRealTimers());
 
 describe("application runtime", () => {
+  it("drains admitted managed-message execution audit writes before notifications and resource close", async () => {
+    const fixture = createFixture();
+    const audit = deferred();
+    const record = vi.fn(() => audit.promise);
+    const sendManagedMessage: ManagedMessageDiscord["sendManagedMessage"] = (
+      _input,
+      observation,
+    ) => {
+      observation!.actorAuthorized();
+      observation!.attempt.failure = {
+        stage: "DISCORD_PREFLIGHT",
+        reasonCode: "BOT_PERMISSION_MISSING",
+      };
+      return Promise.resolve({ outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" });
+    };
+    const service = createManagedMessageService({
+      discord: { sendManagedMessage } as ManagedMessageDiscord,
+      // This preflight must not call a business persistence method.
+      store: createManagedMessageStore({} as DatabaseClient),
+      failures: { record },
+      logger: fixture.logger,
+    });
+    await fixture.runtime.start();
+    const operation = fixture.runtime.ingress.run(() =>
+      service.send({
+        guildId: "guild",
+        channelId: "channel",
+        actorUserId: "actor",
+        payload: { content: "private", embed: null },
+      }),
+    );
+    await vi.waitFor(() => expect(record).toHaveBeenCalledOnce());
+    const shutdown = fixture.runtime.shutdown("SIGTERM");
+    await Promise.resolve();
+    expect(fixture.dependencies.drainAuditNotifications).not.toHaveBeenCalled();
+    expect(fixture.dependencies.destroyDiscord).not.toHaveBeenCalled();
+    expect(fixture.dependencies.closeDatabase).not.toHaveBeenCalled();
+    audit.resolve();
+    await expect(operation).resolves.toEqual({
+      outcome: "FAILURE",
+      code: "BOT_PERMISSION_MISSING",
+    });
+    await shutdown;
+    expect(fixture.calls.indexOf("audit-drain")).toBeLessThan(
+      fixture.calls.indexOf("database-close"),
+    );
+  });
   it("opens READY ingress only after the exact startup sequence", async () => {
     const fixture = createFixture();
     const service = vi.fn(() => Promise.resolve("accepted"));

@@ -1,3 +1,4 @@
+import { createManagedMessageExecutionRecorder } from "./managed-message-execution-audit.js";
 import { createAdministrativeFailureRecorder } from "./administrative-operation-failure-audit.js";
 import { createGuildConfigurationService } from "./guild-configuration.js";
 import pino from "pino";
@@ -177,6 +178,7 @@ async function main(): Promise<void> {
   const managedMessages = createManagedMessageService({
     discord: createManagedMessageDiscord(discordRuntime.client),
     store: managedMessageStore,
+    failures: createManagedMessageExecutionRecorder(database.client, logger, auditPublisher),
     logger,
   });
   const autoCloseDiscord = createAutoCloseDiscord(discordRuntime.client);

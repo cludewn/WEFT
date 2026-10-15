@@ -1,3 +1,4 @@
+import { managedMessageExecutionFailureAudits } from "../../src/managed-message-execution-audit.js";
 import {
   configurationAudit,
   guildConfigurationAudits,
@@ -51,6 +52,11 @@ const newId = () => randomUUID();
 // including rows left by an interrupted previous test run.
 async function isolatedTimes(): Promise<{ cutoff: Date; old: Date; recent: Date }> {
   const oldestRows = await Promise.all([
+    database.client
+      .select({ at: managedMessageExecutionFailureAudits.occurredAt })
+      .from(managedMessageExecutionFailureAudits)
+      .orderBy(asc(managedMessageExecutionFailureAudits.occurredAt))
+      .limit(1),
     database.client
       .select({ at: administrativeOperationFailureAudits.occurredAt })
       .from(administrativeOperationFailureAudits)
@@ -164,6 +170,9 @@ beforeAll(async () => {
 afterAll(async () => {
   try {
     await database.client
+      .delete(managedMessageExecutionFailureAudits)
+      .where(eq(managedMessageExecutionFailureAudits.guildId, guildId));
+    await database.client
       .delete(administrativeOperationFailureAudits)
       .where(eq(administrativeOperationFailureAudits.guildId, guildId));
     await database.client
@@ -212,6 +221,27 @@ afterAll(async () => {
 
 async function insertAudit(source: AuditRetentionSource, id: string, at: Date) {
   switch (source) {
+    case "managed_message_execution_failure_audits":
+      await database.client.insert(managedMessageExecutionFailureAudits).values({
+        id,
+        operationId: randomUUID(),
+        successAuditId: randomUUID(),
+        guildId,
+        channelId: "channel",
+        actorUserId: "actor",
+        operationCode: "MANAGED_MESSAGE_SEND",
+        stage: "DISCORD_PREFLIGHT",
+        reasonCode: "BOT_PERMISSION_MISSING",
+        outcome: "FAILURE",
+        discordEvidence: "NOT_ATTEMPTED",
+        payloadEvidence: "NOT_CHECKED",
+        transactionEvidence: "NOT_ATTEMPTED",
+        databaseEffect: "NOT_ATTEMPTED",
+        compensationType: "NONE",
+        compensationEvidence: "NOT_REQUIRED",
+        occurredAt: at,
+      });
+      break;
     case "administrative_operation_failure_audits":
       await database.client.insert(administrativeOperationFailureAudits).values({
         id,

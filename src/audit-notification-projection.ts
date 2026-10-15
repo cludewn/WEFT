@@ -1,3 +1,4 @@
+import { managedMessageExecutionFailureAudits } from "./managed-message-execution-audit.js";
 import { administrativeOperationFailureAudits } from "./administrative-operation-failure-audit.js";
 import { guildConfigurationAudits } from "./guild-configuration-audit.js";
 import { eq } from "drizzle-orm";
@@ -40,6 +41,25 @@ export function createAuditNotificationProjection(database: DatabaseClient) {
   return {
     async load(reference: AuditReference): Promise<AuditNotificationRecord | undefined> {
       switch (reference.source) {
+        case "MANAGED_MESSAGE_EXECUTION_FAILURE": {
+          const [row] = await database
+            .select({
+              guildId: managedMessageExecutionFailureAudits.guildId,
+              actorUserId: managedMessageExecutionFailureAudits.actorUserId,
+              event: managedMessageExecutionFailureAudits.operationCode,
+              failureStage: managedMessageExecutionFailureAudits.stage,
+              failureCode: managedMessageExecutionFailureAudits.reasonCode,
+              outcome: managedMessageExecutionFailureAudits.outcome,
+              discordEvidence: managedMessageExecutionFailureAudits.discordEvidence,
+              databaseEffect: managedMessageExecutionFailureAudits.databaseEffect,
+              compensationEvidence: managedMessageExecutionFailureAudits.compensationEvidence,
+              occurredAt: managedMessageExecutionFailureAudits.occurredAt,
+            })
+            .from(managedMessageExecutionFailureAudits)
+            .where(eq(managedMessageExecutionFailureAudits.id, reference.auditId))
+            .limit(1);
+          return row && { ...reference, ...row, actorType: "USER" };
+        }
         case "ADMINISTRATIVE_OPERATION_FAILURE": {
           const [row] = await database
             .select({

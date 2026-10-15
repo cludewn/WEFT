@@ -8,6 +8,7 @@ import {
 
 import type { DatabaseClient } from "./database.js";
 import type { ManagedMessagePayload } from "./managed-message-payload.js";
+import type { ManagedMessageTransactionAttempt } from "./managed-message-execution-evidence.js";
 
 export const MANAGED_MESSAGE_STATUSES = ["ACTIVE", "DELETED"] as const;
 export type ManagedMessageStatus = (typeof MANAGED_MESSAGE_STATUSES)[number];
@@ -194,14 +195,67 @@ export type ManagedMessageStore = {
   find: (messageId: string) => Promise<ManagedMessage | undefined>;
   create: (input: CreateManagedMessage, attempt?: AdministrativeAttempt) => Promise<ManagedMessage>;
   confirmCreation: (input: CreateManagedMessage) => Promise<ManagedMessageConfirmation>;
-  edit: (input: EditManagedMessage) => Promise<ManagedMessageTransitionResult>;
+  edit: (
+    input: EditManagedMessage,
+    attempt?: ManagedMessageTransactionAttempt,
+  ) => Promise<ManagedMessageTransitionResult>;
   confirmEdit: (input: EditManagedMessage) => Promise<ManagedMessageConfirmation>;
-  markDeleted: (input: DeleteManagedMessage) => Promise<ManagedMessageTransitionResult>;
+  markDeleted: (
+    input: DeleteManagedMessage,
+    attempt?: ManagedMessageTransactionAttempt,
+  ) => Promise<ManagedMessageTransitionResult>;
   confirmDeletion: (input: DeleteManagedMessage) => Promise<ManagedMessageConfirmation>;
   readCompensationSafety: (input: EditManagedMessage) => Promise<ManagedMessageCompensationSafety>;
 };
 
 export type DatabaseTransaction = Parameters<Parameters<DatabaseClient["transaction"]>[0]>[0];
+
+export type ManagedMessageSuccessCandidate =
+  | { event: "CREATED"; input: CreateManagedMessage }
+  | { event: "EDITED"; input: EditManagedMessage }
+  | { event: "DELETION_DETECTED"; input: DeleteManagedMessage };
+
+/** Historical evidence only. This does not replace current-row business confirmation. */
+export function exactManagedMessageHistoricalSuccess(
+  audit: ManagedMessageAudit,
+  candidate: ManagedMessageSuccessCandidate,
+): boolean {
+  const { event, input } = candidate;
+  const previous =
+    event === "CREATED"
+      ? null
+      : candidate.event === "EDITED"
+        ? candidate.input.previousPayload
+        : candidate.input.payload;
+  const revision = candidate.event === "CREATED" ? null : candidate.input.expectedRevision;
+  return (
+    audit.id === input.auditId &&
+    audit.guildId === input.guildId &&
+    audit.channelId === input.channelId &&
+    audit.messageId === input.messageId &&
+    audit.event === event &&
+    audit.actorType === (event === "DELETION_DETECTED" ? "SYSTEM" : "USER") &&
+    audit.actorId ===
+      (candidate.event === "CREATED"
+        ? candidate.input.creatorUserId
+        : candidate.event === "EDITED"
+          ? candidate.input.actorUserId
+          : null) &&
+    auditPayloadMatches(audit, "before", previous) &&
+    auditPayloadMatches(audit, "after", input.payload) &&
+    audit.beforeRevision === revision &&
+    audit.afterRevision ===
+      (event === "CREATED" ? 1 : event === "EDITED" ? revision! + 1 : revision) &&
+    audit.beforeStatus === (event === "CREATED" ? null : "ACTIVE") &&
+    audit.afterStatus === (event === "DELETION_DETECTED" ? "DELETED" : "ACTIVE") &&
+    audit.occurredAt.getTime() ===
+      (candidate.event === "CREATED"
+        ? candidate.input.createdAt
+        : candidate.input.occurredAt
+      ).getTime() &&
+    audit.outcome === "SUCCESS"
+  );
+}
 
 type FlatPayload = {
   content: string;
@@ -503,8 +557,8 @@ export function createManagedMessageStore(database: DatabaseClient): ManagedMess
       if (state.message === undefined && state.audit === undefined) return "MISSING";
       return matchesCreation(state.message, state.audit, input) ? "MATCH" : "CONFLICT";
     },
-    async edit(input) {
-      return database.transaction(async (transaction) => {
+    async edit(input, attempt) {
+      return administrativeTransaction(database, attempt, async (transaction) => {
         const [updated] = await transaction
           .update(managedMessages)
           .set({
@@ -523,7 +577,10 @@ export function createManagedMessageStore(database: DatabaseClient): ManagedMess
             ),
           )
           .returning();
-        if (updated === undefined) return "NOT_TRANSITIONED";
+        if (updated === undefined) {
+          if (attempt) attempt.databaseTransition = "NOT_TRANSITIONED";
+          return "NOT_TRANSITIONED";
+        }
         await transaction.insert(managedMessageAudits).values({
           id: input.auditId,
           messageId: input.messageId,
@@ -549,8 +606,8 @@ export function createManagedMessageStore(database: DatabaseClient): ManagedMess
       if (state.message === undefined && state.audit === undefined) return "MISSING";
       return matchesEdit(state.message, state.audit, input) ? "MATCH" : "CONFLICT";
     },
-    async markDeleted(input) {
-      return database.transaction(async (transaction) => {
+    async markDeleted(input, attempt) {
+      return administrativeTransaction(database, attempt, async (transaction) => {
         const [updated] = await transaction
           .update(managedMessages)
           .set({ status: "DELETED", updatedAt: new Date() })
@@ -565,7 +622,10 @@ export function createManagedMessageStore(database: DatabaseClient): ManagedMess
             ),
           )
           .returning();
-        if (updated === undefined) return "NOT_TRANSITIONED";
+        if (updated === undefined) {
+          if (attempt) attempt.databaseTransition = "NOT_TRANSITIONED";
+          return "NOT_TRANSITIONED";
+        }
         await transaction.insert(managedMessageAudits).values({
           id: input.auditId,
           messageId: input.messageId,

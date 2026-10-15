@@ -155,6 +155,13 @@
       "when": 1791959140902,
       "tag": "0021_parallel_revanche",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1792029543403,
+      "tag": "0022_sparkling_spectrum",
+      "breakpoints": true
     }
   ]
 }

@@ -2348,15 +2348,15 @@ compensation follow-up coverage is complete.
 
 ## Managed-message send compensation safety (Issue #107)
 
-Only interactive managed-message creation passes a fresh `AdministrativeAttempt` to the existing
+Issue #107 introduced a fresh `AdministrativeAttempt` for interactive managed-message creation at the existing
 `administrativeTransaction` boundary. Its identity is the already-generated stable creation audit
 ID, used only to carry transaction evidence; it does not invoke the administrative failure audit
 recorder. `ManagedMessageStore.create(input, attempt?)` preserves its original callback and return
 contract. The notification wrapper forwards the same attempt. Callers without an attempt keep the
 original Drizzle transaction behavior and cannot obtain noncommit evidence from rejection.
 `insertManagedMessageCreation` and its atomic managed row/SUCCESS audit INSERTs are unchanged.
-Scheduled/recurring combined creation, workers, recovery, edit and deletion-detection transactions
-remain on their previous boundaries.
+Scheduled/recurring combined creation, workers and recovery retain their previous boundaries.
+Issue #106 extends observed transactions only to eligible interactive edit and deletion detection.
 
 The boundary uses the Pool already bound by `createDatabase`, with no new pool or shutdown owner.
 BEGIN, business queries, COMMIT and ROLLBACK use one checked-out client. COMMIT-attempted is set
@@ -2393,8 +2393,8 @@ specific `deletionOutcome` on PARTIAL_FAILURE; an unexpected boundary rejection 
 An ambiguous database result instead returns a separate UNCONFIRMED business result and explicitly
 states that no removal was attempted. It does not encourage blind send replay or manual deletion
 of a message that may already be managed. Operational diagnostics remain bounded and omit payload,
-URLs, raw errors and credentials. No new failure/partial audit, notification source, schema,
-migration or dependency is introduced; that audit responsibility remains Issue #106.
+URLs, raw errors and credentials. Issue #107 introduced no failure/partial audit, notification source, schema, migration or dependency.
+The separate Issue #106 contract below adds that history without changing the send decision table.
 
 Unit coverage drives the production store and administrative boundary through public client query
 fakes, asserting control commands, callback/COMMIT evidence, release ownership and Discord mutation
@@ -2404,3 +2404,101 @@ observer checks committed/rolled-back managed rows and SUCCESS audits, including
 COMMIT rejection, lost ROLLBACK acknowledgement, read failures and later state changes. Existing
 managed-message migration/constraint tests remain unchanged. Run the full external integration suite
 and independent final review before commit; Codex does not execute external PostgreSQL tests.
+
+## Managed-message execution auditing (Issue #106)
+
+`managed-message-execution-evidence.ts` contains bounded observations and the pure classifier. It
+never accepts business result labels as proof. `managed-message-execution-audit.ts` owns the focused
+schema, independent conditional INSERT, same-ID exact confirmation, deduplication and publication.
+This is not a generic audit framework. No dependency, Gateway intent or Bot permission is added.
+
+`createManagedMessageService` is the only new history owner. An optional internal observation reaches
+the Discord adapter; immediately after the existing fresh effective actor check, a synchronous
+callback establishes the operation UUID. There is no extra Discord/DB await at that boundary. Initial
+channel/parent/parallel member failures and initial edit DB lookup failures cannot reuse an earlier
+interaction's permission as fresh eligibility. Invalid input/context, actor denial, unverified actor,
+message ownership/coherence guards, no-ops, pre-effect revision conflicts and Modal lookup failures
+are excluded. Post-authorization Bot preflight and required resource-read failures are distinct.
+
+The send nonce/enforceNonce and one application send remain unchanged. Preserve verified message
+identity before projecting the returned payload. Separate projection-unavailable, semantic mismatch
+and response-read failure. Issue #107's existing create attempt supplies transaction evidence; do not
+introduce another create transaction owner. COMMITTED or existing exact MATCH remains SUCCESS.
+Possible COMMIT or lost ROLLBACK acknowledgement remains UNCONFIRMED without delete or new confirmed
+history. For no-attempt/proven noncommit, existing one-shot deletion distinguishes DELETED,
+ALREADY_ABSENT, REJECTED and UNCONFIRMED. Only REJECTED supports PARTIAL; unknown deletion does not.
+A payload mismatch/projection failure before persistence proves no creation attempt and retains the
+same deletion policy. A verified identity followed by projection-read exception can establish an
+incomplete send without inventing a resend or compensation that the business path never performed.
+
+Interactive edit and deletion detection pass their existing attempt to administrativeTransaction.
+Unbound fakes and callers without an attempt retain the original Drizzle API. The same checked-out
+client owns BEGIN, client-bound queries, COMMIT/ROLLBACK and release/destruction. Callbacks retain
+all revision/payload/status/guild predicates and atomic SUCCESS INSERTs. Conditional zero-row UPDATE
+records NOT_TRANSITIONED before returning without a SUCCESS INSERT. Even if that empty transaction's
+COMMIT response is lost, the business non-transition is known; transaction completion is still
+UNCONFIRMED. Do not use administrativeGuard's pre-effect suppression for an already effected edit.
+The shared insertManagedMessageCreation helper and all scheduled/recurring transactions are unchanged.
+
+Restore decisions and remote call order remain unchanged. DB safety must still show the exact old
+ACTIVE revision/payload and no intended audit; Discord safety must still show the exact verified new
+payload and edit timestamp before one restore PATCH. Observe read/guard skips before PATCH separately
+from response loss after PATCH. With known DB noncompletion, those pre-PATCH skips support historical
+PARTIAL even if current Discord content could not be read. Unknown attempted restoration supports
+neither FAILURE nor PARTIAL. Acknowledged business commit is never undone by an auxiliary boundary
+failure. Deletion-detection persistence has a separate SYSTEM SUCCESS candidate, unchanged payload
+and revision; its proven finalization failure is FAILURE, not an alleged Discord edit effect.
+
+Primary SUCCESS audit IDs reuse the admitted operation identity; detection keeps a distinct candidate.
+After business/compensation settles, the recorder reads candidate SUCCESS history without joining
+current managed state. Compare every relevant identity, actor, payload/NULL field, revision/status,
+timestamp and outcome. MATCH suppresses new history; mismatch is an identity conflict and a read
+failure loses only best-effort history. Missing history does not establish rollback. The independent
+INSERT also has NOT EXISTS protection for those candidate IDs. This relies on the application's
+single-owner, completed-writer and no-retry invariants; it is not cross-table uniqueness against
+arbitrary direct SQL writers. An operation UNIQUE and a WeakMap-owned recorder Promise prevent
+repeated attempt admission. Audit IDs are separate, stable before INSERT, and collisions are not
+hidden by ON CONFLICT. Lost INSERT response permits one exact-ID read of every durable field only.
+
+Do not spread a payload-bearing service input into the audit row. Copy verified guild/channel/actor
+identity explicitly; only bounded evidence is persisted. business FIFO ownership ends at its original
+settlement, then the service awaits independent audit I/O before returning. Existing READY ingress
+owns the admitted service through that wait, followed by existing notification drain while Discord
+and PostgreSQL remain available. Recorder/logger/publication failures never replace the result or
+trigger mutations. No new PENDING API, timer, spool, retry queue or recovery owner is introduced.
+
+MANAGED_MESSAGE_EXECUTION_FAILURE is the tenth notification/retention source. Projection explicitly
+SELECTs fixed metadata and excludes target IDs, operation/candidate identity, payloads, URLs and raw
+errors. Formatter independently omits every target/value field and validates fixed codes; PARTIAL
+notifications state evidence, not message existence or surviving content. Existing delivery-time
+revalidation, suppressed mentions, stable nonce, single attempt and drain are reused. Retention keeps
+90 * 24 hours, strict older-than cutoff, 500-row batches and timestamp/ID ordering, source isolation,
+startup/fixed-delay scheduling and drain. It never changes managed-message state or SUCCESS semantics.
+
+Migration 0022 is generated with the regular Drizzle workflow. SQL, snapshot and journal append
+without changing prior artifacts. It contains one constrained table and retention index, no FK,
+backfill or changes to SUCCESS storage. Keep the explicit production migration runner. Validate the
+0021 upgrade, fresh installation and repeat no-op in isolated external PostgreSQL schemas.
+
+Unit tests cover the pure decision matrix, production Discord adapter stage evidence, #107 send
+regression, stateful mutation/response loss, restoration guards versus attempted PATCH uncertainty,
+post-effect zero transition, historical confirmation, exact audit response loss, fixed projection
+privacy and shutdown ownership. Existing FIFO, payload, success and authorization tests stay intact.
+Maintainer-only integration decorates public Pool/PoolClient APIs and asserts fault counts at the
+actual stage. Actual callback writes precede injected SUCCESS INSERT rejection and real rollback;
+control response-loss injections run the command first; a deferred FK gives real COMMIT rejection.
+Independent observers check complete managed rows and SUCCESS/failure history. Tests also exercise
+conditional zero-row updates, revision/guild isolation, independent audit INSERT loss/collision,
+CHECK NULL behavior, migration history, projection and retention. The scheduled-message child-table
+snapshot improvement from the #104 review is separate and is not required for these managed tests.
+
+After standard non-secret checks, the maintainer must run the complete external PostgreSQL suite
+through weft-integration. Codex must not inspect its configuration or run it. Live verification uses
+only disposable messages in a development guild: normal text/embed send/edit, fresh permission loss,
+coherent no-op, stale revision, external payload mismatch, edit-time deletion detection, destination
+permission change, notification privacy and mention suppression. Representative compensation needs
+an explicitly controlled isolated test release and disposable resources. Discord/DB/INSERT response
+loss, lost ROLLBACK, COMMIT ambiguity and precise concurrent races belong in automated fault injection;
+they cannot be safely or reliably required against live Discord. Maintainer acceptance of those live
+limitations and a separate independent final review remain required before Issue closure. Unit and
+standard checks alone mean READY FOR INTEGRATION, not final approval or F05 closure.

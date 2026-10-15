@@ -1,3 +1,4 @@
+import { managedMessageExecutionFailureAudits } from "./managed-message-execution-audit.js";
 import { administrativeOperationFailureAudits } from "./administrative-operation-failure-audit.js";
 import { guildConfigurationAudits } from "./guild-configuration-audit.js";
 import { sql } from "drizzle-orm";
@@ -21,6 +22,7 @@ export const AUDIT_RETENTION_SOURCES = [
   "link_preview_audits",
   "guild_configuration_audits",
   "administrative_operation_failure_audits",
+  "managed_message_execution_failure_audits",
 ] as const;
 
 export type AuditRetentionSource = (typeof AUDIT_RETENTION_SOURCES)[number];
@@ -45,6 +47,12 @@ export function createAuditRetentionStore(database: DatabaseClient): AuditRetent
 
       const target = (() => {
         switch (source) {
+          case "managed_message_execution_failure_audits":
+            return {
+              table: managedMessageExecutionFailureAudits,
+              timestamp: managedMessageExecutionFailureAudits.occurredAt,
+              id: managedMessageExecutionFailureAudits.id,
+            };
           case "administrative_operation_failure_audits":
             return {
               table: administrativeOperationFailureAudits,

@@ -1,3 +1,4 @@
+import { managedMessageExecutionFailureAudits } from "./managed-message-execution-audit.js";
 import { administrativeOperationFailureAudits } from "./administrative-operation-failure-audit.js";
 import { guildConfigurationAudits } from "./guild-configuration-audit.js";
 import { inArray } from "drizzle-orm";
@@ -49,6 +50,12 @@ export async function publishExistingAudits(
   try {
     let committed: { id: string }[];
     switch (source) {
+      case "MANAGED_MESSAGE_EXECUTION_FAILURE":
+        committed = await database
+          .select({ id: managedMessageExecutionFailureAudits.id })
+          .from(managedMessageExecutionFailureAudits)
+          .where(inArray(managedMessageExecutionFailureAudits.id, ids));
+        break;
       case "ADMINISTRATIVE_OPERATION_FAILURE":
         committed = await database
           .select({ id: administrativeOperationFailureAudits.id })
@@ -172,8 +179,8 @@ export function publishManagedMessageAudits(
       if (result === "MATCH") await publish(input.auditId);
       return result;
     },
-    async edit(input) {
-      const result = await store.edit(input);
+    async edit(input, attempt) {
+      const result = await store.edit(input, ...(attempt === undefined ? [] : [attempt]));
       if (result === "TRANSITIONED") await publish(input.auditId);
       return result;
     },
@@ -182,8 +189,8 @@ export function publishManagedMessageAudits(
       if (result === "MATCH") await publish(input.auditId);
       return result;
     },
-    async markDeleted(input) {
-      const result = await store.markDeleted(input);
+    async markDeleted(input, attempt) {
+      const result = await store.markDeleted(input, ...(attempt === undefined ? [] : [attempt]));
       if (result === "TRANSITIONED") await publish(input.auditId);
       return result;
     },
