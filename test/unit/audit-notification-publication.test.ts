@@ -36,6 +36,7 @@ function fixture(committed: Record<AuditSource, string[]>) {
           audit_log_destination_audits: "AUDIT_LOG_DESTINATION",
           link_preview_audits: "LINK_PREVIEW",
           guild_configuration_audits: "GUILD_CONFIGURATION",
+          managed_message_execution_failure_audits: "MANAGED_MESSAGE_EXECUTION_FAILURE",
         };
         selectedSource = names[getTableName(table)];
         return this;
@@ -56,6 +57,7 @@ const empty: Record<AuditSource, string[]> = {
   LINK_PREVIEW: [],
   GUILD_CONFIGURATION: [],
   ADMINISTRATIVE_OPERATION_FAILURE: [],
+  MANAGED_MESSAGE_EXECUTION_FAILURE: [],
 };
 const id = "11111111-1111-4111-8111-111111111111";
 const gap = "22222222-2222-4222-8222-222222222222";

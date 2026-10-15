@@ -18,6 +18,7 @@ import type {
   DeleteManagedMessage,
   EditManagedMessage,
   ManagedMessageStore,
+  ManagedMessageSuccessCandidate,
 } from "./managed-message-persistence.js";
 import {
   managedMessagePayloadsEqual,
@@ -26,6 +27,20 @@ import {
   type ManagedMessagePayloadInput,
   type ManagedMessagePayloadValidationCode,
 } from "./managed-message-payload.js";
+
+import {
+  newManagedMessageExecutionAttempt,
+  classifyManagedMessageExecution,
+  type ManagedMessageExecutionAttempt,
+  type ManagedMessageExecutionObservation,
+} from "./managed-message-execution-evidence.js";
+import type { ManagedMessageExecutionRecorder } from "./managed-message-execution-audit.js";
+
+type ExecutionContext = {
+  attempt: ManagedMessageExecutionAttempt;
+  observation: ManagedMessageExecutionObservation;
+  success?: ManagedMessageSuccessCandidate;
+};
 
 export const MANAGED_MESSAGE_MAX_EDITABLE_REVISION = 2_147_483_646;
 
@@ -94,6 +109,7 @@ type ManagedMessageServiceDependencies = {
   discord: ManagedMessageDiscord;
   store: ManagedMessageStore;
   logger: Pick<Logger, "warn">;
+  failures?: ManagedMessageExecutionRecorder;
   generateNonce?: ManagedMessageNonceGenerator;
   generateAuditId?: () => string;
   now?: () => Date;
@@ -104,12 +120,67 @@ export function createManagedMessageService({
   discord,
   store,
   logger,
+  failures,
   generateNonce = generateManagedMessageNonce,
   generateAuditId = randomUUID,
   now = () => new Date(),
   modalLookupTimeoutMs = 2_000,
 }: ManagedMessageServiceDependencies): ManagedMessageService {
   const editQueues = new Map<string, Promise<void>>();
+
+  function executionContext(
+    operationCode: ManagedMessageExecutionAttempt["operationCode"],
+    messageId: string | null = null,
+  ): ExecutionContext | undefined {
+    if (failures === undefined) return;
+    const attempt = newManagedMessageExecutionAttempt(operationCode, messageId);
+    return {
+      attempt,
+      observation: {
+        attempt,
+        actorAuthorized() {
+          if (!attempt.eligible) {
+            try {
+              attempt.operationId = generateAuditId();
+              attempt.eligible = true;
+            } catch {
+              // Audit-only admission must not replace Discord's original preflight result.
+            }
+          }
+        },
+      },
+    };
+  }
+  async function recordExecution(
+    execution: ExecutionContext | undefined,
+    input: {
+      guildId: string;
+      channelId: string;
+      actorUserId: string;
+    },
+  ): Promise<void> {
+    if (execution === undefined || classifyManagedMessageExecution(execution.attempt) === undefined)
+      return;
+    try {
+      await failures?.record(execution.attempt, input, execution.success);
+    } catch {
+      /* A failed recorder cannot replace the settled business result. */
+    }
+  }
+  function beginPersistence(
+    execution: ExecutionContext | undefined,
+    success: ManagedMessageSuccessCandidate,
+  ): void {
+    if (execution === undefined) return;
+    execution.success = success;
+    execution.attempt.databaseTransition = "ATTEMPTED";
+  }
+  function confirmedSuccess(execution: ExecutionContext | undefined): void {
+    if (execution) {
+      execution.attempt.successConfirmed = true;
+      execution.attempt.databaseTransition = "CONFIRMED";
+    }
+  }
 
   async function serializeEdit<T>(messageId: string, operation: () => Promise<T>): Promise<T> {
     const preceding = editQueues.get(messageId) ?? Promise.resolve();
@@ -165,9 +236,18 @@ export function createManagedMessageService({
 
   async function compensateSend(
     message: Parameters<ManagedMessageDiscord["deleteManagedMessage"]>[0],
+    execution?: ExecutionContext,
   ) {
+    if (execution) {
+      execution.attempt.compensationType = "DELETE";
+      execution.attempt.compensationEvidence = "UNCONFIRMED";
+    }
     try {
-      return await discord.deleteManagedMessage(message);
+      const result = await discord.deleteManagedMessage(message);
+      if (execution)
+        execution.attempt.compensationEvidence =
+          result.outcome === "DELETED" ? "CONFIRMED" : result.outcome;
+      return result;
     } catch (error) {
       warn("managed_message_send_compensation_failed", message, "DELETE_UNCONFIRMED", error);
       return { outcome: "UNCONFIRMED" } as const;
@@ -178,6 +258,7 @@ export function createManagedMessageService({
     input: { guildId: string; channelId: string; messageId: string },
     revision: number,
     payload: ManagedMessagePayload,
+    execution?: ExecutionContext,
   ): Promise<ManagedMessageEditResult> {
     const deletion: DeleteManagedMessage = {
       auditId: generateAuditId(),
@@ -188,8 +269,21 @@ export function createManagedMessageService({
       payload,
       occurredAt: now(),
     };
+    beginPersistence(execution, { event: "DELETION_DETECTED", input: deletion });
+    if (execution) {
+      execution.attempt.discordEvidence = "DELETION_OBSERVED";
+      execution.attempt.discordEffectAt = null;
+      execution.attempt.compensationType = "NONE";
+      execution.attempt.compensationEvidence = "NOT_REQUIRED";
+    }
     try {
-      if ((await store.markDeleted(deletion)) === "TRANSITIONED") {
+      if (
+        (await store.markDeleted(
+          deletion,
+          ...(execution?.attempt.eligible ? [execution.attempt] : []),
+        )) === "TRANSITIONED"
+      ) {
+        confirmedSuccess(execution);
         return { outcome: "DELETED" };
       }
     } catch (error) {
@@ -201,8 +295,16 @@ export function createManagedMessageService({
         deletion.auditId,
       );
     }
+    if (
+      execution?.attempt.transactionEvidence?.disposition === "COMMITTED" &&
+      execution.attempt.databaseTransition === "ATTEMPTED"
+    ) {
+      confirmedSuccess(execution);
+      return { outcome: "DELETED" };
+    }
     try {
       if ((await store.confirmDeletion(deletion)) === "MATCH") {
+        confirmedSuccess(execution);
         return { outcome: "DELETED" };
       }
     } catch (error) {
@@ -224,11 +326,17 @@ export function createManagedMessageService({
   async function compensateEdit(
     transition: EditManagedMessage,
     editedAt: Date,
+    execution?: ExecutionContext,
   ): Promise<ManagedMessageEditResult> {
+    if (execution) {
+      execution.attempt.compensationType = "RESTORE";
+      execution.attempt.compensationEvidence = "SKIPPED_DATABASE_GUARD";
+    }
     let safe = false;
     try {
       safe = (await store.readCompensationSafety(transition)) === "SAFE";
     } catch (error) {
+      if (execution) execution.attempt.compensationEvidence = "SKIPPED_READ_FAILURE";
       warn(
         "managed_message_edit_compensation_check_failed",
         transition,
@@ -242,14 +350,18 @@ export function createManagedMessageService({
     }
     let restored: Awaited<ReturnType<ManagedMessageDiscord["restoreManagedMessage"]>>;
     try {
-      restored = await discord.restoreManagedMessage({
-        guildId: transition.guildId,
-        channelId: transition.channelId,
-        messageId: transition.messageId,
-        expectedPayload: transition.payload,
-        expectedEditedAt: editedAt,
-        restorePayload: transition.previousPayload,
-      });
+      if (execution) execution.attempt.compensationEvidence = "UNCONFIRMED";
+      restored = await discord.restoreManagedMessage(
+        {
+          guildId: transition.guildId,
+          channelId: transition.channelId,
+          messageId: transition.messageId,
+          expectedPayload: transition.payload,
+          expectedEditedAt: editedAt,
+          restorePayload: transition.previousPayload,
+        },
+        ...(execution === undefined ? [] : [execution.observation]),
+      );
     } catch (error) {
       warn(
         "managed_message_edit_compensation_failed",
@@ -261,6 +373,7 @@ export function createManagedMessageService({
       return { outcome: "PARTIAL_FAILURE", messageId: transition.messageId, kind: "EDIT" };
     }
     if (restored.outcome === "RESTORED") {
+      if (execution) execution.attempt.compensationEvidence = "CONFIRMED";
       warn(
         "managed_message_edit_persistence_compensated",
         transition,
@@ -273,21 +386,45 @@ export function createManagedMessageService({
     return { outcome: "PARTIAL_FAILURE", messageId: transition.messageId, kind: "EDIT" };
   }
 
-  return {
-    async send(input) {
+  const operations = {
+    async send(
+      input: Parameters<ManagedMessageService["send"]>[0],
+      execution?: ExecutionContext,
+    ): Promise<ManagedMessageSendResult> {
       const validation = validateManagedMessagePayload(input.payload);
       if (!validation.ok) return { outcome: "FAILURE", code: validation.code };
 
       const nonce = generateNonce();
-      const discordResult = await discord.sendManagedMessage({
-        guildId: input.guildId,
-        channelId: input.channelId,
-        actorUserId: input.actorUserId,
-        payload: validation.payload,
-        nonce,
-      });
+      const discordResult = await discord.sendManagedMessage(
+        {
+          guildId: input.guildId,
+          channelId: input.channelId,
+          actorUserId: input.actorUserId,
+          payload: validation.payload,
+          nonce,
+        },
+        ...(execution === undefined ? [] : [execution.observation]),
+      );
       if (discordResult.outcome === "FAILURE")
         return { outcome: "FAILURE", code: discordResult.code };
+      if (execution) {
+        execution.attempt.discordEvidence = "SEND_CONFIRMED";
+        execution.attempt.messageId = discordResult.message.messageId;
+        execution.attempt.discordEffectAt = discordResult.message.createdAt;
+        execution.attempt.payloadEvidence =
+          discordResult.message.payload === undefined
+            ? "PROJECTION_UNAVAILABLE"
+            : managedMessagePayloadsEqual(discordResult.message.payload, validation.payload)
+              ? "MATCH"
+              : "MISMATCH";
+        execution.attempt.failure = {
+          stage: "DISCORD_RESPONSE",
+          reasonCode:
+            discordResult.message.payload === undefined
+              ? "RETURNED_PAYLOAD_PROJECTION_FAILED"
+              : "RETURNED_PAYLOAD_MISMATCH",
+        };
+      }
 
       if (
         discordResult.message.payload === undefined ||
@@ -302,7 +439,7 @@ export function createManagedMessageService({
                   : { projectionFailureReason: discordResult.message.projectionFailureReason }),
               }
             : { payloadFailureReason: "SEMANTIC_MISMATCH" as const };
-        const deleteResult = await compensateSend(discordResult.message);
+        const deleteResult = await compensateSend(discordResult.message, execution);
         if (deleteResult.outcome === "DELETED" || deleteResult.outcome === "ALREADY_ABSENT") {
           warn(
             "managed_message_send_confirmation_compensated",
@@ -340,13 +477,17 @@ export function createManagedMessageService({
         guildId: discordResult.message.guildId,
         channelId: discordResult.message.channelId,
         createdAt: discordResult.message.createdAt,
-        auditId: generateAuditId(),
+        auditId: execution?.attempt.eligible ? execution.attempt.operationId : generateAuditId(),
         creatorUserId: input.actorUserId,
         payload: validation.payload,
       };
-      const attempt: AdministrativeAttempt = { operationId: creation.auditId };
+      const attempt: AdministrativeAttempt = execution?.attempt.eligible
+        ? execution.attempt
+        : { operationId: creation.auditId };
+      beginPersistence(execution, { event: "CREATED", input: creation });
       try {
         await store.create(creation, attempt);
+        confirmedSuccess(execution);
         return { outcome: "SUCCESS", messageId: creation.messageId };
       } catch (error) {
         warn(
@@ -362,8 +503,10 @@ export function createManagedMessageService({
       }
 
       // A post-commit notification/publication failure cannot undo acknowledged persistence.
-      if (attempt.transactionEvidence?.disposition === "COMMITTED")
+      if (attempt.transactionEvidence?.disposition === "COMMITTED") {
+        confirmedSuccess(execution);
         return { outcome: "SUCCESS", messageId: creation.messageId };
+      }
 
       let confirmation: "MATCH" | "MISSING" | "CONFLICT" | "READ_FAILED";
       try {
@@ -378,7 +521,10 @@ export function createManagedMessageService({
           creation.auditId,
         );
       }
-      if (confirmation === "MATCH") return { outcome: "SUCCESS", messageId: creation.messageId };
+      if (confirmation === "MATCH") {
+        confirmedSuccess(execution);
+        return { outcome: "SUCCESS", messageId: creation.messageId };
+      }
 
       const disposition = attempt.transactionEvidence?.disposition;
       if (
@@ -396,7 +542,7 @@ export function createManagedMessageService({
         return { outcome: "UNCONFIRMED", messageId: creation.messageId };
       }
 
-      const deleteResult = await compensateSend(discordResult.message);
+      const deleteResult = await compensateSend(discordResult.message, execution);
       if (deleteResult.outcome === "DELETED" || deleteResult.outcome === "ALREADY_ABSENT") {
         warn(
           "managed_message_persistence_compensated",
@@ -424,7 +570,9 @@ export function createManagedMessageService({
       };
     },
 
-    async findForEdit(input) {
+    async findForEdit(
+      input: Parameters<ManagedMessageService["findForEdit"]>[0],
+    ): Promise<ManagedMessageEditLookupResult> {
       try {
         let timeout: ReturnType<typeof setTimeout> | undefined;
         const message = await Promise.race([
@@ -459,7 +607,10 @@ export function createManagedMessageService({
       }
     },
 
-    edit(input) {
+    edit(
+      input: Parameters<ManagedMessageService["edit"]>[0],
+      execution?: ExecutionContext,
+    ): Promise<ManagedMessageEditResult> {
       return serializeEdit(input.messageId, async () => {
         const validation = validateManagedMessagePayload(input.payload);
         if (!validation.ok) return { outcome: "FAILURE", code: validation.code };
@@ -489,14 +640,17 @@ export function createManagedMessageService({
 
         let discordResult: Awaited<ReturnType<ManagedMessageDiscord["editManagedMessage"]>>;
         try {
-          discordResult = await discord.editManagedMessage({
-            guildId: input.guildId,
-            channelId: input.channelId,
-            messageId: input.messageId,
-            actorUserId: input.actorUserId,
-            previousPayload: current.payload,
-            payload: validation.payload,
-          });
+          discordResult = await discord.editManagedMessage(
+            {
+              guildId: input.guildId,
+              channelId: input.channelId,
+              messageId: input.messageId,
+              actorUserId: input.actorUserId,
+              previousPayload: current.payload,
+              payload: validation.payload,
+            },
+            ...(execution === undefined ? [] : [execution.observation]),
+          );
         } catch (error) {
           warn(
             "managed_message_edit_discord_boundary_failed",
@@ -507,15 +661,20 @@ export function createManagedMessageService({
           return { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
         }
         if (discordResult.outcome === "DELETED") {
-          return persistDeletion(input, current.revision, current.payload);
+          return persistDeletion(input, current.revision, current.payload, execution);
         }
         if (discordResult.outcome === "FAILURE") {
           return { outcome: "FAILURE", code: discordResult.code };
         }
         if (discordResult.outcome === "UNCHANGED") return { outcome: "UNCHANGED" };
 
+        if (execution) {
+          execution.attempt.discordEvidence = "EDIT_CONFIRMED";
+          execution.attempt.discordEffectAt = discordResult.editedAt;
+          execution.attempt.payloadEvidence = "MATCH";
+        }
         const transition: EditManagedMessage = {
-          auditId: generateAuditId(),
+          auditId: execution?.attempt.eligible ? execution.attempt.operationId : generateAuditId(),
           messageId: input.messageId,
           guildId: input.guildId,
           channelId: input.channelId,
@@ -525,8 +684,15 @@ export function createManagedMessageService({
           payload: validation.payload,
           occurredAt: discordResult.editedAt,
         };
+        beginPersistence(execution, { event: "EDITED", input: transition });
         try {
-          if ((await store.edit(transition)) === "TRANSITIONED") {
+          if (
+            (await store.edit(
+              transition,
+              ...(execution?.attempt.eligible ? [execution.attempt] : []),
+            )) === "TRANSITIONED"
+          ) {
+            confirmedSuccess(execution);
             return {
               outcome: "SUCCESS",
               messageId: input.messageId,
@@ -542,8 +708,16 @@ export function createManagedMessageService({
             transition.auditId,
           );
         }
+        if (
+          execution?.attempt.transactionEvidence?.disposition === "COMMITTED" &&
+          execution.attempt.databaseTransition === "ATTEMPTED"
+        ) {
+          confirmedSuccess(execution);
+          return { outcome: "SUCCESS", messageId: input.messageId, revision: current.revision + 1 };
+        }
         try {
           if ((await store.confirmEdit(transition)) === "MATCH") {
+            confirmedSuccess(execution);
             return {
               outcome: "SUCCESS",
               messageId: input.messageId,
@@ -559,8 +733,24 @@ export function createManagedMessageService({
             transition.auditId,
           );
         }
-        return compensateEdit(transition, discordResult.editedAt);
+        return compensateEdit(transition, discordResult.editedAt, execution);
       });
+    },
+  };
+  return {
+    ...operations,
+    async send(input) {
+      const execution = executionContext("MANAGED_MESSAGE_SEND");
+      const result = await operations.send(input, execution);
+      await recordExecution(execution, input);
+      return result;
+    },
+    async edit(input) {
+      const execution = executionContext("MANAGED_MESSAGE_EDIT", input.messageId);
+      // serializeEdit has released the business FIFO before independent audit I/O begins.
+      const result = await operations.edit(input, execution);
+      await recordExecution(execution, input);
+      return result;
     },
   };
 }

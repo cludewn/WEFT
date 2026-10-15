@@ -875,8 +875,8 @@ When noncommit is confirmed, deletion distinguishes confirmed removal, already a
 rejection and unknown outcome. Confirmed removal or absence yields a compensated failure with
 distinct reasons. Rejected or unconfirmed removal yields a partial failure identifying the known
 message and the removal outcome. A rejected or unresolved deletion Promise never proves removal.
-The existing atomic SUCCESS history and best-effort notifications remain unchanged. This fix adds
-no FAILURE or PARTIAL audit; managed-message execution/compensation auditing remains Issue #106.
+The existing atomic SUCCESS history and best-effort notifications remain authoritative.
+Execution failures and confirmed partial effects use the separate Issue #106 audit contract below.
 
 User-provided content must not generate mentions by default.
 
@@ -961,7 +961,7 @@ guaranteed provenance marker.
 Attachments and persistent attachment storage are not supported.
 
 Successful creation, edit, and deletion-detection audits contain the complete managed payload.
-Failed-operation audit completion remains deferred.
+Execution failures and confirmed partial effects use the separate bounded audit source described below.
 
 WEFT must not imitate individual users through webhook names or avatars.
 
@@ -1425,7 +1425,99 @@ retention index; existing success schemas and historical migrations remain intac
 failure backfill is performed. Managed-message send/edit execution and compensation auditing remain
 a separate follow-up. Issue #104 alone does not complete release-readiness finding F05.
 
-The initial audit retention period is fixed globally at 90 * 24 hours. A process-local cleanup sweep is scheduled shortly after startup without delaying readiness, then 24 hours after each completed sweep. Every sweep uses one cutoff and deletes rows whose audit timestamp is strictly older than that cutoff, in bounded batches. The nine covered sources are thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, audit-log-destination, link-preview mode, guild-configuration, and administrative-operation-failure audits. Each batch deletes at most 500 rows ordered by audit timestamp and ID; rows equal to the cutoff remain. Cleanup is periodic, not an exact expiration deadline.
+#### Managed-message execution failures (Issue #106)
+
+`managed_message_execution_failure_audits` is a separate, constrained source for the two operations
+`MANAGED_MESSAGE_SEND` and `MANAGED_MESSAGE_EDIT`. It records only confirmed `FAILURE` and `PARTIAL`,
+independently of business transactions. Existing `CREATED`, `EDITED` and `DELETION_DETECTED` SUCCESS
+audits retain their atomic state-transition, payload, actor and exact-confirmation semantics.
+
+Eligibility starts only after valid payload/target scope and the existing fresh Discord target and
+invoking actor `ManageMessages` check. The application service establishes a stable operation UUID
+at that boundary, before Bot preflight or mutation. Existing Discord call order is unchanged: channel,
+parent and parallel member reads may fail before actor authorization is established. Those failures
+are excluded, even if an earlier interaction permission check succeeded. Bot permission deficiency
+and required resource-read failure after that boundary are eligible execution failures. Edit ownership,
+coherence and ordinary revision guards, invalid input/context, unauthorized or unverified actors,
+Modal-opening lookups and unchanged edits do not create this history. An initial edit database read
+failure occurs before fresh target/actor validation and is excluded.
+
+Result names do not establish evidence. In particular, neither `PARTIAL_FAILURE` nor a rejected
+Promise implies a persistent `PARTIAL`. The send `UNCONFIRMED` result introduced by Issue #107
+remains unknown, creates no confirmed execution audit, and never authorizes removal or a resend.
+
+| Established facts                                                                                                                    | New execution audit                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| Authorized Bot preflight/read failure, no mutation                                                                                   | FAILURE                                                      |
+| Confirmed POST/PATCH rejection or existing exact-old-state edit read-back                                                            | FAILURE                                                      |
+| Send response loss, unverified returned identity, unresolved edit response/read-back                                                 | None; UNCONFIRMED                                            |
+| Confirmed business commit or existing exact success confirmation                                                                     | None; existing SUCCESS history                               |
+| Verified send, payload projection unavailable/mismatched, no DB attempt, confirmed deletion/absence                                  | FAILURE with completed compensation evidence                 |
+| Verified send, no DB attempt or proven DB noncompletion, definite delete rejection                                                   | PARTIAL                                                      |
+| Verified send, proven DB noncompletion, confirmed deletion/absence                                                                   | FAILURE                                                      |
+| Verified send, possible DB commit, missing/mismatched/unreadable confirmation                                                        | None; no delete, UNCONFIRMED                                 |
+| Verified edit, proven DB noncompletion, confirmed restoration                                                                        | FAILURE                                                      |
+| Verified edit, proven DB noncompletion or callback-confirmed zero-row transition, restore PATCH not attempted or definitely rejected | PARTIAL                                                      |
+| Verified edit, DB noncompletion established, restore-safety/resource read failed before any restore PATCH                            | PARTIAL; the failed read does not erase known facts          |
+| Any required DB transition or attempted compensation outcome remains unknown                                                         | None; UNCONFIRMED                                            |
+| Confirmed external disappearance, detection transaction demonstrably failed                                                          | FAILURE for deletion finalization, not a claimed edit effect |
+| Successful deletion detection or ordinary detection concurrency guard                                                                | None; existing SYSTEM history or normal guard                |
+
+`PARTIAL` records historical facts: this attempt's Discord effect was confirmed, its required DB
+transition did not occur, and compensation was not attempted or was definitely rejected. It does
+not assert that the message currently exists or that a particular payload still remains. External
+changes can follow any observation. An unknown delete/restore response cannot establish residual
+state. `ALREADY_ABSENT` confirms absence, not that WEFT performed deletion. A projection failure
+never fabricates message content, but a verified send identity survives projection-read failure.
+
+Transaction evidence is separate from business transition evidence. START_FAILED means the callback
+never entered; ROLLED_BACK requires no COMMIT attempt and a same-client ROLLBACK acknowledgement;
+COMMIT_REJECTED requires the existing bounded server rejection and confirmed termination. A lost
+ROLLBACK acknowledgement remains unknown. COMMITTED requires normal COMMIT acknowledgement.
+A callback-observed conditional UPDATE of zero rows issues no success INSERT: this establishes
+NOT_TRANSITIONED even if the empty transaction's COMMIT acknowledgement is lost. It does not claim
+that the transaction rolled back. A zero-row guard after a confirmed Discord edit is evaluated as
+an effected attempt, not excluded as a pre-effect revision conflict.
+
+Edit restoration retains its existing DB and Discord safety checks, exact full payload and edit
+timestamp comparison, and one-shot PATCH. Read/guard failures before PATCH are distinguished from
+uncertain PATCH results without adding remote reads or mutations. Deletion detection retains its
+separate SYSTEM audit identity. Its failure is not attributed as an edit or as WEFT deleting a message.
+
+The managed-message application service is the single new audit owner. Primary send/edit success
+candidates reuse the operation UUID; deletion-detection candidates retain a separate UUID. The new
+failure/partial record has its own UUID and unique operation identity. After business and compensation
+settlement, the recorder checks the candidate SUCCESS audit independently of current managed state.
+Exact historical identity, actor, event, payload/NULL shape, revision/status and timestamp match
+suppresses contradictory history even after a later legitimate edit. Same-ID mismatches or failed
+history reads suppress the new write. Missing history alone never proves noncommit. A conditional
+INSERT also excludes an existing candidate SUCCESS row; this is defense in depth, not a claim that
+one table's UNIQUE or NOT EXISTS alone serializes arbitrary cross-table writers. Single ownership,
+settled business writers, positive noncompletion evidence, and no mutation retry are required.
+
+The recorder attempts one independent INSERT, then, if necessary, one exact same-ID read comparing
+all fields, NULLs and timestamps. No ON CONFLICT suppression or blind INSERT retry is used. Audit
+write/confirmation failure, ID collision, diagnostics failure or notification failure cannot change
+the business result, revision, compensation or mutation counts. The business FIFO releases before
+independent audit I/O; the admitted service Promise still owns that I/O for shutdown drain. Database
+outages, process crashes and shutdown deadline expiry may lose eligible history. There is no spool,
+background retry, replay or historical backfill.
+
+The dedicated notification source is `MANAGED_MESSAGE_EXECUTION_FAILURE`. Its SELECT and formatter
+allow only guild routing identity, verified actor, fixed operation/stage/reason/outcome and fixed
+Discord/database/compensation evidence, timestamp and audit ID. Target channel/message IDs, operation
+ID, success candidate ID, content, embeds, URLs, arbitrary values and raw errors/stacks are excluded.
+Current destination and Bot permissions are revalidated at delivery; mentions are suppressed; the
+existing stable source/audit nonce, best-effort single attempt and shutdown drain apply. Notifications
+are not authoritative and assert no current Discord residual state.
+
+Append-only migration 0022 adds only this table, its fixed evidence/shape CHECKs, operation UNIQUE
+and `(occurred_at, id)` index. Nullable shape predicates use IS TRUE to reject SQL NULL ambiguity.
+No historical migration, existing SUCCESS table or history is rewritten and no backfill occurs.
+
+#### Audit retention
+
+The initial audit retention period is fixed globally at 90 * 24 hours. A process-local cleanup sweep is scheduled shortly after startup without delaying readiness, then 24 hours after each completed sweep. Every sweep uses one cutoff and deletes rows whose audit timestamp is strictly older than that cutoff, in bounded batches. The ten covered sources are thread, scheduled thread-close, managed-message success, managed-message execution failure, scheduled-message, recurring-message, audit-log-destination, link-preview mode, guild-configuration, and administrative-operation-failure audits. Each batch deletes at most 500 rows ordered by audit timestamp and ID; rows equal to the cutoff remain. Cleanup is periodic, not an exact expiration deadline.
 
 Retention deletes only audit history. It does not delete or change active schedules, managed resources, configuration, or recovery state, and it creates no audit notifications. A source cleanup failure does not invalidate application operations; outstanding work waits for a later sweep. Shutdown drains an in-flight batch before PostgreSQL closes, subject to the existing process-wide shutdown deadline.
 

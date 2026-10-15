@@ -49,7 +49,8 @@ describe("append-only administrative failure migration artifacts", () => {
       when: 1791906263755,
     });
     expect(journal.entries[21]).toMatchObject({ idx: 21, breakpoints: true });
-    expect(journal.entries).toHaveLength(22);
+    expect(journal.entries).toHaveLength(23);
+    expect(journal.entries[22]).toMatchObject({ idx: 22, breakpoints: true });
     const migration = await readFile(`drizzle/${journal.entries[21]!.tag}.sql`, "utf8");
     expect(migration).not.toMatch(/ALTER|DROP|DELETE|UPDATE|INSERT|REFERENCES/i);
     expect(migration).toContain('UNIQUE("operation_id")');

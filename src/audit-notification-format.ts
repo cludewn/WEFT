@@ -1,3 +1,11 @@
+import {
+  MANAGED_EXECUTION_OPERATIONS,
+  MANAGED_EXECUTION_STAGES,
+  MANAGED_EXECUTION_REASONS,
+  MANAGED_DISCORD_EVIDENCE,
+  MANAGED_DATABASE_EFFECTS,
+  MANAGED_COMPENSATION_EVIDENCE,
+} from "./managed-message-execution-evidence.js";
 import { createHash } from "node:crypto";
 
 export type AuditSource =
@@ -9,7 +17,8 @@ export type AuditSource =
   | "AUDIT_LOG_DESTINATION"
   | "LINK_PREVIEW"
   | "GUILD_CONFIGURATION"
-  | "ADMINISTRATIVE_OPERATION_FAILURE";
+  | "ADMINISTRATIVE_OPERATION_FAILURE"
+  | "MANAGED_MESSAGE_EXECUTION_FAILURE";
 
 export type AuditReference = Readonly<{ source: AuditSource; auditId: string }>;
 
@@ -27,6 +36,9 @@ export type AuditNotificationRecord = AuditReference & {
   occurrenceId?: string;
   failureCode?: string;
   failureStage?: string;
+  discordEvidence?: string;
+  databaseEffect?: string;
+  compensationEvidence?: string;
   skipReason?: string;
   previousDestinationId?: string;
   newDestinationId?: string;
@@ -42,7 +54,21 @@ const safeIdentifier = /^[A-Za-z0-9_-]{1,64}$/;
 export function formatAuditNotification(
   record: AuditNotificationRecord,
 ): { content: string; nonce: string } | undefined {
-  const privateFailure = record.source === "ADMINISTRATIVE_OPERATION_FAILURE";
+  if (
+    record.source === "MANAGED_MESSAGE_EXECUTION_FAILURE" &&
+    (record.actorType !== "USER" ||
+      !["FAILURE", "PARTIAL"].includes(record.outcome) ||
+      !MANAGED_EXECUTION_OPERATIONS.includes(record.event as never) ||
+      !MANAGED_EXECUTION_STAGES.includes(record.failureStage as never) ||
+      !MANAGED_EXECUTION_REASONS.includes(record.failureCode as never) ||
+      !MANAGED_DISCORD_EVIDENCE.includes(record.discordEvidence as never) ||
+      !MANAGED_DATABASE_EFFECTS.includes(record.databaseEffect as never) ||
+      !MANAGED_COMPENSATION_EVIDENCE.includes(record.compensationEvidence as never))
+  )
+    return undefined;
+  const privateFailure =
+    record.source === "ADMINISTRATIVE_OPERATION_FAILURE" ||
+    record.source === "MANAGED_MESSAGE_EXECUTION_FAILURE";
   const fields: [string, string | undefined][] = [
     ["Source", record.source],
     ["Event", record.event],
@@ -56,6 +82,20 @@ export function formatAuditNotification(
     ["Occurrence ID", privateFailure ? undefined : record.occurrenceId],
     ["Failure code", record.failureCode],
     ["Failure stage", record.failureStage],
+    [
+      "Discord evidence",
+      record.source === "MANAGED_MESSAGE_EXECUTION_FAILURE" ? record.discordEvidence : undefined,
+    ],
+    [
+      "Database effect",
+      record.source === "MANAGED_MESSAGE_EXECUTION_FAILURE" ? record.databaseEffect : undefined,
+    ],
+    [
+      "Compensation evidence",
+      record.source === "MANAGED_MESSAGE_EXECUTION_FAILURE"
+        ? record.compensationEvidence
+        : undefined,
+    ],
     ["Skip reason", privateFailure ? undefined : record.skipReason],
     ["Previous destination ID", privateFailure ? undefined : record.previousDestinationId],
     ["New destination ID", privateFailure ? undefined : record.newDestinationId],

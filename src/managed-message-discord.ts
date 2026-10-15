@@ -22,6 +22,7 @@ import type {
 } from "discord.js";
 
 import { refreshThreadParent } from "./discord-thread-parent.js";
+import type { ManagedMessageExecutionObservation } from "./managed-message-execution-evidence.js";
 
 import {
   managedMessagePayloadsEqual,
@@ -142,30 +143,39 @@ export type ManagedMessageDiscordRestoreResult =
   { outcome: "RESTORED" } | { outcome: "PRECONDITION_FAILED" } | { outcome: "UNCONFIRMED" };
 
 export type ManagedMessageDiscord = {
-  sendManagedMessage: (input: {
-    guildId: string;
-    channelId: string;
-    actorUserId: string;
-    payload: ManagedMessagePayload;
-    nonce: string;
-  }) => Promise<ManagedMessageDiscordSendResult>;
+  sendManagedMessage: (
+    input: {
+      guildId: string;
+      channelId: string;
+      actorUserId: string;
+      payload: ManagedMessagePayload;
+      nonce: string;
+    },
+    observation?: ManagedMessageExecutionObservation,
+  ) => Promise<ManagedMessageDiscordSendResult>;
   deleteManagedMessage: (message: SentManagedMessage) => Promise<ManagedMessageDiscordDeleteResult>;
-  editManagedMessage: (input: {
-    guildId: string;
-    channelId: string;
-    messageId: string;
-    actorUserId: string;
-    previousPayload: ManagedMessagePayload;
-    payload: ManagedMessagePayload;
-  }) => Promise<ManagedMessageDiscordEditResult>;
-  restoreManagedMessage: (input: {
-    guildId: string;
-    channelId: string;
-    messageId: string;
-    expectedPayload: ManagedMessagePayload;
-    expectedEditedAt: Date;
-    restorePayload: ManagedMessagePayload;
-  }) => Promise<ManagedMessageDiscordRestoreResult>;
+  editManagedMessage: (
+    input: {
+      guildId: string;
+      channelId: string;
+      messageId: string;
+      actorUserId: string;
+      previousPayload: ManagedMessagePayload;
+      payload: ManagedMessagePayload;
+    },
+    observation?: ManagedMessageExecutionObservation,
+  ) => Promise<ManagedMessageDiscordEditResult>;
+  restoreManagedMessage: (
+    input: {
+      guildId: string;
+      channelId: string;
+      messageId: string;
+      expectedPayload: ManagedMessagePayload;
+      expectedEditedAt: Date;
+      restorePayload: ManagedMessagePayload;
+    },
+    observation?: ManagedMessageExecutionObservation,
+  ) => Promise<ManagedMessageDiscordRestoreResult>;
 };
 
 function isThreadTarget(channel: GuildTextBasedChannel): channel is AnyThreadChannel {
@@ -396,7 +406,7 @@ function editPayload(payload: ManagedMessagePayload) {
 
 export function createManagedMessageDiscord(client: Client): ManagedMessageDiscord {
   return {
-    async sendManagedMessage(input) {
+    async sendManagedMessage(input, observation) {
       let channel: Channel | null;
       try {
         channel = await client.channels.fetch(input.channelId, { force: true });
@@ -422,6 +432,12 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
         if (!channel.permissionsFor(actor).has(PermissionFlagsBits.ManageMessages)) {
           return { outcome: "FAILURE", code: "ACTOR_PERMISSION_MISSING" };
         }
+        observation?.actorAuthorized();
+        if (observation)
+          observation.attempt.failure = {
+            stage: "DISCORD_PREFLIGHT",
+            reasonCode: "REQUIRED_RESOURCE_READ_FAILED",
+          };
         const botPermissions = channel.permissionsFor(bot);
         const canSend = isThreadTarget(channel)
           ? botPermissions.has([
@@ -433,6 +449,11 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
           !canSend ||
           (input.payload.embed !== null && !botPermissions.has(PermissionFlagsBits.EmbedLinks))
         ) {
+          if (observation)
+            observation.attempt.failure = {
+              stage: "DISCORD_PREFLIGHT",
+              reasonCode: "BOT_PERMISSION_MISSING",
+            };
           return { outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" };
         }
       } catch {
@@ -440,6 +461,13 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
       }
 
       try {
+        if (observation) {
+          observation.attempt.failure = {
+            stage: "DISCORD_MUTATION",
+            reasonCode: "MUTATION_REJECTED",
+          };
+          observation.attempt.discordEvidence = "UNCONFIRMED";
+        }
         const message = await channel.send({
           ...(input.payload.content === "" ? {} : { content: input.payload.content }),
           ...(input.payload.embed === null
@@ -456,6 +484,18 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
         ) {
           return { outcome: "FAILURE", code: "SEND_UNCONFIRMED" };
         }
+        if (observation) {
+          observation.attempt.messageId = message.id;
+          observation.attempt.discordEffectAt = message.createdAt;
+          observation.attempt.discordEvidence = "SEND_CONFIRMED";
+          observation.attempt.payloadEvidence = "PROJECTION_UNAVAILABLE";
+          observation.attempt.compensationType = "DELETE";
+          observation.attempt.compensationEvidence = "NOT_ATTEMPTED";
+          observation.attempt.failure = {
+            stage: "DISCORD_RESPONSE",
+            reasonCode: "RETURNED_RESPONSE_READ_FAILED",
+          };
+        }
         const projection = projectManagedMessageEmbed(message.embeds);
         return {
           outcome: "SENT",
@@ -471,6 +511,11 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
           },
         };
       } catch (error) {
+        if (observation && observation.attempt.discordEvidence !== "SEND_CONFIRMED") {
+          observation.attempt.discordEvidence = isConfirmedSendRejection(error)
+            ? "REJECTED"
+            : "UNCONFIRMED";
+        }
         return {
           outcome: "FAILURE",
           code: isConfirmedSendRejection(error) ? "SEND_REJECTED" : "SEND_UNCONFIRMED",
@@ -488,7 +533,7 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
       }
     },
 
-    async editManagedMessage(input) {
+    async editManagedMessage(input, observation) {
       let channel: Channel | null;
       try {
         channel = await client.channels.fetch(input.channelId, { force: true });
@@ -516,11 +561,22 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
         if (!channel.permissionsFor(actor).has(PermissionFlagsBits.ManageMessages)) {
           return { outcome: "FAILURE", code: "ACTOR_PERMISSION_MISSING" };
         }
+        observation?.actorAuthorized();
+        if (observation)
+          observation.attempt.failure = {
+            stage: "DISCORD_READ",
+            reasonCode: "REQUIRED_RESOURCE_READ_FAILED",
+          };
         if (
           !channel
             .permissionsFor(fetchedBot)
             .has([PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory])
         ) {
+          if (observation)
+            observation.attempt.failure = {
+              stage: "DISCORD_PREFLIGHT",
+              reasonCode: "BOT_PERMISSION_MISSING",
+            };
           return { outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" };
         }
       } catch {
@@ -540,28 +596,50 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
           : { outcome: "FAILURE", code: "CURRENT_STATE_CHECK_FAILED" };
       }
       if (!hasExpectedMessageIdentity(message, input, client.user.id)) {
+        if (observation) delete observation.attempt.failure;
         return { outcome: "FAILURE", code: "MESSAGE_INVALID" };
       }
-      if (!message.editable) return { outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" };
+      if (!message.editable) {
+        if (observation)
+          observation.attempt.failure = {
+            stage: "DISCORD_PREFLIGHT",
+            reasonCode: "BOT_PERMISSION_MISSING",
+          };
+        return { outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" };
+      }
       const currentPayload = projectManagedMessagePayload(message);
       if (
         currentPayload === undefined ||
         !managedMessagePayloadsEqual(currentPayload, input.previousPayload)
       ) {
+        if (observation) delete observation.attempt.failure;
         return { outcome: "FAILURE", code: "STATE_MISMATCH" };
       }
       if (managedMessagePayloadsEqual(input.payload, input.previousPayload)) {
+        if (observation) delete observation.attempt.failure;
         return { outcome: "UNCHANGED" };
       }
       if (
         input.payload.embed !== null &&
         !channel.permissionsFor(bot).has(PermissionFlagsBits.EmbedLinks)
       ) {
+        if (observation)
+          observation.attempt.failure = {
+            stage: "DISCORD_PREFLIGHT",
+            reasonCode: "BOT_PERMISSION_MISSING",
+          };
         return { outcome: "FAILURE", code: "BOT_PERMISSION_MISSING" };
       }
 
       const previousEditedAt = editedAt(message);
       try {
+        if (observation) {
+          observation.attempt.discordEvidence = "UNCONFIRMED";
+          observation.attempt.failure = {
+            stage: "DISCORD_MUTATION",
+            reasonCode: "MUTATION_REJECTED",
+          };
+        }
         const updated = await message.edit(editPayload(input.payload));
         const confirmedPayload = projectManagedMessagePayload(updated);
         const confirmedEditedAt = editedAt(updated);
@@ -577,6 +655,7 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
       } catch (error) {
         if (isUnknownMessage(error)) return { outcome: "DELETED" };
         if (isConfirmedEditRejection(error)) {
+          if (observation) observation.attempt.discordEvidence = "REJECTED";
           return { outcome: "FAILURE", code: "EDIT_REJECTED" };
         }
       }
@@ -624,12 +703,21 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
         managedMessagePayloadsEqual(reconciledPayload, input.previousPayload) &&
         reconciledEditedAt?.getTime() === previousEditedAt?.getTime()
       ) {
+        if (observation) {
+          observation.attempt.discordEvidence = "NOT_APPLIED_BY_READBACK";
+          observation.attempt.failure = {
+            stage: "DISCORD_MUTATION",
+            reasonCode: "EDIT_NOT_APPLIED",
+          };
+        }
         return { outcome: "FAILURE", code: "EDIT_NOT_APPLIED" };
       }
       return { outcome: "FAILURE", code: "EDIT_UNCONFIRMED" };
     },
 
-    async restoreManagedMessage(input) {
+    async restoreManagedMessage(input, observation) {
+      // Reads may fail without issuing a restore PATCH. Preserve that positive non-attempt evidence.
+      if (observation) observation.attempt.compensationEvidence = "SKIPPED_READ_FAILURE";
       let channel: Channel | null;
       try {
         channel = await client.channels.fetch(input.channelId, { force: true });
@@ -642,10 +730,12 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
         client.user === null ||
         (isThreadTarget(channel) && channel.archived !== false)
       ) {
+        if (observation) observation.attempt.compensationEvidence = "SKIPPED_DISCORD_GUARD";
         return { outcome: "PRECONDITION_FAILED" };
       }
       try {
         if (isThreadTarget(channel) && !(await refreshThreadParent(channel))) {
+          if (observation) observation.attempt.compensationEvidence = "SKIPPED_DISCORD_GUARD";
           return { outcome: "PRECONDITION_FAILED" };
         }
         const bot = await channel.guild.members.fetch({ user: client.user.id, force: true });
@@ -657,6 +747,7 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
           ]) ||
           (input.restorePayload.embed !== null && !permissions.has(PermissionFlagsBits.EmbedLinks))
         ) {
+          if (observation) observation.attempt.compensationEvidence = "SKIPPED_DISCORD_GUARD";
           return { outcome: "PRECONDITION_FAILED" };
         }
       } catch {
@@ -680,9 +771,11 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
         !managedMessagePayloadsEqual(currentPayload, input.expectedPayload) ||
         editedAt(message)?.getTime() !== input.expectedEditedAt.getTime()
       ) {
+        if (observation) observation.attempt.compensationEvidence = "SKIPPED_DISCORD_GUARD";
         return { outcome: "PRECONDITION_FAILED" };
       }
       try {
+        if (observation) observation.attempt.compensationEvidence = "UNCONFIRMED";
         const restored = await message.edit(editPayload(input.restorePayload));
         const restoredPayload = projectManagedMessagePayload(restored);
         return hasExpectedMessageIdentity(restored, input, client.user.id) &&
@@ -690,7 +783,9 @@ export function createManagedMessageDiscord(client: Client): ManagedMessageDisco
           managedMessagePayloadsEqual(restoredPayload, input.restorePayload)
           ? { outcome: "RESTORED" }
           : { outcome: "UNCONFIRMED" };
-      } catch {
+      } catch (error) {
+        if (observation && isConfirmedEditRejection(error))
+          observation.attempt.compensationEvidence = "REJECTED";
         return { outcome: "UNCONFIRMED" };
       }
     },
