@@ -13,14 +13,14 @@ import {
   handlePreviewButton,
   PREVIEW_FAILURE,
   registerLinkPreviewHandlers,
-} from "../../src/link-preview-discord.js";
+} from "../../src/link-previews/link-preview-discord.js";
 import {
   createLinkPreviewService,
   originalUrl,
   previewCustomId,
   previewNonce,
-} from "../../src/link-preview.js";
-import type { LinkPreviewService } from "../../src/link-preview.js";
+} from "../../src/link-previews/link-preview.js";
+import type { LinkPreviewService } from "../../src/link-previews/link-preview.js";
 import {
   memberPermissions,
   previewChannelSchema,
@@ -28,7 +28,7 @@ import {
   previewRolesSchema,
   READ_BITS,
   safePublicPermissions,
-} from "../../src/link-preview-permissions.js";
+} from "../../src/link-previews/link-preview-permissions.js";
 import { registerAutomaticCloseActivityHandlers } from "../../src/discord.js";
 
 const target = { guildId: "1", channelId: "2", messageId: "3" };

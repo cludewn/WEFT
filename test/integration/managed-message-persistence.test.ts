@@ -18,7 +18,7 @@ import {
   type EditManagedMessage,
   managedMessageAudits,
   managedMessages,
-} from "../../src/managed-message-persistence.js";
+} from "../../src/messages/managed-message-persistence.js";
 
 const guildId = "700000000000000043";
 const channelId = "800000000000000043";

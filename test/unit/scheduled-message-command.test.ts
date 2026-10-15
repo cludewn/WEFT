@@ -1,11 +1,11 @@
-import type { GuildSettingsStore } from "../../src/guild-settings.js";
-import { parseOneTimeScheduleOptions } from "../../src/one-time-message-schedule.js";
+import type { GuildSettingsStore } from "../../src/guild/guild-settings.js";
+import { parseOneTimeScheduleOptions } from "../../src/messages/one-time-message-schedule.js";
 import { describe, expect, it, vi } from "vitest";
 
-import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
-import type { ScheduledMessageCreationDiscord } from "../../src/scheduled-message-discord.js";
-import type { ScheduledMessageStore } from "../../src/scheduled-message-persistence.js";
-import type { ScheduledMessageWorkerController } from "../../src/scheduled-message-worker.js";
+import { createScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
+import type { ScheduledMessageCreationDiscord } from "../../src/messages/scheduled-message-discord.js";
+import type { ScheduledMessageStore } from "../../src/messages/scheduled-message-persistence.js";
+import type { ScheduledMessageWorkerController } from "../../src/messages/scheduled-message-worker.js";
 
 const establishedAt = new Date("2030-01-02T03:04:05.678Z");
 const executeAt = new Date("2030-01-02T04:04:05.678Z");

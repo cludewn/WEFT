@@ -1,11 +1,11 @@
-import type { AuditNotificationPublisher } from "../../src/audit-notification-dispatcher.js";
+import type { AuditNotificationPublisher } from "../../src/audit/audit-notification-dispatcher.js";
 import { ChannelType, type ChatInputCommandInteraction } from "discord.js";
-import { handleConfigCommand } from "../../src/config-command.js";
-import { handleThreadCommand } from "../../src/thread-command.js";
-import { createAutomaticCloseConfigurationService } from "../../src/automatic-close-configuration.js";
-import { createAutomaticCloseThreadMaintenanceService } from "../../src/automatic-close-thread-maintenance.js";
-import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
-import type { ScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
+import { handleConfigCommand } from "../../src/guild/config-command.js";
+import { handleThreadCommand } from "../../src/threads/thread-command.js";
+import { createAutomaticCloseConfigurationService } from "../../src/threads/automatic-close-configuration.js";
+import { createAutomaticCloseThreadMaintenanceService } from "../../src/threads/automatic-close-thread-maintenance.js";
+import type { ThreadLifecycleService } from "../../src/threads/thread-lifecycle.js";
+import type { ScheduledThreadCloseCommandService } from "../../src/threads/scheduled-thread-close-command.js";
 import { randomUUID } from "node:crypto";
 import { asc, eq, inArray, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -13,13 +13,13 @@ import { Pool, type PoolClient } from "pg";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
-import { createGuildSettingsStore, guildSettings } from "../../src/guild-settings.js";
+import { createGuildSettingsStore, guildSettings } from "../../src/guild/guild-settings.js";
 import {
   autoCloseParentChannels,
   autoCloseThreadActivity,
   autoCloseThreadExclusions,
   createAutomaticClosePersistenceStore,
-} from "../../src/automatic-close-persistence.js";
+} from "../../src/threads/automatic-close-persistence.js";
 import {
   automaticClosePolicyLockKey,
   configurationAudit,
@@ -27,15 +27,18 @@ import {
   guildConfigurationAudits,
   type GuildConfigurationAudit,
   type GuildConfigurationAuditContext,
-} from "../../src/guild-configuration-audit.js";
+} from "../../src/guild/guild-configuration-audit.js";
 import {
   createAuditLogDestinationStore,
   auditLogDestinationAudits,
-} from "../../src/audit-log-destination-persistence.js";
-import { createLinkPreviewStore, linkPreviewAudits } from "../../src/link-preview-persistence.js";
-import { createAuditNotificationProjection } from "../../src/audit-notification-projection.js";
-import { createAuditRetentionStore } from "../../src/audit-retention-persistence.js";
-import { formatAuditNotification } from "../../src/audit-notification-format.js";
+} from "../../src/audit/audit-log-destination-persistence.js";
+import {
+  createLinkPreviewStore,
+  linkPreviewAudits,
+} from "../../src/link-previews/link-preview-persistence.js";
+import { createAuditNotificationProjection } from "../../src/audit/audit-notification-projection.js";
+import { createAuditRetentionStore } from "../../src/audit/audit-retention-persistence.js";
+import { formatAuditNotification } from "../../src/audit/audit-notification-format.js";
 
 const config = loadTestDatabaseConfig();
 const database = createDatabase(config);

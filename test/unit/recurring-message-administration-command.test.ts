@@ -1,18 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
-import type { ScheduledMessageStore } from "../../src/scheduled-message-persistence.js";
+import { createScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
+import type { ScheduledMessageStore } from "../../src/messages/scheduled-message-persistence.js";
 import type {
   ScheduledMessageAdministrationStore,
   RecurringAdministrationView,
-} from "../../src/scheduled-message-administration-persistence.js";
+} from "../../src/messages/scheduled-message-administration-persistence.js";
 import type {
   RecurringMessageSeries,
   RecurringMessageStore,
-} from "../../src/recurring-message-persistence.js";
-import type { GuildSettingsStore } from "../../src/guild-settings.js";
-import type { RecurringMessageWorker } from "../../src/recurring-message-worker.js";
-import type { ScheduledMessageCreationDiscord } from "../../src/scheduled-message-discord.js";
+} from "../../src/messages/recurring-message-persistence.js";
+import type { GuildSettingsStore } from "../../src/guild/guild-settings.js";
+import type { RecurringMessageWorker } from "../../src/messages/recurring-message-worker.js";
+import type { ScheduledMessageCreationDiscord } from "../../src/messages/scheduled-message-discord.js";
 
 const establishedAt = new Date("2030-01-01T00:00:00.000Z");
 const input = { guildId: "guild", channelId: "channel", actorUserId: "actor" };

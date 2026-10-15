@@ -5,12 +5,12 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   ActiveThreadSummary,
   AutoCloseDiscord,
-} from "../../src/automatic-close-configuration.js";
+} from "../../src/threads/automatic-close-configuration.js";
 import type {
   AutoCloseParentChannelRef,
   AutomaticClosePersistenceStore,
-} from "../../src/automatic-close-persistence.js";
-import { createAutomaticCloseBaselineReconciler } from "../../src/automatic-close-reconciler.js";
+} from "../../src/threads/automatic-close-persistence.js";
+import { createAutomaticCloseBaselineReconciler } from "../../src/threads/automatic-close-reconciler.js";
 
 describe("automatic close baseline reconciler", () => {
   it("does not touch Discord when no parent channel is configured", async () => {

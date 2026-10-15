@@ -7,7 +7,7 @@ import type {
 } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
-import type { ManagedMessageService } from "../../src/managed-message.js";
+import type { ManagedMessageService } from "../../src/messages/managed-message.js";
 import {
   createScheduledMessageCreateModalId,
   createRecurringMessageCreateModalId,
@@ -23,13 +23,13 @@ import {
   parseScheduledMessageEditModalId,
   SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX,
   SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX,
-} from "../../src/message-command.js";
-import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
-import { ONE_TIME_SCHEDULE_ERRORS } from "../../src/one-time-message-schedule.js";
-import type { GuildSettingsStore } from "../../src/guild-settings.js";
-import type { ScheduledMessageStore } from "../../src/scheduled-message-persistence.js";
-import type { ScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
-import type { CombinedScheduleListItem } from "../../src/scheduled-message-administration-persistence.js";
+} from "../../src/messages/message-command.js";
+import { createScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
+import { ONE_TIME_SCHEDULE_ERRORS } from "../../src/messages/one-time-message-schedule.js";
+import type { GuildSettingsStore } from "../../src/guild/guild-settings.js";
+import type { ScheduledMessageStore } from "../../src/messages/scheduled-message-persistence.js";
+import type { ScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
+import type { CombinedScheduleListItem } from "../../src/messages/scheduled-message-administration-persistence.js";
 
 const executeAt = new Date("2030-01-02T03:04:05.000Z");
 

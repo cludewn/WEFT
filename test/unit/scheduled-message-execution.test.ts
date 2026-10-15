@@ -2,18 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import { ChannelType, EmbedType } from "discord.js";
 import type { Client } from "discord.js";
 
-import type { ScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
-import { createScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
+import type { ScheduledMessageDiscord } from "../../src/messages/scheduled-message-discord.js";
+import { createScheduledMessageDiscord } from "../../src/messages/scheduled-message-discord.js";
 import {
   createScheduledMessageExecutor,
   deriveScheduledMessageNonce,
   isWithinScheduledMessageGrace,
   returnedScheduledMessageMatches,
-} from "../../src/scheduled-message-execution.js";
+} from "../../src/messages/scheduled-message-execution.js";
 import type {
   ScheduledMessageDefinition,
   ScheduledMessageStore,
-} from "../../src/scheduled-message-persistence.js";
+} from "../../src/messages/scheduled-message-persistence.js";
 
 const executeAt = new Date("2030-01-01T00:00:00.000Z");
 

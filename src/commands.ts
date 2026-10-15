@@ -1,22 +1,22 @@
 import { InteractionContextType, MessageFlags, SlashCommandBuilder } from "discord.js";
 
-import type { LinkPreviewConfiguration } from "./link-preview-configuration.js";
+import type { LinkPreviewConfiguration } from "./link-previews/link-preview-configuration.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import type { Logger } from "pino";
 
-import { handleBulkCloseCommand } from "./bulk-thread-close-command.js";
-import type { BulkCloseService } from "./bulk-thread-close.js";
-import type { AuditLogDestinationService } from "./audit-log-destination.js";
-import type { AutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
-import type { AutomaticCloseThreadMaintenanceService } from "./automatic-close-thread-maintenance.js";
-import { configCommandDefinition, handleConfigCommand } from "./config-command.js";
-import type { GuildSettingsStore } from "./guild-settings.js";
-import { handleMessageCommand, messageCommandDefinition } from "./message-command.js";
-import type { ManagedMessageService } from "./managed-message.js";
-import type { ScheduledMessageCommandService } from "./scheduled-message-command.js";
-import type { ScheduledThreadCloseCommandService } from "./scheduled-thread-close-command.js";
-import { handleThreadCommand, threadCommandDefinition } from "./thread-command.js";
-import type { ThreadLifecycleService } from "./thread-lifecycle.js";
+import { handleBulkCloseCommand } from "./threads/bulk-thread-close-command.js";
+import type { BulkCloseService } from "./threads/bulk-thread-close.js";
+import type { AuditLogDestinationService } from "./audit/audit-log-destination.js";
+import type { AutomaticCloseConfigurationService } from "./threads/automatic-close-configuration.js";
+import type { AutomaticCloseThreadMaintenanceService } from "./threads/automatic-close-thread-maintenance.js";
+import { configCommandDefinition, handleConfigCommand } from "./guild/config-command.js";
+import type { GuildSettingsStore } from "./guild/guild-settings.js";
+import { handleMessageCommand, messageCommandDefinition } from "./messages/message-command.js";
+import type { ManagedMessageService } from "./messages/managed-message.js";
+import type { ScheduledMessageCommandService } from "./messages/scheduled-message-command.js";
+import type { ScheduledThreadCloseCommandService } from "./threads/scheduled-thread-close-command.js";
+import { handleThreadCommand, threadCommandDefinition } from "./threads/thread-command.js";
+import type { ThreadLifecycleService } from "./threads/thread-lifecycle.js";
 
 export const commandDefinitions = [
   new SlashCommandBuilder()

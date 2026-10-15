@@ -1,13 +1,13 @@
 import { ChannelType } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
-import { createGuildConfigurationService } from "../../src/guild-configuration.js";
-import { createConfigurationAuditContext } from "../../src/guild-configuration-audit.js";
-import { createAutomaticCloseConfigurationService } from "../../src/automatic-close-configuration.js";
-import { createAutomaticCloseThreadMaintenanceService } from "../../src/automatic-close-thread-maintenance.js";
-import { createAuditLogDestinationService } from "../../src/audit-log-destination.js";
-import { createLinkPreviewConfiguration } from "../../src/link-preview-configuration.js";
-import { createScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
-import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
+import { createGuildConfigurationService } from "../../src/guild/guild-configuration.js";
+import { createConfigurationAuditContext } from "../../src/guild/guild-configuration-audit.js";
+import { createAutomaticCloseConfigurationService } from "../../src/threads/automatic-close-configuration.js";
+import { createAutomaticCloseThreadMaintenanceService } from "../../src/threads/automatic-close-thread-maintenance.js";
+import { createAuditLogDestinationService } from "../../src/audit/audit-log-destination.js";
+import { createLinkPreviewConfiguration } from "../../src/link-previews/link-preview-configuration.js";
+import { createScheduledThreadCloseCommandService } from "../../src/threads/scheduled-thread-close-command.js";
+import { createScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
 import type {
   AdministrativeAttempt,
   AdministrativeTransactionEvidence,
@@ -15,15 +15,15 @@ import type {
 import type {
   AdministrativeFailureRecorder,
   AdministrativeOperation,
-} from "../../src/administrative-operation-failure-audit.js";
-import type { GuildSettingsStore } from "../../src/guild-settings.js";
-import type { AutomaticClosePersistenceStore } from "../../src/automatic-close-persistence.js";
+} from "../../src/audit/administrative-operation-failure-audit.js";
+import type { GuildSettingsStore } from "../../src/guild/guild-settings.js";
+import type { AutomaticClosePersistenceStore } from "../../src/threads/automatic-close-persistence.js";
 import type {
   ScheduledMessageStore,
   ScheduledMessageDefinition,
-} from "../../src/scheduled-message-persistence.js";
-import type { RecurringMessageStore } from "../../src/recurring-message-persistence.js";
-import type { BulkThreadCloseHooks } from "../../src/thread-lifecycle.js";
+} from "../../src/messages/scheduled-message-persistence.js";
+import type { RecurringMessageStore } from "../../src/messages/recurring-message-persistence.js";
+import type { BulkThreadCloseHooks } from "../../src/threads/thread-lifecycle.js";
 
 const guildId = "111111111111111111",
   actorUserId = "222222222222222222",

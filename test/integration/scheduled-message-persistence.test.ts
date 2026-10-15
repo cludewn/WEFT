@@ -9,10 +9,13 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { publishScheduledMessageAudits } from "../../src/audit-notification-publication.js";
+import { publishScheduledMessageAudits } from "../../src/audit/audit-notification-publication.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
-import { managedMessageAudits, managedMessages } from "../../src/managed-message-persistence.js";
+import {
+  managedMessageAudits,
+  managedMessages,
+} from "../../src/messages/managed-message-persistence.js";
 import {
   createScheduledActionStore,
   scheduledActions,
@@ -22,11 +25,11 @@ import {
   scheduledMessageAudits,
   scheduledMessageStates,
   type CreateScheduledMessage,
-} from "../../src/scheduled-message-persistence.js";
+} from "../../src/messages/scheduled-message-persistence.js";
 import {
   createScheduledThreadCloseStore,
   scheduledThreadCloseAudits,
-} from "../../src/scheduled-thread-close-persistence.js";
+} from "../../src/threads/scheduled-thread-close-persistence.js";
 
 const guildId = "scheduled-message-guild";
 const channelId = "scheduled-message-channel";

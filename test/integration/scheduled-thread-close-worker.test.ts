@@ -13,14 +13,14 @@ import {
 import {
   createScheduledThreadCloseStore,
   scheduledThreadCloseAudits,
-} from "../../src/scheduled-thread-close-persistence.js";
-import { createScheduledThreadCloseExecutor } from "../../src/scheduled-thread-close.js";
+} from "../../src/threads/scheduled-thread-close-persistence.js";
+import { createScheduledThreadCloseExecutor } from "../../src/threads/scheduled-thread-close.js";
 import {
   createScheduledThreadCloseWorkerController,
   SCHEDULED_THREAD_CLOSE_QUEUE,
   type ScheduledThreadCloseWorkerController,
-} from "../../src/scheduled-thread-close-worker.js";
-import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
+} from "../../src/threads/scheduled-thread-close-worker.js";
+import type { ThreadLifecycleService } from "../../src/threads/thread-lifecycle.js";
 
 const testGuildId = "scheduled-worker-test-guild";
 const config = loadTestDatabaseConfig();

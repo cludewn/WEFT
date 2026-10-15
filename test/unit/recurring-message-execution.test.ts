@@ -1,16 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import { ChannelType, EmbedType } from "discord.js";
 import type { Client } from "discord.js";
-import { createScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
+import { createScheduledMessageDiscord } from "../../src/messages/scheduled-message-discord.js";
 
 import {
   createRecurringMessageExecutor,
   deriveRecurringOccurrenceNonce,
   type RecurringDelivery,
-} from "../../src/recurring-message-execution.js";
-import type { RecurringMessageOccurrence } from "../../src/recurring-message-persistence.js";
-import type { RecurringRuntimeStore } from "../../src/recurring-message-runtime-persistence.js";
-import { decideRecurringRetry, RECURRING_RETRY_LIFETIME_MS } from "../../src/recurring-message.js";
+} from "../../src/messages/recurring-message-execution.js";
+import type { RecurringMessageOccurrence } from "../../src/messages/recurring-message-persistence.js";
+import type { RecurringRuntimeStore } from "../../src/messages/recurring-message-runtime-persistence.js";
+import {
+  decideRecurringRetry,
+  RECURRING_RETRY_LIFETIME_MS,
+} from "../../src/messages/recurring-message.js";
 
 describe("recurring retry decision", () => {
   const first = new Date("2026-01-01T00:00:00.000Z");

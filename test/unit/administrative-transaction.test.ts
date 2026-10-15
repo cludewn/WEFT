@@ -9,7 +9,7 @@ import {
   bindAdministrativePool,
   type AdministrativeAttempt,
 } from "../../src/administrative-transaction.js";
-import { confirmedAdministrativeDatabaseFailure } from "../../src/administrative-operation-failure-audit.js";
+import { confirmedAdministrativeDatabaseFailure } from "../../src/audit/administrative-operation-failure-audit.js";
 
 function fixture(
   options: {

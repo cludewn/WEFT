@@ -1,20 +1,20 @@
 import { ChannelType } from "discord.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createBulkCloseService } from "../../src/bulk-thread-close.js";
-import { createScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
+import { createBulkCloseService } from "../../src/threads/bulk-thread-close.js";
+import { createScheduledThreadCloseCommandService } from "../../src/threads/scheduled-thread-close-command.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 
-import { createAuditNotificationDispatcher } from "../../src/audit-notification-dispatcher.js";
+import { createAuditNotificationDispatcher } from "../../src/audit/audit-notification-dispatcher.js";
 import {
   createApplicationRuntime,
   SHUTDOWN_TIMEOUT_MS,
   ShutdownTimeoutError,
 } from "../../src/application-runtime.js";
-import type { AutomaticCloseThreadMaintenanceService } from "../../src/automatic-close-thread-maintenance.js";
-import type { GuildSettings, GuildSettingsStore } from "../../src/guild-settings.js";
-import type { ScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
-import { handleThreadCommand } from "../../src/thread-command.js";
+import type { AutomaticCloseThreadMaintenanceService } from "../../src/threads/automatic-close-thread-maintenance.js";
+import type { GuildSettings, GuildSettingsStore } from "../../src/guild/guild-settings.js";
+import type { ScheduledThreadCloseCommandService } from "../../src/threads/scheduled-thread-close-command.js";
+import { handleThreadCommand } from "../../src/threads/thread-command.js";
 import {
   addClosedPrefix,
   createThreadLifecycleService,
@@ -23,19 +23,19 @@ import {
   InvalidThreadNameError,
   PendingDiscordMutationGuard,
   removeClosedPrefix,
-} from "../../src/thread-lifecycle.js";
+} from "../../src/threads/thread-lifecycle.js";
 import type {
   BulkThreadCloseHooks,
   ThreadFailureCode,
   ThreadLifecycleDiscord,
   ThreadSnapshot,
-} from "../../src/thread-lifecycle.js";
+} from "../../src/threads/thread-lifecycle.js";
 import type {
   ManagedThread,
   ManagedThreadStore,
   ThreadAuditRecord,
   ThreadAuditStore,
-} from "../../src/thread-persistence.js";
+} from "../../src/threads/thread-persistence.js";
 
 const scheduledThreadCloseCommandStub = {
   schedule: vi.fn(),

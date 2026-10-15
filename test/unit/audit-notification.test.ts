@@ -3,14 +3,14 @@ import type { Client } from "discord.js";
 import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
-import { createAuditNotificationDiscord } from "../../src/audit-notification-discord.js";
-import { createAuditNotificationDispatcher } from "../../src/audit-notification-dispatcher.js";
+import { createAuditNotificationDiscord } from "../../src/audit/audit-notification-discord.js";
+import { createAuditNotificationDispatcher } from "../../src/audit/audit-notification-dispatcher.js";
 import {
   formatAuditNotification,
   type AuditNotificationRecord,
   type AuditReference,
-} from "../../src/audit-notification-format.js";
-import { createAuditNotificationProjection } from "../../src/audit-notification-projection.js";
+} from "../../src/audit/audit-notification-format.js";
+import { createAuditNotificationProjection } from "../../src/audit/audit-notification-projection.js";
 import type { DatabaseClient } from "../../src/database.js";
 
 const auditId = "11111111-1111-4111-8111-111111111111";

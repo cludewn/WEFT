@@ -9,9 +9,9 @@ import type {
 import type {
   ScheduledThreadCloseExecutionTransitionResult,
   ScheduledThreadCloseStore,
-} from "../../src/scheduled-thread-close-persistence.js";
-import { createScheduledThreadCloseExecutor } from "../../src/scheduled-thread-close.js";
-import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
+} from "../../src/threads/scheduled-thread-close-persistence.js";
+import { createScheduledThreadCloseExecutor } from "../../src/threads/scheduled-thread-close.js";
+import type { ThreadLifecycleService } from "../../src/threads/thread-lifecycle.js";
 
 const auditIds = { attemptAuditId: "attempt-audit-id", executionAuditId: "execution-audit-id" };
 

@@ -6,36 +6,36 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   createAuditLogDestinationStore,
   auditLogDestinationAudits,
-} from "../../src/audit-log-destination-persistence.js";
-import type { AuditNotificationPublisher } from "../../src/audit-notification-dispatcher.js";
-import { createAuditNotificationProjection } from "../../src/audit-notification-projection.js";
-import { publishExistingAudits } from "../../src/audit-notification-publication.js";
+} from "../../src/audit/audit-log-destination-persistence.js";
+import type { AuditNotificationPublisher } from "../../src/audit/audit-notification-dispatcher.js";
+import { createAuditNotificationProjection } from "../../src/audit/audit-notification-projection.js";
+import { publishExistingAudits } from "../../src/audit/audit-notification-publication.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
-import { guildSettings } from "../../src/guild-settings.js";
+import { guildSettings } from "../../src/guild/guild-settings.js";
 import {
   createManagedMessageStore,
   managedMessageAudits,
   managedMessages,
-} from "../../src/managed-message-persistence.js";
+} from "../../src/messages/managed-message-persistence.js";
 import {
   createRecurringMessageStore,
   recurringMessageAudits,
   recurringMessageOccurrences,
   recurringMessageSchedules,
-} from "../../src/recurring-message-persistence.js";
-import { ALL_WEEKDAYS_MASK } from "../../src/recurring-message.js";
+} from "../../src/messages/recurring-message-persistence.js";
+import { ALL_WEEKDAYS_MASK } from "../../src/messages/recurring-message.js";
 import { scheduledActions } from "../../src/scheduled-action-persistence.js";
 import {
   createScheduledMessageStore,
   scheduledMessageAudits,
   scheduledMessageStates,
-} from "../../src/scheduled-message-persistence.js";
+} from "../../src/messages/scheduled-message-persistence.js";
 import {
   createScheduledThreadCloseStore,
   scheduledThreadCloseAudits,
-} from "../../src/scheduled-thread-close-persistence.js";
-import { createThreadAuditStore, threadAudits } from "../../src/thread-persistence.js";
+} from "../../src/threads/scheduled-thread-close-persistence.js";
+import { createThreadAuditStore, threadAudits } from "../../src/threads/thread-persistence.js";
 
 const database = createDatabase(loadTestDatabaseConfig());
 const projection = createAuditNotificationProjection(database.client);

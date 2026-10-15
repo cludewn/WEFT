@@ -4,12 +4,15 @@ import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
-import { createGuildSettingsStore, guildSettings } from "../../src/guild-settings.js";
-import { createLinkPreviewStore, linkPreviewAudits } from "../../src/link-preview-persistence.js";
-import type { LinkPreviewMode } from "../../src/link-preview.js";
-import { createAuditNotificationProjection } from "../../src/audit-notification-projection.js";
-import { publishLinkPreviewChanges } from "../../src/audit-notification-publication.js";
-import { formatAuditNotification } from "../../src/audit-notification-format.js";
+import { createGuildSettingsStore, guildSettings } from "../../src/guild/guild-settings.js";
+import {
+  createLinkPreviewStore,
+  linkPreviewAudits,
+} from "../../src/link-previews/link-preview-persistence.js";
+import type { LinkPreviewMode } from "../../src/link-previews/link-preview.js";
+import { createAuditNotificationProjection } from "../../src/audit/audit-notification-projection.js";
+import { publishLinkPreviewChanges } from "../../src/audit/audit-notification-publication.js";
+import { formatAuditNotification } from "../../src/audit/audit-notification-format.js";
 
 const database = createDatabase(loadTestDatabaseConfig());
 const store = createLinkPreviewStore(database.client);

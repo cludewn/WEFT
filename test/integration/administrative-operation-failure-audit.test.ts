@@ -18,30 +18,30 @@ import {
   createAdministrativeFailureRecorder,
   type AdministrativeFailureAudit,
   type AdministrativeOperation,
-} from "../../src/administrative-operation-failure-audit.js";
-import { createGuildConfigurationService } from "../../src/guild-configuration.js";
+} from "../../src/audit/administrative-operation-failure-audit.js";
+import { createGuildConfigurationService } from "../../src/guild/guild-configuration.js";
 import {
   createConfigurationAuditContext,
   guildConfigurationAudits,
-} from "../../src/guild-configuration-audit.js";
-import { createGuildSettingsStore, guildSettings } from "../../src/guild-settings.js";
-import { createAutomaticClosePersistenceStore } from "../../src/automatic-close-persistence.js";
-import { createAutomaticCloseConfigurationService } from "../../src/automatic-close-configuration.js";
-import { createAutomaticCloseThreadMaintenanceService } from "../../src/automatic-close-thread-maintenance.js";
-import { createAuditLogDestinationStore } from "../../src/audit-log-destination-persistence.js";
-import { createAuditLogDestinationService } from "../../src/audit-log-destination.js";
-import { createLinkPreviewStore } from "../../src/link-preview-persistence.js";
-import { createLinkPreviewConfiguration } from "../../src/link-preview-configuration.js";
-import { createScheduledThreadCloseStore } from "../../src/scheduled-thread-close-persistence.js";
-import { createScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
-import { createScheduledMessageStore } from "../../src/scheduled-message-persistence.js";
-import { createRecurringMessageStore } from "../../src/recurring-message-persistence.js";
-import { createScheduledMessageAdministrationStore } from "../../src/scheduled-message-administration-persistence.js";
-import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
-import { createAuditNotificationProjection } from "../../src/audit-notification-projection.js";
-import { formatAuditNotification } from "../../src/audit-notification-format.js";
-import { createAuditRetentionStore } from "../../src/audit-retention-persistence.js";
-import type { BulkThreadCloseHooks } from "../../src/thread-lifecycle.js";
+} from "../../src/guild/guild-configuration-audit.js";
+import { createGuildSettingsStore, guildSettings } from "../../src/guild/guild-settings.js";
+import { createAutomaticClosePersistenceStore } from "../../src/threads/automatic-close-persistence.js";
+import { createAutomaticCloseConfigurationService } from "../../src/threads/automatic-close-configuration.js";
+import { createAutomaticCloseThreadMaintenanceService } from "../../src/threads/automatic-close-thread-maintenance.js";
+import { createAuditLogDestinationStore } from "../../src/audit/audit-log-destination-persistence.js";
+import { createAuditLogDestinationService } from "../../src/audit/audit-log-destination.js";
+import { createLinkPreviewStore } from "../../src/link-previews/link-preview-persistence.js";
+import { createLinkPreviewConfiguration } from "../../src/link-previews/link-preview-configuration.js";
+import { createScheduledThreadCloseStore } from "../../src/threads/scheduled-thread-close-persistence.js";
+import { createScheduledThreadCloseCommandService } from "../../src/threads/scheduled-thread-close-command.js";
+import { createScheduledMessageStore } from "../../src/messages/scheduled-message-persistence.js";
+import { createRecurringMessageStore } from "../../src/messages/recurring-message-persistence.js";
+import { createScheduledMessageAdministrationStore } from "../../src/messages/scheduled-message-administration-persistence.js";
+import { createScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
+import { createAuditNotificationProjection } from "../../src/audit/audit-notification-projection.js";
+import { formatAuditNotification } from "../../src/audit/audit-notification-format.js";
+import { createAuditRetentionStore } from "../../src/audit/audit-retention-persistence.js";
+import type { BulkThreadCloseHooks } from "../../src/threads/thread-lifecycle.js";
 
 // This suite is run only by the maintainer's approved external integration workflow.
 const config = loadTestDatabaseConfig();

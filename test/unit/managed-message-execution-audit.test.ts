@@ -3,22 +3,22 @@ import { getTableColumns } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
 import type { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
-import type { AuditNotificationPublisher } from "../../src/audit-notification-dispatcher.js";
+import type { AuditNotificationPublisher } from "../../src/audit/audit-notification-dispatcher.js";
 import type { DatabaseClient } from "../../src/database.js";
 import {
   createManagedMessageExecutionRecorder,
   exactManagedMessageExecutionAudit,
   managedMessageExecutionFailureAudits,
   type ManagedMessageExecutionAudit,
-} from "../../src/managed-message-execution-audit.js";
-import { newManagedMessageExecutionAttempt } from "../../src/managed-message-execution-evidence.js";
+} from "../../src/messages/managed-message-execution-audit.js";
+import { newManagedMessageExecutionAttempt } from "../../src/messages/managed-message-execution-evidence.js";
 import {
   managedMessageAudits,
   type ManagedMessageAudit,
   type CreateManagedMessage,
-} from "../../src/managed-message-persistence.js";
-import { createAuditNotificationProjection } from "../../src/audit-notification-projection.js";
-import { formatAuditNotification } from "../../src/audit-notification-format.js";
+} from "../../src/messages/managed-message-persistence.js";
+import { createAuditNotificationProjection } from "../../src/audit/audit-notification-projection.js";
+import { formatAuditNotification } from "../../src/audit/audit-notification-format.js";
 
 const at = new Date("2030-01-01T00:00:00.123Z");
 const identity = { guildId: "guild", channelId: "hidden-channel", actorUserId: "actor" };

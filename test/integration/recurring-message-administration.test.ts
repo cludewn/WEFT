@@ -11,30 +11,30 @@ import { createPgBossRuntime } from "../../src/pg-boss.js";
 import {
   createRecurringMessageExecutor,
   type RecurringDelivery,
-} from "../../src/recurring-message-execution.js";
-import { createRecurringRuntimeStore } from "../../src/recurring-message-runtime-persistence.js";
+} from "../../src/messages/recurring-message-execution.js";
+import { createRecurringRuntimeStore } from "../../src/messages/recurring-message-runtime-persistence.js";
 import {
   createRecurringMessageWorker,
   RECURRING_MESSAGE_QUEUE,
   type RecurringMessageWorker,
   type RecurringProjection,
-} from "../../src/recurring-message-worker.js";
-import { createScheduledMessageAdministrationStore } from "../../src/scheduled-message-administration-persistence.js";
-import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
-import type { ScheduledMessageStore } from "../../src/scheduled-message-persistence.js";
-import type { ScheduledMessageWorkerController } from "../../src/scheduled-message-worker.js";
+} from "../../src/messages/recurring-message-worker.js";
+import { createScheduledMessageAdministrationStore } from "../../src/messages/scheduled-message-administration-persistence.js";
+import { createScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
+import type { ScheduledMessageStore } from "../../src/messages/scheduled-message-persistence.js";
+import type { ScheduledMessageWorkerController } from "../../src/messages/scheduled-message-worker.js";
 import {
   createRecurringMessageStore,
   recurringMessageAudits,
   recurringMessageOccurrences,
   recurringMessageSchedules,
-} from "../../src/recurring-message-persistence.js";
+} from "../../src/messages/recurring-message-persistence.js";
 import { scheduledActions } from "../../src/scheduled-action-persistence.js";
 import {
   createScheduledMessageStore,
   scheduledMessageAudits,
   scheduledMessageStates,
-} from "../../src/scheduled-message-persistence.js";
+} from "../../src/messages/scheduled-message-persistence.js";
 
 const guildId = "recurring-admin-guild";
 const channelId = "recurring-admin-channel";

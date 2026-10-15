@@ -1,8 +1,8 @@
 import { ChannelType, DiscordAPIError } from "discord.js";
 import type { Client } from "discord.js";
 import { describe, expect, it } from "vitest";
-import { createThreadLifecycleDiscord } from "../../src/thread-discord.js";
-import { createAuditLogDestinationDiscord } from "../../src/audit-log-destination-discord.js";
+import { createThreadLifecycleDiscord } from "../../src/threads/thread-discord.js";
+import { createAuditLogDestinationDiscord } from "../../src/audit/audit-log-destination-discord.js";
 
 function apiError(code: number, status: number) {
   return new DiscordAPIError(

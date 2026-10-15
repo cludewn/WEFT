@@ -10,14 +10,14 @@ import {
   previewCustomId,
   previewNonce,
   renderPreview,
-} from "../../src/link-preview.js";
+} from "../../src/link-previews/link-preview.js";
 import type {
   LinkPreviewBoundary,
   LinkPreviewMode,
   PreviewMessage,
   PreviewObservation,
   PreviewState,
-} from "../../src/link-preview.js";
+} from "../../src/link-previews/link-preview.js";
 
 const target = { guildId: "1", channelId: "2", messageId: "3" };
 const source = { guildId: "1", channelId: "4", messageId: "5", content: originalUrl(target) };

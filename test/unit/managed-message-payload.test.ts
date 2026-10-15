@@ -4,7 +4,7 @@ import {
   formatManagedMessageEmbedColor,
   managedMessagePayloadsEqual,
   validateManagedMessagePayload,
-} from "../../src/managed-message-payload.js";
+} from "../../src/messages/managed-message-payload.js";
 
 describe("managed message payload", () => {
   it.each([

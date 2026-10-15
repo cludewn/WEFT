@@ -1,4 +1,4 @@
-import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import { guildConfigurationAudits } from "../../src/guild/guild-configuration-audit.js";
 import {
   createGuildSettingsStore,
   createAutomaticClosePersistenceStore,
@@ -13,10 +13,10 @@ import {
   autoCloseThreadExclusions,
   autoCloseThreadRetirements,
   type AutomaticCloseCandidate,
-} from "../../src/automatic-close-persistence.js";
+} from "../../src/threads/automatic-close-persistence.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
-import { guildSettings } from "../../src/guild-settings.js";
+import { guildSettings } from "../../src/guild/guild-settings.js";
 
 const guildIds = ["candidate-guild-a", "candidate-guild-b", "candidate-guild-c"] as const;
 const parentIds = ["candidate-parent-a", "candidate-parent-b"] as const;

@@ -2,16 +2,16 @@ import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect, type AnyPgTable } from "drizzle-orm/pg-core";
 import { describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../../src/database.js";
-import { createGuildSettingsStore, type GuildSettings } from "../../src/guild-settings.js";
-import { createAutomaticClosePersistenceStore } from "../../src/automatic-close-persistence.js";
+import { createGuildSettingsStore, type GuildSettings } from "../../src/guild/guild-settings.js";
+import { createAutomaticClosePersistenceStore } from "../../src/threads/automatic-close-persistence.js";
 import {
   automaticClosePolicyLockKey,
   configurationAudit,
   exactConfigurationAudit,
   type GuildConfigurationAudit,
-} from "../../src/guild-configuration-audit.js";
-import { createAuditNotificationProjection } from "../../src/audit-notification-projection.js";
-import { formatAuditNotification } from "../../src/audit-notification-format.js";
+} from "../../src/guild/guild-configuration-audit.js";
+import { createAuditNotificationProjection } from "../../src/audit/audit-notification-projection.js";
+import { formatAuditNotification } from "../../src/audit/audit-notification-format.js";
 
 const at = new Date("2026-10-14T00:00:00.123Z");
 const context = { auditId: "audit-1", actorUserId: "actor-1", occurredAt: at };

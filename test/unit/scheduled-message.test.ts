@@ -9,8 +9,8 @@ import {
   type ScheduledMessageAudit,
   type ScheduledMessageState,
   type ScheduledMessageStore,
-} from "../../src/scheduled-message-persistence.js";
-import { createScheduledMessageService } from "../../src/scheduled-message.js";
+} from "../../src/messages/scheduled-message-persistence.js";
+import { createScheduledMessageService } from "../../src/messages/scheduled-message.js";
 
 const executeAt = new Date("2030-01-02T03:04:05.678Z");
 const occurredAt = new Date("2026-09-16T01:02:03.456Z");

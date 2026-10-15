@@ -3,12 +3,12 @@ import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ScheduledAction } from "../../src/scheduled-action-persistence.js";
-import type { ScheduledMessageExecutionResult } from "../../src/scheduled-message-execution.js";
+import type { ScheduledMessageExecutionResult } from "../../src/messages/scheduled-message-execution.js";
 import {
   createScheduledMessageWorkerController,
   SCHEDULED_MESSAGE_QUEUE,
   ScheduledMessageDeliveryRetryError,
-} from "../../src/scheduled-message-worker.js";
+} from "../../src/messages/scheduled-message-worker.js";
 
 type Handler = (jobs: JobWithMetadata<unknown>[]) => Promise<unknown>;
 const requiredQueue = {

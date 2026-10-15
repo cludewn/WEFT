@@ -1,41 +1,44 @@
-import { managedMessageExecutionFailureAudits } from "../../src/managed-message-execution-audit.js";
+import { managedMessageExecutionFailureAudits } from "../../src/messages/managed-message-execution-audit.js";
 import {
   configurationAudit,
   guildConfigurationAudits,
-} from "../../src/guild-configuration-audit.js";
-import { linkPreviewAudits } from "../../src/link-preview-persistence.js";
-import { administrativeOperationFailureAudits } from "../../src/administrative-operation-failure-audit.js";
+} from "../../src/guild/guild-configuration-audit.js";
+import { linkPreviewAudits } from "../../src/link-previews/link-preview-persistence.js";
+import { administrativeOperationFailureAudits } from "../../src/audit/administrative-operation-failure-audit.js";
 import { randomUUID } from "node:crypto";
 
 import { asc, eq, inArray, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { auditLogDestinationAudits } from "../../src/audit-log-destination-persistence.js";
+import { auditLogDestinationAudits } from "../../src/audit/audit-log-destination-persistence.js";
 import {
   AUDIT_RETENTION_SOURCES,
   createAuditRetentionStore,
   type AuditRetentionSource,
-} from "../../src/audit-retention-persistence.js";
+} from "../../src/audit/audit-retention-persistence.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
-import { guildSettings } from "../../src/guild-settings.js";
-import { managedMessageAudits, managedMessages } from "../../src/managed-message-persistence.js";
+import { guildSettings } from "../../src/guild/guild-settings.js";
+import {
+  managedMessageAudits,
+  managedMessages,
+} from "../../src/messages/managed-message-persistence.js";
 import {
   createRecurringMessageStore,
   recurringMessageAudits,
   recurringMessageOccurrences,
   recurringMessageSchedules,
-} from "../../src/recurring-message-persistence.js";
-import { createRecurringRuntimeStore } from "../../src/recurring-message-runtime-persistence.js";
+} from "../../src/messages/recurring-message-persistence.js";
+import { createRecurringRuntimeStore } from "../../src/messages/recurring-message-runtime-persistence.js";
 import { scheduledActions } from "../../src/scheduled-action-persistence.js";
 import {
   createScheduledMessageStore,
   scheduledMessageAudits,
   scheduledMessageStates,
-} from "../../src/scheduled-message-persistence.js";
-import { scheduledThreadCloseAudits } from "../../src/scheduled-thread-close-persistence.js";
-import { threadAudits } from "../../src/thread-persistence.js";
+} from "../../src/messages/scheduled-message-persistence.js";
+import { scheduledThreadCloseAudits } from "../../src/threads/scheduled-thread-close-persistence.js";
+import { threadAudits } from "../../src/threads/thread-persistence.js";
 
 const database = createDatabase(loadTestDatabaseConfig());
 const store = createAuditRetentionStore(database.client);

@@ -6,28 +6,28 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
 import type { DatabaseClient } from "../../src/database.js";
-import { createGuildSettingsStore } from "../../src/guild-settings.js";
+import { createGuildSettingsStore } from "../../src/guild/guild-settings.js";
 import {
   createScheduledActionStore,
   scheduledActions,
 } from "../../src/scheduled-action-persistence.js";
-import { createScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
+import { createScheduledThreadCloseCommandService } from "../../src/threads/scheduled-thread-close-command.js";
 import {
   createScheduledThreadCloseStore,
   scheduledThreadCloseAudits,
   scheduledThreadCloseAdvisoryLockKeys,
-} from "../../src/scheduled-thread-close-persistence.js";
+} from "../../src/threads/scheduled-thread-close-persistence.js";
 import {
   createThreadLifecycleService,
   type ThreadLifecycleDiscord,
   type ThreadSnapshot,
-} from "../../src/thread-lifecycle.js";
+} from "../../src/threads/thread-lifecycle.js";
 import {
   createManagedThreadStore,
   createThreadAuditStore,
   managedThreads,
   threadAudits,
-} from "../../src/thread-persistence.js";
+} from "../../src/threads/thread-persistence.js";
 
 const guildIds = ["scheduled-command-guild-one", "scheduled-command-guild-two"] as const;
 const threadIds = [

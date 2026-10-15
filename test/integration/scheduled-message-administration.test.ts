@@ -1,23 +1,23 @@
-import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import { guildConfigurationAudits } from "../../src/guild/guild-configuration-audit.js";
 import { createGuildSettingsStore } from "./configuration-fixture.js";
 import { asc, eq, inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { guildSettings, type GuildSettingsStore } from "../../src/guild-settings.js";
-import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
+import { guildSettings, type GuildSettingsStore } from "../../src/guild/guild-settings.js";
+import { createScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
 import { scheduledActions } from "../../src/scheduled-action-persistence.js";
-import type { ScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
-import { createScheduledMessageExecutor } from "../../src/scheduled-message-execution.js";
+import type { ScheduledMessageDiscord } from "../../src/messages/scheduled-message-discord.js";
+import { createScheduledMessageExecutor } from "../../src/messages/scheduled-message-execution.js";
 import {
   createScheduledMessageStore,
   scheduledMessageAudits,
   scheduledMessageStates,
   type CreateScheduledMessage,
   type ScheduledMessageDefinition,
-} from "../../src/scheduled-message-persistence.js";
+} from "../../src/messages/scheduled-message-persistence.js";
 
 const guildId = "scheduled-admin-guild";
 const channelId = "scheduled-admin-channel";

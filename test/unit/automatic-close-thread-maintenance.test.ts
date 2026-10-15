@@ -3,8 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createAutomaticCloseThreadMaintenanceService,
   type AutomaticCloseThreadMaintenanceDiscord,
-} from "../../src/automatic-close-thread-maintenance.js";
-import type { AutomaticClosePersistenceStore } from "../../src/automatic-close-persistence.js";
+} from "../../src/threads/automatic-close-thread-maintenance.js";
+import type { AutomaticClosePersistenceStore } from "../../src/threads/automatic-close-persistence.js";
 import type { ScheduledActionStore } from "../../src/scheduled-action-persistence.js";
 
 const guildId = "guild-id";

@@ -1,13 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createAutomaticCloseExecutor } from "../../src/automatic-close-execution.js";
+import { createAutomaticCloseExecutor } from "../../src/threads/automatic-close-execution.js";
 import type {
   AutomaticCloseCandidate,
   AutomaticClosePersistenceStore,
-} from "../../src/automatic-close-persistence.js";
+} from "../../src/threads/automatic-close-persistence.js";
 import type { ScheduledActionStore } from "../../src/scheduled-action-persistence.js";
-import type { AutomaticCloseExecutionDiscord } from "../../src/thread-discord.js";
-import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
+import type { AutomaticCloseExecutionDiscord } from "../../src/threads/thread-discord.js";
+import type { ThreadLifecycleService } from "../../src/threads/thread-lifecycle.js";
 
 const candidate: AutomaticCloseCandidate = {
   guildId: "guild-id",

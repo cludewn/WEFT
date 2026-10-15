@@ -11,13 +11,13 @@ import {
 } from "../../src/administrative-transaction.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
-import type { ManagedMessageDiscord } from "../../src/managed-message-discord.js";
+import type { ManagedMessageDiscord } from "../../src/messages/managed-message-discord.js";
 import {
   createManagedMessageStore,
   managedMessages,
   managedMessageAudits,
-} from "../../src/managed-message-persistence.js";
-import { createManagedMessageService } from "../../src/managed-message.js";
+} from "../../src/messages/managed-message-persistence.js";
+import { createManagedMessageService } from "../../src/messages/managed-message.js";
 
 // Maintainer-only external PostgreSQL suite. The observer is never fault-decorated.
 const config = loadTestDatabaseConfig();

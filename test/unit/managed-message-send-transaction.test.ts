@@ -7,10 +7,10 @@ import {
   type AdministrativeAttempt,
 } from "../../src/administrative-transaction.js";
 import type { DatabaseClient } from "../../src/database.js";
-import type { ManagedMessageDiscord } from "../../src/managed-message-discord.js";
-import { createManagedMessageStore } from "../../src/managed-message-persistence.js";
-import { createManagedMessageService } from "../../src/managed-message.js";
-import { publishManagedMessageAudits } from "../../src/audit-notification-publication.js";
+import type { ManagedMessageDiscord } from "../../src/messages/managed-message-discord.js";
+import { createManagedMessageStore } from "../../src/messages/managed-message-persistence.js";
+import { createManagedMessageService } from "../../src/messages/managed-message.js";
+import { publishManagedMessageAudits } from "../../src/audit/audit-notification-publication.js";
 
 const input = {
   guildId: "guild",

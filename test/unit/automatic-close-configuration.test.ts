@@ -6,9 +6,9 @@ import {
   createAutomaticCloseConfigurationService,
   type ActiveThreadSummary,
   type AutoCloseDiscord,
-} from "../../src/automatic-close-configuration.js";
-import type { AutomaticClosePersistenceStore } from "../../src/automatic-close-persistence.js";
-import type { GuildSettings, GuildSettingsStore } from "../../src/guild-settings.js";
+} from "../../src/threads/automatic-close-configuration.js";
+import type { AutomaticClosePersistenceStore } from "../../src/threads/automatic-close-persistence.js";
+import type { GuildSettings, GuildSettingsStore } from "../../src/guild/guild-settings.js";
 
 const guildId = "guild-id";
 const parentChannelId = "parent-id";

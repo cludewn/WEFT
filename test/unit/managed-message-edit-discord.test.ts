@@ -9,10 +9,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { Client, Embed, Message } from "discord.js";
 
-import { createManagedMessageDiscord } from "../../src/managed-message-discord.js";
-import type { ManagedMessagePayload } from "../../src/managed-message-payload.js";
-import type { ManagedMessageStore } from "../../src/managed-message-persistence.js";
-import { createManagedMessageService } from "../../src/managed-message.js";
+import { createManagedMessageDiscord } from "../../src/messages/managed-message-discord.js";
+import type { ManagedMessagePayload } from "../../src/messages/managed-message-payload.js";
+import type { ManagedMessageStore } from "../../src/messages/managed-message-persistence.js";
+import { createManagedMessageService } from "../../src/messages/managed-message.js";
 
 const input = {
   guildId: "700000000000000001",

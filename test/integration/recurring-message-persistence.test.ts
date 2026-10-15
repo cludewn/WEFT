@@ -13,10 +13,10 @@ import {
   type RecurringMessageStore,
   type RecurringMutationResult,
   type RecurrenceEditResult,
-} from "../../src/recurring-message-persistence.js";
-import { ALL_WEEKDAYS_MASK, findNextOccurrence } from "../../src/recurring-message.js";
-import type { ScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
-import { createScheduledMessageExecutor } from "../../src/scheduled-message-execution.js";
+} from "../../src/messages/recurring-message-persistence.js";
+import { ALL_WEEKDAYS_MASK, findNextOccurrence } from "../../src/messages/recurring-message.js";
+import type { ScheduledMessageDiscord } from "../../src/messages/scheduled-message-discord.js";
+import { createScheduledMessageExecutor } from "../../src/messages/scheduled-message-execution.js";
 import {
   createScheduledActionStore,
   scheduledActions,
@@ -25,7 +25,7 @@ import {
   createScheduledMessageStore,
   scheduledMessageAudits,
   scheduledMessageStates,
-} from "../../src/scheduled-message-persistence.js";
+} from "../../src/messages/scheduled-message-persistence.js";
 
 const database = createDatabase(loadTestDatabaseConfig());
 const recurring = createRecurringMessageStore(database.client);

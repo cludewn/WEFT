@@ -8,11 +8,14 @@ import {
 } from "discord.js";
 import type { Client } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
-import { createManagedMessageDiscord } from "../../src/managed-message-discord.js";
-import { createManagedMessageService } from "../../src/managed-message.js";
-import type { ManagedMessage, ManagedMessageStore } from "../../src/managed-message-persistence.js";
-import { classifyManagedMessageExecution } from "../../src/managed-message-execution-evidence.js";
-import type { ManagedMessageExecutionRecorder } from "../../src/managed-message-execution-audit.js";
+import { createManagedMessageDiscord } from "../../src/messages/managed-message-discord.js";
+import { createManagedMessageService } from "../../src/messages/managed-message.js";
+import type {
+  ManagedMessage,
+  ManagedMessageStore,
+} from "../../src/messages/managed-message-persistence.js";
+import { classifyManagedMessageExecution } from "../../src/messages/managed-message-execution-evidence.js";
+import type { ManagedMessageExecutionRecorder } from "../../src/messages/managed-message-execution-audit.js";
 
 const guildId = "111111111111111111",
   channelId = "222222222222222222",

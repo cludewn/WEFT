@@ -1,14 +1,17 @@
-import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import { guildConfigurationAudits } from "../../src/guild/guild-configuration-audit.js";
 import { createGuildSettingsStore } from "./configuration-fixture.js";
 import { eq, inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import type { Logger } from "pino";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { guildSettings } from "../../src/guild-settings.js";
+import { guildSettings } from "../../src/guild/guild-settings.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
-import { managedMessageAudits, managedMessages } from "../../src/managed-message-persistence.js";
+import {
+  managedMessageAudits,
+  managedMessages,
+} from "../../src/messages/managed-message-persistence.js";
 import { createPgBossRuntime } from "../../src/pg-boss.js";
 import {
   createScheduledActionStore,
@@ -17,24 +20,24 @@ import {
 import type {
   ScheduledMessageCreationDiscord,
   ScheduledMessageDiscord,
-} from "../../src/scheduled-message-discord.js";
-import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
-import { createScheduledMessageExecutor } from "../../src/scheduled-message-execution.js";
+} from "../../src/messages/scheduled-message-discord.js";
+import { createScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
+import { createScheduledMessageExecutor } from "../../src/messages/scheduled-message-execution.js";
 import {
   createScheduledMessageStore,
   scheduledMessageAudits,
   scheduledMessageStates,
   type ScheduledMessageStore,
-} from "../../src/scheduled-message-persistence.js";
+} from "../../src/messages/scheduled-message-persistence.js";
 import {
   createScheduledMessageRuntimeReconciler,
   createScheduledMessageStartupReconciler,
-} from "../../src/scheduled-message-reconciler.js";
+} from "../../src/messages/scheduled-message-reconciler.js";
 import {
   createScheduledMessageWorkerController,
   SCHEDULED_MESSAGE_QUEUE,
   type ScheduledMessageWorkerController,
-} from "../../src/scheduled-message-worker.js";
+} from "../../src/messages/scheduled-message-worker.js";
 
 const guildId = "scheduled-message-worker-guild";
 const config = loadTestDatabaseConfig();

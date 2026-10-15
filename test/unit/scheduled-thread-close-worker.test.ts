@@ -6,12 +6,12 @@ import type { ScheduledAction } from "../../src/scheduled-action-persistence.js"
 import type {
   ScheduledThreadCloseExecutionResult,
   ScheduledThreadCloseExecutor,
-} from "../../src/scheduled-thread-close.js";
+} from "../../src/threads/scheduled-thread-close.js";
 import {
   createScheduledThreadCloseWorkerController,
   SCHEDULED_THREAD_CLOSE_QUEUE,
   ScheduledThreadCloseDeliveryRetryError,
-} from "../../src/scheduled-thread-close-worker.js";
+} from "../../src/threads/scheduled-thread-close-worker.js";
 
 type WorkerHandler = (jobs: JobWithMetadata<unknown>[]) => Promise<unknown>;
 
