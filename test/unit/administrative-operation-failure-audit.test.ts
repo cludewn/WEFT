@@ -1,4 +1,4 @@
-import { createAuditNotificationDispatcher } from "../../src/audit-notification-dispatcher.js";
+import { createAuditNotificationDispatcher } from "../../src/audit/audit-notification-dispatcher.js";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { DatabaseClient } from "../../src/database.js";
@@ -7,9 +7,9 @@ import {
   exactAdministrativeFailureAudit,
   type AdministrativeFailureAudit,
   type AdministrativeFailureDescriptor,
-} from "../../src/administrative-operation-failure-audit.js";
-import { createAuditNotificationProjection } from "../../src/audit-notification-projection.js";
-import { formatAuditNotification } from "../../src/audit-notification-format.js";
+} from "../../src/audit/administrative-operation-failure-audit.js";
+import { createAuditNotificationProjection } from "../../src/audit/audit-notification-projection.js";
+import { formatAuditNotification } from "../../src/audit/audit-notification-format.js";
 
 const descriptor: AdministrativeFailureDescriptor = {
   operationCode: "AUDIT_DESTINATION_SET",

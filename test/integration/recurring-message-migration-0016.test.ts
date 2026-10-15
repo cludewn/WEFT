@@ -11,7 +11,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
-import { recurringMessageSchedules } from "../../src/recurring-message-persistence.js";
+import { recurringMessageSchedules } from "../../src/messages/recurring-message-persistence.js";
 import { scheduledActions } from "../../src/scheduled-action-persistence.js";
 
 type MigrationJournal = {

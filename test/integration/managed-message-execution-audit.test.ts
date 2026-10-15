@@ -7,27 +7,27 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { bindAdministrativePool } from "../../src/administrative-transaction.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
-import type { ManagedMessageDiscord } from "../../src/managed-message-discord.js";
+import type { ManagedMessageDiscord } from "../../src/messages/managed-message-discord.js";
 import {
   createManagedMessageStore,
   managedMessages,
   managedMessageAudits,
   type ManagedMessageSuccessCandidate,
   type ManagedMessageStore,
-} from "../../src/managed-message-persistence.js";
-import { createManagedMessageService } from "../../src/managed-message.js";
+} from "../../src/messages/managed-message-persistence.js";
+import { createManagedMessageService } from "../../src/messages/managed-message.js";
 import {
   createManagedMessageExecutionRecorder,
   managedMessageExecutionFailureAudits as audits,
   type ManagedMessageExecutionAudit,
-} from "../../src/managed-message-execution-audit.js";
+} from "../../src/messages/managed-message-execution-audit.js";
 import {
   newManagedMessageExecutionAttempt,
   type ManagedMessageExecutionAttempt,
-} from "../../src/managed-message-execution-evidence.js";
-import { createAuditNotificationProjection } from "../../src/audit-notification-projection.js";
-import { formatAuditNotification } from "../../src/audit-notification-format.js";
-import { createAuditRetentionStore } from "../../src/audit-retention-persistence.js";
+} from "../../src/messages/managed-message-execution-evidence.js";
+import { createAuditNotificationProjection } from "../../src/audit/audit-notification-projection.js";
+import { formatAuditNotification } from "../../src/audit/audit-notification-format.js";
+import { createAuditRetentionStore } from "../../src/audit/audit-retention-persistence.js";
 
 // Maintainer-only: actual PostgreSQL commands, public API injection, independent observation.
 const config = loadTestDatabaseConfig();

@@ -11,8 +11,8 @@ import {
   auditLogDestinationAudits,
   createAuditLogDestinationStore,
   type DestinationChangeInput,
-} from "../../src/audit-log-destination-persistence.js";
-import { guildSettings } from "../../src/guild-settings.js";
+} from "../../src/audit/audit-log-destination-persistence.js";
+import { guildSettings } from "../../src/guild/guild-settings.js";
 
 const database = createDatabase(loadTestDatabaseConfig());
 const store = createAuditLogDestinationStore(database.client);

@@ -10,7 +10,7 @@ import {
   managedThreads,
   ThreadAuditConflictError,
   threadAudits,
-} from "../../src/thread-persistence.js";
+} from "../../src/threads/thread-persistence.js";
 
 const guildId = "700000000000000001";
 const threadIds = ["800000000000000001", "800000000000000002"] as const;

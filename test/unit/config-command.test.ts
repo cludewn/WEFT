@@ -1,25 +1,25 @@
-import { createLinkPreviewConfiguration } from "../../src/link-preview-configuration.js";
+import { createLinkPreviewConfiguration } from "../../src/link-previews/link-preview-configuration.js";
 import { ChannelType, InteractionContextType, MessageFlags, PermissionFlagsBits } from "discord.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
-import type { AuditLogDestinationService } from "../../src/audit-log-destination.js";
+import type { AuditLogDestinationService } from "../../src/audit/audit-log-destination.js";
 
-import type { AutomaticCloseConfigurationService } from "../../src/automatic-close-configuration.js";
+import type { AutomaticCloseConfigurationService } from "../../src/threads/automatic-close-configuration.js";
 import {
   AUTO_CLOSE_PARENT_DISPLAY_LIMIT,
   configCommandDefinition,
   handleConfigCommand,
-} from "../../src/config-command.js";
+} from "../../src/guild/config-command.js";
 import {
   DEFAULT_AUTO_CLOSE_INACTIVITY_SECONDS,
   DEFAULT_CLOSED_PREFIX,
   DEFAULT_GUILD_TIMEZONE,
   InvalidClosedPrefixError,
   InvalidTimezoneError,
-} from "../../src/guild-settings.js";
-import type { GuildSettings, GuildSettingsStore } from "../../src/guild-settings.js";
-import { createGuildSettingsStore, validateTimezone } from "../../src/guild-settings.js";
+} from "../../src/guild/guild-settings.js";
+import type { GuildSettings, GuildSettingsStore } from "../../src/guild/guild-settings.js";
+import { createGuildSettingsStore, validateTimezone } from "../../src/guild/guild-settings.js";
 import type { DatabaseClient } from "../../src/database.js";
 
 const defaultSettings: GuildSettings = {

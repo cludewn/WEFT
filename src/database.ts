@@ -1,28 +1,31 @@
-import { managedMessageExecutionFailureAudits } from "./managed-message-execution-audit.js";
+import { managedMessageExecutionFailureAudits } from "./messages/managed-message-execution-audit.js";
 import { bindAdministrativePool } from "./administrative-transaction.js";
-import { administrativeOperationFailureAudits } from "./administrative-operation-failure-audit.js";
+import { administrativeOperationFailureAudits } from "./audit/administrative-operation-failure-audit.js";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
-import { auditLogDestinationAudits } from "./audit-log-destination-persistence.js";
+import { auditLogDestinationAudits } from "./audit/audit-log-destination-persistence.js";
 import {
   autoCloseParentChannels,
   autoCloseThreadActivity,
   autoCloseThreadExclusions,
-} from "./automatic-close-persistence.js";
+} from "./threads/automatic-close-persistence.js";
 import type { DatabaseConfig } from "./config.js";
-import { guildConfigurationAudits } from "./guild-configuration-audit.js";
-import { guildSettings } from "./guild-settings.js";
-import { managedMessageAudits, managedMessages } from "./managed-message-persistence.js";
+import { guildConfigurationAudits } from "./guild/guild-configuration-audit.js";
+import { guildSettings } from "./guild/guild-settings.js";
+import { managedMessageAudits, managedMessages } from "./messages/managed-message-persistence.js";
 import {
   recurringMessageAudits,
   recurringMessageOccurrences,
   recurringMessageSchedules,
-} from "./recurring-message-persistence.js";
+} from "./messages/recurring-message-persistence.js";
 import { scheduledActions } from "./scheduled-action-persistence.js";
-import { scheduledMessageAudits, scheduledMessageStates } from "./scheduled-message-persistence.js";
-import { scheduledThreadCloseAudits } from "./scheduled-thread-close-persistence.js";
-import { managedThreads, threadAudits } from "./thread-persistence.js";
+import {
+  scheduledMessageAudits,
+  scheduledMessageStates,
+} from "./messages/scheduled-message-persistence.js";
+import { scheduledThreadCloseAudits } from "./threads/scheduled-thread-close-persistence.js";
+import { managedThreads, threadAudits } from "./threads/thread-persistence.js";
 
 export function createDatabase(config: DatabaseConfig) {
   const pool = new Pool({

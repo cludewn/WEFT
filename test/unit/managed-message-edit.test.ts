@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { ManagedMessageDiscord } from "../../src/managed-message-discord.js";
-import type { ManagedMessage, ManagedMessageStore } from "../../src/managed-message-persistence.js";
-import { createManagedMessageService } from "../../src/managed-message.js";
+import type { ManagedMessageDiscord } from "../../src/messages/managed-message-discord.js";
+import type {
+  ManagedMessage,
+  ManagedMessageStore,
+} from "../../src/messages/managed-message-persistence.js";
+import { createManagedMessageService } from "../../src/messages/managed-message.js";
 
 const editedAt = new Date("2026-08-31T08:09:10.000Z");
 const baseInput = {

@@ -7,9 +7,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AUDIT_RETENTION_SOURCES,
   createAuditRetentionStore,
-} from "../../src/audit-retention-persistence.js";
+} from "../../src/audit/audit-retention-persistence.js";
 import type { DatabaseClient } from "../../src/database.js";
-import { administrativeOperationFailureAudits } from "../../src/administrative-operation-failure-audit.js";
+import { administrativeOperationFailureAudits } from "../../src/audit/administrative-operation-failure-audit.js";
 
 const cutoff = new Date("2030-04-01T00:00:00.000Z");
 

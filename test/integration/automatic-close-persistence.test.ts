@@ -1,4 +1,4 @@
-import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import { guildConfigurationAudits } from "../../src/guild/guild-configuration-audit.js";
 import {
   createGuildSettingsStore,
   createAutomaticClosePersistenceStore,
@@ -11,7 +11,7 @@ import {
   autoCloseParentChannels,
   autoCloseThreadActivity,
   autoCloseThreadExclusions,
-} from "../../src/automatic-close-persistence.js";
+} from "../../src/threads/automatic-close-persistence.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
 import {
@@ -20,7 +20,7 @@ import {
   InvalidAutoCloseInactivityError,
   MAXIMUM_AUTO_CLOSE_INACTIVITY_SECONDS,
   MINIMUM_AUTO_CLOSE_INACTIVITY_SECONDS,
-} from "../../src/guild-settings.js";
+} from "../../src/guild/guild-settings.js";
 
 const guildIds = ["auto-close-guild-one", "auto-close-guild-two"] as const;
 const threadIds = ["auto-close-thread-one", "auto-close-thread-two"] as const;

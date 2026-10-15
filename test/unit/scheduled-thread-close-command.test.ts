@@ -6,13 +6,13 @@ import {
   createScheduledThreadCloseCommandService,
   InvalidScheduledThreadCloseDurationError,
   parseScheduledThreadCloseDuration,
-} from "../../src/scheduled-thread-close-command.js";
+} from "../../src/threads/scheduled-thread-close-command.js";
 import type {
   CancelScheduledThreadCloseResult,
   CreateOrReplaceScheduledThreadCloseResult,
   ScheduledThreadCloseStore,
-} from "../../src/scheduled-thread-close-persistence.js";
-import type { ScheduledThreadCloseWorkerController } from "../../src/scheduled-thread-close-worker.js";
+} from "../../src/threads/scheduled-thread-close-persistence.js";
+import type { ScheduledThreadCloseWorkerController } from "../../src/threads/scheduled-thread-close-worker.js";
 import type {
   BulkThreadCloseHooks,
   SupportedThreadType,
@@ -20,7 +20,7 @@ import type {
   ThreadLifecycleResult,
   ThreadLifecycleService,
   ThreadSnapshot,
-} from "../../src/thread-lifecycle.js";
+} from "../../src/threads/thread-lifecycle.js";
 
 const NOW = new Date("2030-01-01T00:00:00.000Z");
 

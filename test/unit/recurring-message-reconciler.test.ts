@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createRecurringMessageReconciler } from "../../src/recurring-message-reconciler.js";
-import type { RecurringRuntimeDefinition } from "../../src/recurring-message-runtime-persistence.js";
+import { createRecurringMessageReconciler } from "../../src/messages/recurring-message-reconciler.js";
+import type { RecurringRuntimeDefinition } from "../../src/messages/recurring-message-runtime-persistence.js";
 
 function fixture() {
   const executing = {

@@ -1,22 +1,25 @@
-import { createManagedMessageExecutionRecorder } from "./managed-message-execution-audit.js";
-import { createAdministrativeFailureRecorder } from "./administrative-operation-failure-audit.js";
-import { createGuildConfigurationService } from "./guild-configuration.js";
+import { createManagedMessageExecutionRecorder } from "./messages/managed-message-execution-audit.js";
+import { createAdministrativeFailureRecorder } from "./audit/administrative-operation-failure-audit.js";
+import { createGuildConfigurationService } from "./guild/guild-configuration.js";
 import pino from "pino";
 
-import { createBulkCloseService } from "./bulk-thread-close.js";
-import { createBulkCloseDiscord } from "./bulk-thread-close-discord.js";
+import { createBulkCloseService } from "./threads/bulk-thread-close.js";
+import { createBulkCloseDiscord } from "./threads/bulk-thread-close-discord.js";
 
-import { createLinkPreviewConfiguration } from "./link-preview-configuration.js";
-import { createLinkPreviewStore } from "./link-preview-persistence.js";
-import { createLinkPreviewService } from "./link-preview.js";
-import { createLinkPreviewDiscord, registerLinkPreviewHandlers } from "./link-preview-discord.js";
+import { createLinkPreviewConfiguration } from "./link-previews/link-preview-configuration.js";
+import { createLinkPreviewStore } from "./link-previews/link-preview-persistence.js";
+import { createLinkPreviewService } from "./link-previews/link-preview.js";
+import {
+  createLinkPreviewDiscord,
+  registerLinkPreviewHandlers,
+} from "./link-previews/link-preview-discord.js";
 
-import { createAuditLogDestinationDiscord } from "./audit-log-destination-discord.js";
-import { createAuditLogDestinationStore } from "./audit-log-destination-persistence.js";
-import { createAuditLogDestinationService } from "./audit-log-destination.js";
-import { createAuditNotificationDiscord } from "./audit-notification-discord.js";
-import { createAuditNotificationDispatcher } from "./audit-notification-dispatcher.js";
-import { createAuditNotificationProjection } from "./audit-notification-projection.js";
+import { createAuditLogDestinationDiscord } from "./audit/audit-log-destination-discord.js";
+import { createAuditLogDestinationStore } from "./audit/audit-log-destination-persistence.js";
+import { createAuditLogDestinationService } from "./audit/audit-log-destination.js";
+import { createAuditNotificationDiscord } from "./audit/audit-notification-discord.js";
+import { createAuditNotificationDispatcher } from "./audit/audit-notification-dispatcher.js";
+import { createAuditNotificationProjection } from "./audit/audit-notification-projection.js";
 import {
   publishAuditDestinationChanges,
   publishLinkPreviewChanges,
@@ -24,17 +27,17 @@ import {
   publishRecurringMessageAudits,
   publishScheduledMessageAudits,
   publishScheduledThreadCloseAudits,
-} from "./audit-notification-publication.js";
-import { createAuditRetentionStore } from "./audit-retention-persistence.js";
-import { createAuditRetentionRuntime } from "./audit-retention-runtime.js";
+} from "./audit/audit-notification-publication.js";
+import { createAuditRetentionStore } from "./audit/audit-retention-persistence.js";
+import { createAuditRetentionRuntime } from "./audit/audit-retention-runtime.js";
 import { createApplicationRuntime, type ProcessControl } from "./application-runtime.js";
-import { createAutomaticCloseActivityService } from "./automatic-close-activity.js";
-import { createAutomaticCloseConfigurationService } from "./automatic-close-configuration.js";
-import { createAutomaticCloseExecutor } from "./automatic-close-execution.js";
-import { createAutomaticClosePersistenceStore } from "./automatic-close-persistence.js";
-import { createAutomaticCloseBaselineReconciler } from "./automatic-close-reconciler.js";
-import { createAutomaticCloseRuntime } from "./automatic-close-runtime.js";
-import { createAutomaticCloseThreadMaintenanceService } from "./automatic-close-thread-maintenance.js";
+import { createAutomaticCloseActivityService } from "./threads/automatic-close-activity.js";
+import { createAutomaticCloseConfigurationService } from "./threads/automatic-close-configuration.js";
+import { createAutomaticCloseExecutor } from "./threads/automatic-close-execution.js";
+import { createAutomaticClosePersistenceStore } from "./threads/automatic-close-persistence.js";
+import { createAutomaticCloseBaselineReconciler } from "./threads/automatic-close-reconciler.js";
+import { createAutomaticCloseRuntime } from "./threads/automatic-close-runtime.js";
+import { createAutomaticCloseThreadMaintenanceService } from "./threads/automatic-close-thread-maintenance.js";
 import { ConfigurationError, loadConfig } from "./config.js";
 import { createDatabase } from "./database.js";
 import {
@@ -45,43 +48,43 @@ import {
   registerThreadLifecycleEventHandler,
   startDiscordClient,
 } from "./discord.js";
-import { createGuildSettingsStore } from "./guild-settings.js";
+import { createGuildSettingsStore } from "./guild/guild-settings.js";
 import { createHealthListener } from "./health.js";
-import { createManagedMessageDiscord } from "./managed-message-discord.js";
-import { createManagedMessageStore } from "./managed-message-persistence.js";
-import { createManagedMessageService } from "./managed-message.js";
+import { createManagedMessageDiscord } from "./messages/managed-message-discord.js";
+import { createManagedMessageStore } from "./messages/managed-message-persistence.js";
+import { createManagedMessageService } from "./messages/managed-message.js";
 import { createPgBossRuntime } from "./pg-boss.js";
 import { installProcessHandlers } from "./process-handlers.js";
-import { createRecurringMessageExecutor } from "./recurring-message-execution.js";
-import { createRecurringMessageStore } from "./recurring-message-persistence.js";
-import { createRecurringMessageReconciler } from "./recurring-message-reconciler.js";
-import { createRecurringRuntimeStore } from "./recurring-message-runtime-persistence.js";
-import { createRecurringMessageWorker } from "./recurring-message-worker.js";
+import { createRecurringMessageExecutor } from "./messages/recurring-message-execution.js";
+import { createRecurringMessageStore } from "./messages/recurring-message-persistence.js";
+import { createRecurringMessageReconciler } from "./messages/recurring-message-reconciler.js";
+import { createRecurringRuntimeStore } from "./messages/recurring-message-runtime-persistence.js";
+import { createRecurringMessageWorker } from "./messages/recurring-message-worker.js";
 import { createScheduledActionStore } from "./scheduled-action-persistence.js";
-import { createScheduledMessageDiscord } from "./scheduled-message-discord.js";
-import { createScheduledMessageCommandService } from "./scheduled-message-command.js";
-import { createScheduledMessageAdministrationStore } from "./scheduled-message-administration-persistence.js";
-import { createScheduledMessageExecutor } from "./scheduled-message-execution.js";
-import { createScheduledMessageStore } from "./scheduled-message-persistence.js";
+import { createScheduledMessageDiscord } from "./messages/scheduled-message-discord.js";
+import { createScheduledMessageCommandService } from "./messages/scheduled-message-command.js";
+import { createScheduledMessageAdministrationStore } from "./messages/scheduled-message-administration-persistence.js";
+import { createScheduledMessageExecutor } from "./messages/scheduled-message-execution.js";
+import { createScheduledMessageStore } from "./messages/scheduled-message-persistence.js";
 import {
   createScheduledMessageRuntimeReconciler,
   createScheduledMessageStartupReconciler,
-} from "./scheduled-message-reconciler.js";
-import { createScheduledMessageWorkerController } from "./scheduled-message-worker.js";
-import { createScheduledThreadCloseCommandService } from "./scheduled-thread-close-command.js";
-import { createScheduledThreadCloseStore } from "./scheduled-thread-close-persistence.js";
-import { createScheduledThreadCloseExecutor } from "./scheduled-thread-close.js";
+} from "./messages/scheduled-message-reconciler.js";
+import { createScheduledMessageWorkerController } from "./messages/scheduled-message-worker.js";
+import { createScheduledThreadCloseCommandService } from "./threads/scheduled-thread-close-command.js";
+import { createScheduledThreadCloseStore } from "./threads/scheduled-thread-close-persistence.js";
+import { createScheduledThreadCloseExecutor } from "./threads/scheduled-thread-close.js";
 import {
   createScheduledThreadCloseRuntimeReconciler,
   createScheduledThreadCloseStartupReconciler,
-} from "./scheduled-thread-close-reconciler.js";
-import { createScheduledThreadCloseWorkerController } from "./scheduled-thread-close-worker.js";
+} from "./threads/scheduled-thread-close-reconciler.js";
+import { createScheduledThreadCloseWorkerController } from "./threads/scheduled-thread-close-worker.js";
 import {
   createAutoCloseDiscord,
   createAutomaticCloseExecutionDiscord,
   createAutomaticCloseThreadMaintenanceDiscord,
-} from "./thread-discord.js";
-import { createManagedThreadStore, createThreadAuditStore } from "./thread-persistence.js";
+} from "./threads/thread-discord.js";
+import { createManagedThreadStore, createThreadAuditStore } from "./threads/thread-persistence.js";
 
 async function main(): Promise<void> {
   let config;

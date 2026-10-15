@@ -3,15 +3,15 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ChatInputCommandInteraction } from "discord.js";
 
-import type { AutomaticCloseThreadMaintenanceService } from "../../src/automatic-close-thread-maintenance.js";
+import type { AutomaticCloseThreadMaintenanceService } from "../../src/threads/automatic-close-thread-maintenance.js";
 import { OperationTimeoutError } from "../../src/operation-timeout.js";
-import type { ScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
+import type { ScheduledThreadCloseCommandService } from "../../src/threads/scheduled-thread-close-command.js";
 import {
   DEFAULT_INTERACTION_IO_TIMEOUT_MS,
   handleThreadCommand as handleThreadCommandWithDependencies,
   threadCommandDefinition,
-} from "../../src/thread-command.js";
-import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
+} from "../../src/threads/thread-command.js";
+import type { ThreadLifecycleService } from "../../src/threads/thread-lifecycle.js";
 
 const logger = { debug: vi.fn(), warn: vi.fn() };
 

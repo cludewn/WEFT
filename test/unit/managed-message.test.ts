@@ -2,13 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import { EmbedType } from "discord.js";
 import type { Message } from "discord.js";
 
-import type { ManagedMessageDiscord } from "../../src/managed-message-discord.js";
-import { projectManagedMessagePayload } from "../../src/managed-message-discord.js";
-import type { ManagedMessageStore } from "../../src/managed-message-persistence.js";
+import type { ManagedMessageDiscord } from "../../src/messages/managed-message-discord.js";
+import { projectManagedMessagePayload } from "../../src/messages/managed-message-discord.js";
+import type { ManagedMessageStore } from "../../src/messages/managed-message-persistence.js";
 import {
   createManagedMessageService,
   generateManagedMessageNonce,
-} from "../../src/managed-message.js";
+} from "../../src/messages/managed-message.js";
 
 describe("managed message operation identifiers", () => {
   it("generates a 22-character base64url nonce", () => {

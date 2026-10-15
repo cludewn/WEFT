@@ -2,23 +2,26 @@ import { and, eq, sql } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { AuditNotificationPublisher } from "../../src/audit-notification-dispatcher.js";
+import type { AuditNotificationPublisher } from "../../src/audit/audit-notification-dispatcher.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase, type DatabaseClient } from "../../src/database.js";
-import { managedMessageAudits, managedMessages } from "../../src/managed-message-persistence.js";
+import {
+  managedMessageAudits,
+  managedMessages,
+} from "../../src/messages/managed-message-persistence.js";
 import {
   createRecurringMessageStore,
   recurringMessageAudits,
   recurringMessageOccurrences,
   recurringMessageSchedules,
-} from "../../src/recurring-message-persistence.js";
-import { createRecurringRuntimeStore } from "../../src/recurring-message-runtime-persistence.js";
-import { ALL_WEEKDAYS_MASK } from "../../src/recurring-message.js";
+} from "../../src/messages/recurring-message-persistence.js";
+import { createRecurringRuntimeStore } from "../../src/messages/recurring-message-runtime-persistence.js";
+import { ALL_WEEKDAYS_MASK } from "../../src/messages/recurring-message.js";
 import { scheduledActions } from "../../src/scheduled-action-persistence.js";
 import {
   scheduledMessageAudits,
   scheduledMessageStates,
-} from "../../src/scheduled-message-persistence.js";
+} from "../../src/messages/scheduled-message-persistence.js";
 
 const config = loadTestDatabaseConfig();
 const first = createDatabase(config);

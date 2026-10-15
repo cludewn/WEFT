@@ -3,7 +3,7 @@ import { Events, ChannelType, PermissionFlagsBits as P } from "discord.js";
 import {
   BULK_PREPARATION_FAILURE,
   BULK_PREPARATION_MS,
-} from "../../src/bulk-thread-close-command.js";
+} from "../../src/threads/bulk-thread-close-command.js";
 import { registerDiscordCommandHandler } from "../../src/discord.js";
 import type { CommandDependencies } from "../../src/commands.js";
 import { ComponentType } from "discord.js";
@@ -12,19 +12,19 @@ import type { Client } from "discord.js";
 import {
   createLinkPreviewDiscord,
   registerLinkPreviewHandlers,
-} from "../../src/link-preview-discord.js";
-import { createLinkPreviewService } from "../../src/link-preview.js";
-import type { LinkPreviewBoundary } from "../../src/link-preview.js";
+} from "../../src/link-previews/link-preview-discord.js";
+import { createLinkPreviewService } from "../../src/link-previews/link-preview.js";
+import type { LinkPreviewBoundary } from "../../src/link-previews/link-preview.js";
 import type { Logger } from "pino";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createBulkCloseService } from "../../src/bulk-thread-close.js";
-import type { BulkThreadCloseHooks } from "../../src/thread-lifecycle.js";
-import type { AuditRetentionStore } from "../../src/audit-retention-persistence.js";
-import { createAuditRetentionRuntime } from "../../src/audit-retention-runtime.js";
-import { createManagedMessageService } from "../../src/managed-message.js";
-import type { ManagedMessageDiscord } from "../../src/managed-message-discord.js";
-import { createManagedMessageStore } from "../../src/managed-message-persistence.js";
+import { createBulkCloseService } from "../../src/threads/bulk-thread-close.js";
+import type { BulkThreadCloseHooks } from "../../src/threads/thread-lifecycle.js";
+import type { AuditRetentionStore } from "../../src/audit/audit-retention-persistence.js";
+import { createAuditRetentionRuntime } from "../../src/audit/audit-retention-runtime.js";
+import { createManagedMessageService } from "../../src/messages/managed-message.js";
+import type { ManagedMessageDiscord } from "../../src/messages/managed-message-discord.js";
+import { createManagedMessageStore } from "../../src/messages/managed-message-persistence.js";
 import type { DatabaseClient } from "../../src/database.js";
 
 import {

@@ -45,7 +45,28 @@ The implementation is expected to include responsibilities for:
 - job execution,
 - structured logging.
 
-The exact directory structure is not fixed in advance.
+The production source layout groups related modules by feature (Issue #110):
+
+| Directory            | Files | Responsibility                                                        |
+| -------------------- | ----: | --------------------------------------------------------------------- |
+| `src/threads/`       |    19 | Thread lifecycle, automatic close, scheduled close, and bulk close    |
+| `src/messages/`      |    22 | Managed, scheduled, and recurring messages                            |
+| `src/guild/`         |     4 | Guild configuration and associated auditing                           |
+| `src/link-previews/` |     5 | Message-link preview configuration and execution                      |
+| `src/audit/`         |    11 | Cross-feature failure auditing, notifications, and retention          |
+| `src/`               |    18 | Entrypoints, shared persistence boundaries, and process-level runtime |
+
+All 79 production modules retain their basenames and responsibilities. Feature directories do not
+introduce application/domain/infrastructure layers, barrel exports, import aliases, or compatibility
+re-exports. Existing value and type-only dependencies, including circular dependencies, are preserved.
+
+`src/index.ts`, `src/migrate.ts`, and `src/deploy-commands.ts` remain at the source root and compile to
+`dist/index.js`, `dist/migrate.js`, and `dist/deploy-commands.js`. Shared persistence boundaries such
+as `src/database.ts`, `src/administrative-transaction.ts`, and `src/scheduled-action-persistence.ts`
+also remain at the root. Drizzle Kit references schema modules at their feature paths; runtime schema
+registration and the committed `drizzle/` migration history retain their existing contracts.
+
+Tests and helpers retain the existing `test/unit/` and `test/integration/` organization.
 
 When introducing or changing the structure:
 
@@ -1558,7 +1579,7 @@ Phase 7B adds no `MessageDelete` listener, `MessageContent` intent, scheduled-me
 distributed lock, embed authoring, or generic audit/modal framework.
 
 Phase 7C adds one canonical `ManagedMessagePayload` representation in
-`managed-message-payload.ts`: exact plain content plus either one normalized supported embed or no
+`src/messages/managed-message-payload.ts`: exact plain content plus either one normalized supported embed or no
 embed. The shared send/edit validator preserves accepted plain content, counts it by Unicode code
 point, outer-trims embed text, applies builder-compatible UTF-16 limits, normalizes exact six-digit
 hex colors, and performs syntax-only WHATWG normalization of absolute HTTP/HTTPS image URLs. Empty
@@ -1725,7 +1746,7 @@ One-time list, edit, and reschedule commands are implemented.
 
 #### Absolute one-time message scheduling (Issue #91)
 
-`one-time-message-schedule.ts` owns the shared `AFTER`/`AT` selector, strict parser, bounded errors
+`src/messages/one-time-message-schedule.ts` owns the shared `AFTER`/`AT` selector, strict parser, bounded errors
 and canonical normalization. `/message schedule create [after:<duration>] [at:<local-datetime>]`
 and `reschedule id:<id> [after:<duration>] [at:<local-datetime>]` define both selectors as optional,
 with required `id` first. The handler enforces XOR by option presence, validates syntax/calendar
@@ -1964,9 +1985,9 @@ Audit deletion leaves authoritative schedule, managed-resource, and configuratio
 
 ## Message-link preview implementation
 
-`link-preview.ts` contains link/ID grammar, bounded pure rendering and application orchestration.
-`link-preview-permissions.ts` validates fresh raw DTOs and computes conservative public proof and
-individual effective permissions. `link-preview-discord.ts` owns raw REST calls and global button
+`src/link-previews/link-preview.ts` contains link/ID grammar, bounded pure rendering and application orchestration.
+`src/link-previews/link-preview-permissions.ts` validates fresh raw DTOs and computes conservative public proof and
+individual effective permissions. `src/link-previews/link-preview-discord.ts` owns raw REST calls and global button
 routing; no collectors, timers, target cache or scheduler are used. Existing automatic-close handlers
 remain separate. Both new handlers enter through `runtime.ingress.run()` and retain their promises
 through all fetches, sends and ephemeral edits under the existing shared 30-second shutdown deadline.
@@ -2063,9 +2084,9 @@ Discord reference contracts: [permissions](https://docs.discord.com/developers/t
 
 ## Confirmed interactive bulk thread closing (Issue #89)
 
-`bulk-thread-close.ts` owns pure optional AND filters, fixed candidate snapshots, mutable selected
-subsets, bounded setup/session Maps and application orchestration. `bulk-thread-close-discord.ts`
-owns fresh raw REST reads; `bulk-thread-close-command.ts` owns interaction acknowledgement, strict
+`src/threads/bulk-thread-close.ts` owns pure optional AND filters, fixed candidate snapshots, mutable selected
+subsets, bounded setup/session Maps and application orchestration. `src/threads/bulk-thread-close-discord.ts`
+owns fresh raw REST reads; `src/threads/bulk-thread-close-command.ts` owns interaction acknowledgement, strict
 `btc:` controls and bounded rendering. Existing `lp:` routing remains separate. `/thread` keeps its
 ManageThreads command default.
 
@@ -2084,7 +2105,7 @@ The active guild route is the REST equivalent of `guild.channels.fetchActiveThre
 guild owner, roles and individual actor/bot members are observed freshly. All parent authorization
 responses must succeed before starting active enumeration; failure never starts enumeration. Reuse
 the repository's permission DTO validators and effective-overwrite calculation from
-`link-preview-permissions.ts`, requiring ViewChannel + ManageThreads rather than link-preview
+`src/link-previews/link-preview-permissions.ts`, requiring ViewChannel + ManageThreads rather than link-preview
 read/send permissions. Public and announcement threads inherit their direct parent's permissions.
 Private and wrong-parent/type identities never leave the bulk Discord boundary. Each bounded
 observation awaits all parallel siblings even if one fails. No freshness authority persists between
@@ -2188,7 +2209,7 @@ logical-settlement and concurrency ownership remains unchanged.
 
 ## Guild configuration and thread policy auditing (Issue #102)
 
-`guild-configuration-audit.ts` owns the focused typed success-audit schema, exact historical evidence
+`src/guild/guild-configuration-audit.ts` owns the focused typed success-audit schema, exact historical evidence
 comparison and automatic-close policy lock key. It is not a generic audit framework. Scalar
 configuration setters receive actor, stable audit ID and occurrence time. Inside one transaction,
 they establish settings, take `SELECT FOR UPDATE`, compare the normalized value, update only the
@@ -2311,7 +2332,7 @@ establish identity without preliminary evidence before the schedule transaction.
 command and modal handlers retain current actor/context checks; failed or unverified authorization
 never gains eligibility merely from the bot-related result name. Bot requirements are unchanged.
 
-`administrative-operation-failure-audit.ts` owns explicit unions, schema, independent INSERT, exact
+`src/audit/administrative-operation-failure-audit.ts` owns explicit unions, schema, independent INSERT, exact
 confirmation and bounded diagnostics. The application owner awaits its recorder after business
 termination and classification. The failure UUID is separate from the attempt UUID; unique
 `operation_id` enforces one row per attempt. RETURNING or a full exact-ID read confirms publication.
@@ -2407,8 +2428,8 @@ and independent final review before commit; Codex does not execute external Post
 
 ## Managed-message execution auditing (Issue #106)
 
-`managed-message-execution-evidence.ts` contains bounded observations and the pure classifier. It
-never accepts business result labels as proof. `managed-message-execution-audit.ts` owns the focused
+`src/messages/managed-message-execution-evidence.ts` contains bounded observations and the pure classifier. It
+never accepts business result labels as proof. `src/messages/managed-message-execution-audit.ts` owns the focused
 schema, independent conditional INSERT, same-ID exact confirmation, deduplication and publication.
 This is not a generic audit framework. No dependency, Gateway intent or Bot permission is added.
 

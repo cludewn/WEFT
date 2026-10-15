@@ -4,15 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AutomaticCloseExecutionResult,
   AutomaticCloseExecutor,
-} from "../../src/automatic-close-execution.js";
+} from "../../src/threads/automatic-close-execution.js";
 import type {
   AutomaticCloseCandidate,
   AutomaticClosePersistenceStore,
-} from "../../src/automatic-close-persistence.js";
+} from "../../src/threads/automatic-close-persistence.js";
 import {
   AUTOMATIC_CLOSE_SWEEP_INTERVAL_MS,
   createAutomaticCloseRuntime,
-} from "../../src/automatic-close-runtime.js";
+} from "../../src/threads/automatic-close-runtime.js";
 
 type CandidateStore = Pick<AutomaticClosePersistenceStore, "findInactiveCandidatesPage">;
 

@@ -2,8 +2,8 @@ import { getTableName } from "drizzle-orm";
 import type { AnyPgTable } from "drizzle-orm/pg-core";
 import { describe, expect, it, vi } from "vitest";
 
-import type { AuditNotificationPublisher } from "../../src/audit-notification-dispatcher.js";
-import type { AuditSource } from "../../src/audit-notification-format.js";
+import type { AuditNotificationPublisher } from "../../src/audit/audit-notification-dispatcher.js";
+import type { AuditSource } from "../../src/audit/audit-notification-format.js";
 import {
   publishAuditDestinationChanges,
   publishExistingAudits,
@@ -11,14 +11,14 @@ import {
   publishRecurringMessageAudits,
   publishScheduledMessageAudits,
   publishScheduledThreadCloseAudits,
-} from "../../src/audit-notification-publication.js";
-import type { AuditLogDestinationStore } from "../../src/audit-log-destination-persistence.js";
+} from "../../src/audit/audit-notification-publication.js";
+import type { AuditLogDestinationStore } from "../../src/audit/audit-log-destination-persistence.js";
 import type { DatabaseClient } from "../../src/database.js";
-import type { ManagedMessageStore } from "../../src/managed-message-persistence.js";
-import type { RecurringMessageStore } from "../../src/recurring-message-persistence.js";
-import type { ScheduledMessageStore } from "../../src/scheduled-message-persistence.js";
-import type { ScheduledThreadCloseStore } from "../../src/scheduled-thread-close-persistence.js";
-import { createThreadAuditStore } from "../../src/thread-persistence.js";
+import type { ManagedMessageStore } from "../../src/messages/managed-message-persistence.js";
+import type { RecurringMessageStore } from "../../src/messages/recurring-message-persistence.js";
+import type { ScheduledMessageStore } from "../../src/messages/scheduled-message-persistence.js";
+import type { ScheduledThreadCloseStore } from "../../src/threads/scheduled-thread-close-persistence.js";
+import { createThreadAuditStore } from "../../src/threads/thread-persistence.js";
 
 function fixture(committed: Record<AuditSource, string[]>) {
   const publish = vi.fn<AuditNotificationPublisher["publish"]>();

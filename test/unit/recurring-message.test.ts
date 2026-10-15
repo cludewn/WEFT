@@ -11,7 +11,7 @@ import {
   selectMissedAndFutureOccurrences,
   validateRecurrence,
   type RecurrenceDefinition,
-} from "../../src/recurring-message.js";
+} from "../../src/messages/recurring-message.js";
 
 const dailyUtc: RecurrenceDefinition = {
   frequency: "DAILY",

@@ -23,13 +23,13 @@ import {
   parseBulkCloseCustomId,
   renderBulkCloseCounts,
   renderBulkClosePage,
-} from "../../src/bulk-thread-close-command.js";
-import type { BulkThreadCloseHooks } from "../../src/thread-lifecycle.js";
-import { createBulkCloseDiscord } from "../../src/bulk-thread-close-discord.js";
-import { DEFAULT_INTERACTION_IO_TIMEOUT_MS } from "../../src/thread-command.js";
-import { createBulkCloseService } from "../../src/bulk-thread-close.js";
-import type { BulkCloseDiscord, BulkCloseThread } from "../../src/bulk-thread-close.js";
-import { threadCommandDefinition } from "../../src/thread-command.js";
+} from "../../src/threads/bulk-thread-close-command.js";
+import type { BulkThreadCloseHooks } from "../../src/threads/thread-lifecycle.js";
+import { createBulkCloseDiscord } from "../../src/threads/bulk-thread-close-discord.js";
+import { DEFAULT_INTERACTION_IO_TIMEOUT_MS } from "../../src/threads/thread-command.js";
+import { createBulkCloseService } from "../../src/threads/bulk-thread-close.js";
+import type { BulkCloseDiscord, BulkCloseThread } from "../../src/threads/bulk-thread-close.js";
+import { threadCommandDefinition } from "../../src/threads/thread-command.js";
 import { commandDefinitions, handleCommand } from "../../src/commands.js";
 import type { CommandDependencies } from "../../src/commands.js";
 import { registerDiscordCommandHandler } from "../../src/discord.js";

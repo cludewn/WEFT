@@ -8,7 +8,7 @@ import {
 import type { Client } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
-import { createScheduledMessageDiscord } from "../../src/scheduled-message-discord.js";
+import { createScheduledMessageDiscord } from "../../src/messages/scheduled-message-discord.js";
 
 function fixture(
   options: {

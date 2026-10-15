@@ -3,7 +3,7 @@ import {
   classifyManagedMessageExecution as classify,
   newManagedMessageExecutionAttempt,
   type ManagedMessageExecutionAttempt,
-} from "../../src/managed-message-execution-evidence.js";
+} from "../../src/messages/managed-message-execution-evidence.js";
 
 const at = new Date("2030-01-01T00:00:00.123Z");
 function attempt(

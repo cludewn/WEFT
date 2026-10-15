@@ -27,8 +27,8 @@ import {
   messageCommandDefinition,
   parseManagedMessageEditModalId,
   parseManagedMessageReference,
-} from "../../src/message-command.js";
-import type { ManagedMessageService } from "../../src/managed-message.js";
+} from "../../src/messages/message-command.js";
+import type { ManagedMessageService } from "../../src/messages/managed-message.js";
 
 describe("message command", () => {
   it("transports compact recurring state without losing omitted versus explicit UTC", () => {

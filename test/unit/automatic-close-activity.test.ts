@@ -1,8 +1,8 @@
 import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
-import { createAutomaticCloseActivityService } from "../../src/automatic-close-activity.js";
-import type { AutomaticClosePersistenceStore } from "../../src/automatic-close-persistence.js";
+import { createAutomaticCloseActivityService } from "../../src/threads/automatic-close-activity.js";
+import type { AutomaticClosePersistenceStore } from "../../src/threads/automatic-close-persistence.js";
 
 const messageEvent = {
   guildId: "guild-id",

@@ -2,9 +2,9 @@ import {
   createAutomaticClosePersistenceStore as createPolicyStore,
   type EnableAutoCloseParentChannel,
   type TrackAutomaticCloseThread,
-} from "../../src/automatic-close-persistence.js";
-import { createGuildSettingsStore as createSettingsStore } from "../../src/guild-settings.js";
-import { createConfigurationAuditContext } from "../../src/guild-configuration-audit.js";
+} from "../../src/threads/automatic-close-persistence.js";
+import { createGuildSettingsStore as createSettingsStore } from "../../src/guild/guild-settings.js";
+import { createConfigurationAuditContext } from "../../src/guild/guild-configuration-audit.js";
 import type { DatabaseClient } from "../../src/database.js";
 
 // Existing scheduling/activity fixtures need the original setup shape. Every mutation still

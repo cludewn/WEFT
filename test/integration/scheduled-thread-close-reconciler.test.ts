@@ -13,17 +13,17 @@ import {
 import {
   createScheduledThreadCloseStore,
   scheduledThreadCloseAudits,
-} from "../../src/scheduled-thread-close-persistence.js";
+} from "../../src/threads/scheduled-thread-close-persistence.js";
 import {
   createScheduledThreadCloseRuntimeReconciler,
   createScheduledThreadCloseStartupReconciler,
-} from "../../src/scheduled-thread-close-reconciler.js";
+} from "../../src/threads/scheduled-thread-close-reconciler.js";
 import {
   createScheduledThreadCloseWorkerController,
   SCHEDULED_THREAD_CLOSE_QUEUE,
   type ScheduledThreadCloseWorkerController,
-} from "../../src/scheduled-thread-close-worker.js";
-import type { ScheduledThreadCloseExecutor } from "../../src/scheduled-thread-close.js";
+} from "../../src/threads/scheduled-thread-close-worker.js";
+import type { ScheduledThreadCloseExecutor } from "../../src/threads/scheduled-thread-close.js";
 
 const testGuildId = "scheduled-recovery-test-guild";
 const config = loadTestDatabaseConfig();

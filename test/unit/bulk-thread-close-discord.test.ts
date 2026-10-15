@@ -2,7 +2,7 @@ import { ChannelType as C, PermissionFlagsBits as P } from "discord.js";
 import type { Client } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
-import { createBulkCloseDiscord } from "../../src/bulk-thread-close-discord.js";
+import { createBulkCloseDiscord } from "../../src/threads/bulk-thread-close-discord.js";
 
 const allowed = (P.ViewChannel | P.ManageThreads).toString();
 function fixture() {

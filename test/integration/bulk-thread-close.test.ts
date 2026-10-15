@@ -3,28 +3,28 @@ import { ChannelType } from "discord.js";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createBulkCloseService } from "../../src/bulk-thread-close.js";
-import type { BulkCloseThread } from "../../src/bulk-thread-close.js";
+import { createBulkCloseService } from "../../src/threads/bulk-thread-close.js";
+import type { BulkCloseThread } from "../../src/threads/bulk-thread-close.js";
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createDatabase } from "../../src/database.js";
-import { createGuildSettingsStore, guildSettings } from "../../src/guild-settings.js";
+import { createGuildSettingsStore, guildSettings } from "../../src/guild/guild-settings.js";
 import {
   createScheduledActionStore,
   scheduledActions,
 } from "../../src/scheduled-action-persistence.js";
-import { createScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
+import { createScheduledThreadCloseCommandService } from "../../src/threads/scheduled-thread-close-command.js";
 import {
   createScheduledThreadCloseStore,
   scheduledThreadCloseAudits,
-} from "../../src/scheduled-thread-close-persistence.js";
-import { createThreadLifecycleService } from "../../src/thread-lifecycle.js";
-import type { ThreadLifecycleDiscord } from "../../src/thread-lifecycle.js";
+} from "../../src/threads/scheduled-thread-close-persistence.js";
+import { createThreadLifecycleService } from "../../src/threads/thread-lifecycle.js";
+import type { ThreadLifecycleDiscord } from "../../src/threads/thread-lifecycle.js";
 import {
   createManagedThreadStore,
   createThreadAuditStore,
   managedThreads,
   threadAudits,
-} from "../../src/thread-persistence.js";
+} from "../../src/threads/thread-persistence.js";
 
 const guildId = "810000000000000001";
 const actorId = "810000000000000002";

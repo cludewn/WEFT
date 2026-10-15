@@ -5,14 +5,14 @@ import type {
   ScheduledAction,
   ScheduledActionStore,
 } from "../../src/scheduled-action-persistence.js";
-import type { ScheduledThreadCloseStore } from "../../src/scheduled-thread-close-persistence.js";
+import type { ScheduledThreadCloseStore } from "../../src/threads/scheduled-thread-close-persistence.js";
 import {
   createScheduledThreadCloseRuntimeReconciler,
   createScheduledThreadCloseStartupReconciler,
   SCHEDULED_THREAD_CLOSE_RECONCILIATION_INTERVAL_MS,
-} from "../../src/scheduled-thread-close-reconciler.js";
-import type { ScheduledThreadCloseStartupRecoveryError } from "../../src/scheduled-thread-close-reconciler.js";
-import type { ScheduledThreadCloseWorkerController } from "../../src/scheduled-thread-close-worker.js";
+} from "../../src/threads/scheduled-thread-close-reconciler.js";
+import type { ScheduledThreadCloseStartupRecoveryError } from "../../src/threads/scheduled-thread-close-reconciler.js";
+import type { ScheduledThreadCloseWorkerController } from "../../src/threads/scheduled-thread-close-worker.js";
 
 type RecoveryStore = Pick<
   ScheduledActionStore,

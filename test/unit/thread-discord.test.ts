@@ -10,7 +10,7 @@ import {
   createAutomaticCloseThreadMaintenanceDiscord,
   createThreadLifecycleDiscord,
   isSupportedThreadType,
-} from "../../src/thread-discord.js";
+} from "../../src/threads/thread-discord.js";
 
 describe("Discord thread support", () => {
   it.each([true, false])(

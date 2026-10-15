@@ -4,8 +4,8 @@ import {
   parseOneTimeLocalDateTime,
   parseOneTimeScheduleOptions,
   resolveOneTimeSchedule,
-} from "../../src/one-time-message-schedule.js";
-import { normalizeRecurringTimezone } from "../../src/recurring-message.js";
+} from "../../src/messages/one-time-message-schedule.js";
+import { normalizeRecurringTimezone } from "../../src/messages/recurring-message.js";
 
 describe("one-time local datetime grammar", () => {
   it.each(["2026-10-10 19:30", "2028-02-29 00:00", "2000-02-29 23:59", "0000-01-01 00:00"])(

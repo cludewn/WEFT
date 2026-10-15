@@ -4,12 +4,12 @@ import {
   BULK_COMPONENT_PREFIX,
   handleBulkCloseButton,
   handleBulkCloseModal,
-} from "./bulk-thread-close-command.js";
+} from "./threads/bulk-thread-close-command.js";
 
 import type { Logger } from "pino";
 
 import { safeErrorName, type ApplicationIngress } from "./application-runtime.js";
-import type { AutomaticCloseActivityService } from "./automatic-close-activity.js";
+import type { AutomaticCloseActivityService } from "./threads/automatic-close-activity.js";
 import { handleCommand, type CommandDependencies } from "./commands.js";
 import {
   handleManagedMessageModalSubmit,
@@ -18,13 +18,16 @@ import {
   RECURRING_MESSAGE_CREATE_MODAL_PREFIX,
   SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX,
   SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX,
-} from "./message-command.js";
-import type { ManagedMessageService } from "./managed-message.js";
-import type { ScheduledMessageCommandService } from "./scheduled-message-command.js";
-import { createThreadLifecycleDiscord, isSupportedThreadType } from "./thread-discord.js";
-import { createThreadLifecycleService, type ThreadLifecycleDiscord } from "./thread-lifecycle.js";
-import type { GuildSettingsStore } from "./guild-settings.js";
-import type { ManagedThreadStore, ThreadAuditStore } from "./thread-persistence.js";
+} from "./messages/message-command.js";
+import type { ManagedMessageService } from "./messages/managed-message.js";
+import type { ScheduledMessageCommandService } from "./messages/scheduled-message-command.js";
+import { createThreadLifecycleDiscord, isSupportedThreadType } from "./threads/thread-discord.js";
+import {
+  createThreadLifecycleService,
+  type ThreadLifecycleDiscord,
+} from "./threads/thread-lifecycle.js";
+import type { GuildSettingsStore } from "./guild/guild-settings.js";
+import type { ManagedThreadStore, ThreadAuditStore } from "./threads/thread-persistence.js";
 
 export type DiscordDependencies = {
   guildSettings: GuildSettingsStore;

@@ -18,15 +18,15 @@ import type {
 import type { Logger } from "pino";
 import { describe, expect, it, vi } from "vitest";
 
-import type { BulkCloseService } from "../../src/bulk-thread-close.js";
+import type { BulkCloseService } from "../../src/threads/bulk-thread-close.js";
 import {
   createApplicationRuntime,
   type ApplicationIngress,
 } from "../../src/application-runtime.js";
-import { createRecurringMessageCreateModalId } from "../../src/message-command.js";
-import type { RecurringCommandInput } from "../../src/recurring-message.js";
-import type { ScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
-import { registerLinkPreviewHandlers } from "../../src/link-preview-discord.js";
+import { createRecurringMessageCreateModalId } from "../../src/messages/message-command.js";
+import type { RecurringCommandInput } from "../../src/messages/recurring-message.js";
+import type { ScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
+import { registerLinkPreviewHandlers } from "../../src/link-previews/link-preview-discord.js";
 import {
   createDiscordClient,
   createDiscordRuntime,
@@ -39,9 +39,9 @@ import {
   registerThreadLifecycleEventHandler,
   startDiscordClient,
 } from "../../src/discord.js";
-import type { AutomaticCloseActivityService } from "../../src/automatic-close-activity.js";
-import type { ThreadLifecycleService } from "../../src/thread-lifecycle.js";
-import type { ManagedMessageService } from "../../src/managed-message.js";
+import type { AutomaticCloseActivityService } from "../../src/threads/automatic-close-activity.js";
+import type { ThreadLifecycleService } from "../../src/threads/thread-lifecycle.js";
+import type { ManagedMessageService } from "../../src/messages/managed-message.js";
 
 const discordDependencies = {
   guildSettings: {

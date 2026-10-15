@@ -1,11 +1,11 @@
 import type { JobWithMetadata } from "pg-boss";
 import { describe, expect, it, vi } from "vitest";
 
-import type { RecurringDelivery } from "../../src/recurring-message-execution.js";
+import type { RecurringDelivery } from "../../src/messages/recurring-message-execution.js";
 import {
   createRecurringMessageWorker,
   RECURRING_MESSAGE_QUEUE,
-} from "../../src/recurring-message-worker.js";
+} from "../../src/messages/recurring-message-worker.js";
 
 function fixture() {
   const jobs: Array<{ data: RecurringDelivery; state: "created" | "active"; startAfter: Date }> =

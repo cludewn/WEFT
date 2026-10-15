@@ -18,13 +18,13 @@ import {
   createManagedMessageDiscord,
   isSupportedManagedMessageTargetType,
   projectManagedMessageEmbed,
-} from "../../src/managed-message-discord.js";
+} from "../../src/messages/managed-message-discord.js";
 import {
   managedMessagePayloadsEqual,
   validateManagedMessagePayload,
-} from "../../src/managed-message-payload.js";
-import type { ManagedMessageStore } from "../../src/managed-message-persistence.js";
-import { createManagedMessageService } from "../../src/managed-message.js";
+} from "../../src/messages/managed-message-payload.js";
+import type { ManagedMessageStore } from "../../src/messages/managed-message-persistence.js";
+import { createManagedMessageService } from "../../src/messages/managed-message.js";
 
 describe("managed message send diagnostics", () => {
   it.each([

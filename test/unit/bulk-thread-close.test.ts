@@ -8,15 +8,15 @@ import {
   matchesBulkCloseFilters,
   normalizeBulkCloseFilters,
   selectBulkCloseSnapshot,
-} from "../../src/bulk-thread-close.js";
+} from "../../src/threads/bulk-thread-close.js";
 import type {
   BulkCloseDiscord,
   BulkCloseIdentity,
   BulkCloseSession,
   BulkCloseThread,
-} from "../../src/bulk-thread-close.js";
-import type { ScheduledThreadCloseCommandService } from "../../src/scheduled-thread-close-command.js";
-import type { BulkThreadCloseHooks } from "../../src/thread-lifecycle.js";
+} from "../../src/threads/bulk-thread-close.js";
+import type { ScheduledThreadCloseCommandService } from "../../src/threads/scheduled-thread-close-command.js";
+import type { BulkThreadCloseHooks } from "../../src/threads/thread-lifecycle.js";
 
 const parent = { id: "2", guildId: "1", name: "Parent", type: C.GuildText };
 const epoch = Date.parse("2026-10-04T00:00:00Z");

@@ -4,13 +4,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AUDIT_RETENTION_SOURCES,
   type AuditRetentionStore,
-} from "../../src/audit-retention-persistence.js";
+} from "../../src/audit/audit-retention-persistence.js";
 import {
   AUDIT_RETENTION_BATCH_SIZE,
   AUDIT_RETENTION_DURATION_MS,
   AUDIT_RETENTION_SWEEP_INTERVAL_MS,
   createAuditRetentionRuntime,
-} from "../../src/audit-retention-runtime.js";
+} from "../../src/audit/audit-retention-runtime.js";
 
 function deferred() {
   let resolve!: (count: number) => void;

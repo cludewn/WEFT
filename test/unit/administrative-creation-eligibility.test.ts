@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { createScheduledMessageCommandService } from "../../src/scheduled-message-command.js";
-import type { ScheduledMessageStore } from "../../src/scheduled-message-persistence.js";
-import type { AdministrativeFailureRecorder } from "../../src/administrative-operation-failure-audit.js";
-import type { OneTimeScheduleInput } from "../../src/one-time-message-schedule.js";
-import type { RecurringMessageStore } from "../../src/recurring-message-persistence.js";
+import { createScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
+import type { ScheduledMessageStore } from "../../src/messages/scheduled-message-persistence.js";
+import type { AdministrativeFailureRecorder } from "../../src/audit/administrative-operation-failure-audit.js";
+import type { OneTimeScheduleInput } from "../../src/messages/one-time-message-schedule.js";
+import type { RecurringMessageStore } from "../../src/messages/recurring-message-persistence.js";
 
 const at = new Date("2030-01-01T00:00:00Z");
 const input = {

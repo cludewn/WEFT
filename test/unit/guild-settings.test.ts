@@ -12,7 +12,7 @@ import {
   validateAutoCloseInactivitySeconds,
   validateClosedPrefix,
   validateTimezone,
-} from "../../src/guild-settings.js";
+} from "../../src/guild/guild-settings.js";
 
 describe("guild settings validation", () => {
   it.each([

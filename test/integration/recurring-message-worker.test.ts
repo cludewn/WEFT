@@ -6,16 +6,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { loadTestDatabaseConfig } from "../../src/config.js";
 import { createPgBossRuntime } from "../../src/pg-boss.js";
-import type { RecurringDelivery } from "../../src/recurring-message-execution.js";
-import { createRecurringMessageReconciler } from "../../src/recurring-message-reconciler.js";
+import type { RecurringDelivery } from "../../src/messages/recurring-message-execution.js";
+import { createRecurringMessageReconciler } from "../../src/messages/recurring-message-reconciler.js";
 import type {
   RecurringRuntimeDefinition,
   RecurringRuntimeStore,
-} from "../../src/recurring-message-runtime-persistence.js";
+} from "../../src/messages/recurring-message-runtime-persistence.js";
 import {
   createRecurringMessageWorker,
   RECURRING_MESSAGE_QUEUE,
-} from "../../src/recurring-message-worker.js";
+} from "../../src/messages/recurring-message-worker.js";
 
 const config = loadTestDatabaseConfig();
 const logger = {

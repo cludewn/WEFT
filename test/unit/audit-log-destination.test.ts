@@ -2,9 +2,9 @@ import { ChannelType, PermissionFlagsBits } from "discord.js";
 import type { Client } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
-import { createAuditLogDestinationDiscord } from "../../src/audit-log-destination-discord.js";
-import type { AuditLogDestinationStore } from "../../src/audit-log-destination-persistence.js";
-import { createAuditLogDestinationService } from "../../src/audit-log-destination.js";
+import { createAuditLogDestinationDiscord } from "../../src/audit/audit-log-destination-discord.js";
+import type { AuditLogDestinationStore } from "../../src/audit/audit-log-destination-persistence.js";
+import { createAuditLogDestinationService } from "../../src/audit/audit-log-destination.js";
 
 const guildId = "guild";
 const channelId = "channel";

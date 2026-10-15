@@ -5,12 +5,12 @@ import type { ScheduledAction } from "../../src/scheduled-action-persistence.js"
 import type {
   ScheduledMessageDefinition,
   ScheduledMessageStore,
-} from "../../src/scheduled-message-persistence.js";
+} from "../../src/messages/scheduled-message-persistence.js";
 import {
   createScheduledMessageRuntimeReconciler,
   createScheduledMessageStartupReconciler,
   ScheduledMessageStartupRecoveryError,
-} from "../../src/scheduled-message-reconciler.js";
+} from "../../src/messages/scheduled-message-reconciler.js";
 
 const executeAt = new Date("2030-01-01T00:00:00Z");
 function action(id: string, status: ScheduledAction["status"]): ScheduledAction {

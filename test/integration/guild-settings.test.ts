@@ -1,4 +1,4 @@
-import { guildConfigurationAudits } from "../../src/guild-configuration-audit.js";
+import { guildConfigurationAudits } from "../../src/guild/guild-configuration-audit.js";
 import { createGuildSettingsStore } from "./configuration-fixture.js";
 import { inArray } from "drizzle-orm";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -11,7 +11,7 @@ import {
   DEFAULT_CLOSED_PREFIX,
   DEFAULT_GUILD_TIMEZONE,
   guildSettings,
-} from "../../src/guild-settings.js";
+} from "../../src/guild/guild-settings.js";
 
 const guildIds = ["100000000000000001", "100000000000000002", "100000000000000003"] as const;
 const database = createDatabase(loadTestDatabaseConfig());
