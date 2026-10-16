@@ -85,10 +85,18 @@ export function createAutomaticCloseConfigurationService({
 }: Dependencies): AutomaticCloseConfigurationService {
   return {
     async show(guildId) {
-      const [settings, parentChannelIds] = await Promise.all([
-        guildSettings.getOrCreate(guildId),
-        schedules.listParentChannels(guildId),
-      ]);
+      const reads = [
+        Promise.resolve().then(() => guildSettings.getOrCreate(guildId)),
+        Promise.resolve().then(() => schedules.listParentChannels(guildId)),
+      ] as const;
+      let settings;
+      let parentChannelIds;
+      try {
+        [settings, parentChannelIds] = await Promise.all(reads);
+      } finally {
+        // Preserve the first rejection while retaining every started read through settlement.
+        await Promise.allSettled(reads);
+      }
       return {
         inactivitySeconds: settings.autoCloseInactivitySeconds,
         botMessagesCountAsActivity: settings.autoCloseBotMessagesCountAsActivity,

@@ -247,3 +247,35 @@ it("propagates parent outcome uncertainty with actor and stable identity", async
     }),
   );
 });
+
+it.each(["settings", "parents"])("retains both show reads when %s rejects first", async (first) => {
+  const f = createFixture();
+  let rejectSettings!: (error: unknown) => void;
+  let rejectParents!: (error: unknown) => void;
+  vi.mocked(f.guildSettings.getOrCreate).mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectSettings = reject;
+      }),
+  );
+  vi.mocked(f.schedules.listParentChannels).mockImplementationOnce(
+    () =>
+      new Promise((_resolve, reject) => {
+        rejectParents = reject;
+      }),
+  );
+  const error = new Error("first failure");
+  let done = false;
+  const operation = f.service.show(guildId).catch((reason: unknown) => {
+    done = true;
+    return reason;
+  });
+  await Promise.resolve();
+  (first === "settings" ? rejectSettings : rejectParents)(error);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  expect(done).toBe(false);
+  (first === "settings" ? rejectParents : rejectSettings)(new Error("late sibling"));
+  expect(await operation).toBe(error);
+  expect(f.guildSettings.getOrCreate).toHaveBeenCalledExactlyOnceWith(guildId);
+  expect(f.schedules.listParentChannels).toHaveBeenCalledExactlyOnceWith(guildId);
+});

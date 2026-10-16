@@ -1,4 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { ChannelType, MessageFlags, PermissionFlagsBits } from "discord.js";
+import type { ChatInputCommandInteraction } from "discord.js";
+import { handleMessageCommand } from "../../src/messages/message-command.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ManagedMessageDiscord } from "../../src/messages/managed-message-discord.js";
 import type {
@@ -386,3 +389,137 @@ function createFixture(
   });
   return { service, discord, store, logger, generateAuditId };
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+describe("managed edit lookup ownership", () => {
+  it.each(["resolve", "reject"])(
+    "owns the real store lookup beyond the old timeout until %s",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const f = createFixture();
+      let resolve!: (row: ManagedMessage) => void;
+      let reject!: (error: unknown) => void;
+      f.store.find.mockReturnValueOnce(
+        new Promise((res, rej) => {
+          resolve = res;
+          reject = rej;
+        }),
+      );
+      let done = false;
+      const operation = f.service.findForEdit(baseInput).then((result) => {
+        done = true;
+        return result;
+      });
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(done).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      if (outcome === "resolve") resolve(managedRow());
+      else reject(new Error("private DB error"));
+      expect(await operation).toMatchObject({
+        outcome: outcome === "resolve" ? "FOUND" : "FAILURE",
+      });
+      expect(f.store.find).toHaveBeenCalledExactlyOnceWith(baseInput.messageId);
+    },
+  );
+
+  it.each(["resolve", "reject", "reply-failure"])(
+    "keeps the command owning its real managed service and pending store after timeout (%s)",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const f = createFixture();
+      let resolve!: (row: ManagedMessage) => void;
+      let reject!: (error: unknown) => void;
+      f.store.find.mockReturnValueOnce(
+        new Promise((res, rej) => {
+          resolve = res;
+          reject = rej;
+        }),
+      );
+      const reply = vi.fn(() => Promise.resolve());
+      const responseError = new Error("reply lost");
+      if (outcome === "reply-failure") reply.mockRejectedValueOnce(responseError);
+      const showModal = vi.fn();
+      const interaction = {
+        createdTimestamp: Date.now(),
+        options: {
+          getSubcommand: () => "edit",
+          getSubcommandGroup: () => null,
+          getString: () => baseInput.messageId,
+        },
+        inGuild: () => true,
+        channel: { type: ChannelType.GuildText },
+        guildId: baseInput.guildId,
+        channelId: baseInput.channelId,
+        memberPermissions: {
+          has: (permission: bigint) => permission === PermissionFlagsBits.ManageMessages,
+        },
+        reply,
+        showModal,
+      } as unknown as ChatInputCommandInteraction;
+      let done = false;
+      const operation = handleMessageCommand(interaction, f.service).then(
+        () => {
+          done = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          done = true;
+          return error;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(2_001);
+      expect(reply).toHaveBeenCalledExactlyOnceWith({
+        content: "WEFT could not load the managed message. Please try again later.",
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      });
+      expect(done).toBe(false);
+      if (outcome === "resolve") resolve(managedRow());
+      else reject(new Error("late DB failure"));
+      expect(await operation).toBe(outcome === "reply-failure" ? responseError : undefined);
+      expect(showModal).not.toHaveBeenCalled();
+      expect(reply).toHaveBeenCalledOnce();
+      expect(f.store.find).toHaveBeenCalledOnce();
+      expect(f.store.edit).not.toHaveBeenCalled();
+      expect(f.discord.editManagedMessage).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each([
+    [{ guildId: "other" }, "NOT_FOUND"],
+    [{ channelId: "other" }, "NOT_FOUND"],
+    [{ messageId: "900000000000000002" }, "NOT_FOUND"],
+    [{ status: "DELETED" }, "DELETED"],
+    [{ revision: 2_147_483_647 }, "FAILURE"],
+    [{}, "FOUND"],
+  ] as const)("preserves lookup scoping and state for %j", async (row, outcome) => {
+    const f = createFixture({ row: managedRow(row) });
+    const result = await f.service.findForEdit(baseInput);
+    expect(result.outcome).toBe(outcome);
+    if (result.outcome === "FOUND") {
+      expect(result).toEqual({
+        outcome: "FOUND",
+        messageId: baseInput.messageId,
+        revision: 1,
+        payload: oldPayload,
+      });
+    }
+    expect(f.store.find).toHaveBeenCalledExactlyOnceWith(baseInput.messageId);
+    expect(f.store.edit).not.toHaveBeenCalled();
+  });
+
+  it("preserves NOT_FOUND for an absent row", async () => {
+    const f = createFixture();
+    const service = createManagedMessageService({
+      store: { ...f.store, find: () => Promise.resolve(undefined) },
+      discord: f.discord,
+      logger: f.logger,
+    });
+    await expect(service.findForEdit(baseInput)).resolves.toEqual({ outcome: "NOT_FOUND" });
+  });
+});

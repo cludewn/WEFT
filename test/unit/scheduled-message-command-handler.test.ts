@@ -1,17 +1,17 @@
-import { ChannelType, MessageFlags, PermissionFlagsBits } from "discord.js";
+import { ChannelType, MessageFlags, ModalBuilder, PermissionFlagsBits } from "discord.js";
 import type {
   ChatInputCommandInteraction,
   InteractionEditReplyOptions,
-  ModalBuilder,
   ModalSubmitInteraction,
 } from "discord.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { ManagedMessageService } from "../../src/messages/managed-message.js";
 import {
   createScheduledMessageCreateModalId,
   createRecurringMessageCreateModalId,
   createScheduledMessageEditModalId,
+  createScheduledMessageEditModal,
   handleManagedMessageModalSubmit,
   handleMessageCommand,
   MANAGED_MESSAGE_CONTENT_INPUT_ID,
@@ -152,7 +152,7 @@ function commandInteraction(input: {
   authorized?: boolean;
   options?: Record<string, string | null>;
 }) {
-  const showModal = vi.fn((modal: ModalBuilder) => {
+  const showModal = vi.fn((modal: Parameters<typeof ModalBuilder.from>[0]) => {
     void modal;
     return Promise.resolve();
   });
@@ -180,6 +180,7 @@ function commandInteraction(input: {
               : input.value,
       getInteger: () => input.page ?? null,
     },
+    createdTimestamp: Date.now(),
     inGuild: () => true,
     channel,
     memberPermissions: {
@@ -247,7 +248,7 @@ describe("scheduled message command handler", () => {
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
     expect(f.showModal).toHaveBeenCalledTimes(1);
     expect(s.scheduled.createRecurring).not.toHaveBeenCalled();
-    const customId = f.showModal.mock.calls[0]![0].toJSON().custom_id;
+    const customId = ModalBuilder.from(f.showModal.mock.calls[0]![0]).toJSON().custom_id;
     expect(customId).toBe(
       createRecurringMessageCreateModalId({
         frequency: "weekly",
@@ -412,7 +413,7 @@ describe("scheduled message command handler", () => {
     const f = commandInteraction({ subcommand: "create", value: "30m" });
     const s = services();
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
-    expect(f.showModal.mock.calls[0]?.[0].toJSON()).toMatchObject({
+    expect(ModalBuilder.from(f.showModal.mock.calls[0]![0]).toJSON()).toMatchObject({
       custom_id: createScheduledMessageCreateModalId({ kind: "AFTER", durationMs: 1_800_000 }),
       title: "Schedule managed message",
     });
@@ -527,7 +528,7 @@ describe("scheduled message command handler", () => {
       guildId: "guild-id",
       channelId: "channel-id",
     });
-    const modal = f.showModal.mock.calls[0]?.[0].toJSON();
+    const modal = ModalBuilder.from(f.showModal.mock.calls[0]![0]).toJSON();
     expect(modal).toMatchObject({
       custom_id: createScheduledMessageEditModalId(scheduleId, 4),
       title: "Edit scheduled message",
@@ -988,7 +989,7 @@ describe("absolute one-time commands and modal transport", () => {
       options: { after: null, at: "2030-01-02 03:06" },
     });
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
-    const modal = f.showModal.mock.calls[0]![0].toJSON();
+    const modal = ModalBuilder.from(f.showModal.mock.calls[0]![0]).toJSON();
     expect(modal.components).toHaveLength(5);
     expect(modal.custom_id).toBe("scheduled-message:schedule-create:at:2030-01-02 03:06");
     expect(modal.custom_id.length).toBeLessThanOrEqual(100);
@@ -1118,7 +1119,8 @@ describe("absolute one-time commands and modal transport", () => {
     zone = "Asia/Tokyo";
     clock = new Date("2030-01-02T03:04:30Z");
     await handleManagedMessageModalSubmit(
-      modalInteraction(atCommand.showModal.mock.calls[0]![0].toJSON().custom_id).interaction,
+      modalInteraction(ModalBuilder.from(atCommand.showModal.mock.calls[0]![0]).toJSON().custom_id)
+        .interaction,
       s.managed,
       application,
     );
@@ -1130,7 +1132,9 @@ describe("absolute one-time commands and modal transport", () => {
     await handleMessageCommand(afterCommand.interaction, s.managed, application);
     clock = new Date("2030-01-02T08:00:00Z");
     await handleManagedMessageModalSubmit(
-      modalInteraction(afterCommand.showModal.mock.calls[0]![0].toJSON().custom_id).interaction,
+      modalInteraction(
+        ModalBuilder.from(afterCommand.showModal.mock.calls[0]![0]).toJSON().custom_id,
+      ).interaction,
       s.managed,
       application,
     );
@@ -1159,4 +1163,340 @@ describe("absolute one-time commands and modal transport", () => {
       );
     },
   );
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+const editableScheduleId = "11111111-1111-4111-8111-111111111111";
+function editableSchedule(
+  recurring = false,
+): Awaited<ReturnType<ScheduledMessageCommandService["findEditable"]>> {
+  return {
+    outcome: "ACTIVE",
+    definition: {
+      action: {
+        id: editableScheduleId,
+        guildId: "guild-id",
+        targetId: "channel-id",
+        actionType: "SEND_MESSAGE",
+        status: "ACTIVE",
+        executeAt,
+        createdAt: executeAt,
+        updatedAt: executeAt,
+      },
+      creatorUserId: "creator",
+      retryCount: 0,
+      revision: 4,
+      payload: { content: "prefilled scheduled content", embed: null },
+      resultMessageId: null,
+      ...(recurring
+        ? { frequency: "DAILY" as const, weekdayMask: 127, localTime: "09:00", timezone: "UTC" }
+        : {}),
+    },
+  };
+}
+function pendingSchedule() {
+  let resolve!: (
+    value: Awaited<ReturnType<ScheduledMessageCommandService["findEditable"]>>,
+  ) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<Awaited<ReturnType<ScheduledMessageCommandService["findEditable"]>>>(
+    (res, rej) => {
+      resolve = res;
+      reject = rej;
+    },
+  );
+  return { promise, resolve, reject };
+}
+
+describe("scheduled edit bounded Modal preparation", () => {
+  it.each([false, true])(
+    "preserves direct revision-bound editing in archived threads (recurring=%s)",
+    async (recurring) => {
+      const s = services();
+      const f = commandInteraction({
+        subcommand: "edit",
+        value: editableScheduleId,
+        archived: true,
+      });
+      s.scheduled.findEditable.mockResolvedValueOnce(editableSchedule(recurring));
+      await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+      expect(s.scheduled.findEditable).toHaveBeenCalledExactlyOnceWith({
+        scheduledActionId: editableScheduleId,
+        guildId: "guild-id",
+        channelId: "channel-id",
+      });
+      const modal = ModalBuilder.from(f.showModal.mock.calls[0]![0]).toJSON();
+      expect(modal.custom_id).toBe(createScheduledMessageEditModalId(editableScheduleId, 4));
+      expect(modal.components[0]).toMatchObject({
+        component: { value: "prefilled scheduled content" },
+      });
+      expect(f.reply).not.toHaveBeenCalled();
+      expect(f.deferReply).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([1_999, 2_000, 2_001])("prevents late schedule edit Modals at %sms", async (age) => {
+    vi.useFakeTimers();
+    const s = services();
+    const f = commandInteraction({ subcommand: "edit", value: editableScheduleId });
+    const gate = pendingSchedule();
+    s.scheduled.findEditable.mockReturnValueOnce(gate.promise);
+    const operation = handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    await vi.advanceTimersByTimeAsync(age);
+    gate.resolve(editableSchedule());
+    await operation;
+    expect(f.showModal).toHaveBeenCalledTimes(age < 2_000 ? 1 : 0);
+    expect(f.reply).toHaveBeenCalledTimes(age < 2_000 ? 0 : 1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["resolve", "reject", "response-loss"])(
+    "retains timed out reads through %s and sends no late response",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const s = services();
+      const f = commandInteraction({ subcommand: "edit", value: editableScheduleId });
+      const gate = pendingSchedule();
+      s.scheduled.findEditable.mockReturnValueOnce(gate.promise);
+      const responseError = new Error("reply lost");
+      if (outcome === "response-loss") f.reply.mockRejectedValueOnce(responseError);
+      let done = false;
+      const operation = handleMessageCommand(f.interaction, s.managed, s.scheduled).then(
+        () => {
+          done = true;
+          return undefined;
+        },
+        (error: unknown) => {
+          done = true;
+          return error;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(f.reply).toHaveBeenCalledOnce();
+      expect(done).toBe(false);
+      if (outcome === "resolve") gate.resolve(editableSchedule(true));
+      else gate.reject(new Error("late DB error"));
+      expect(await operation).toBe(outcome === "response-loss" ? responseError : undefined);
+      expect(f.showModal).not.toHaveBeenCalled();
+      expect(f.reply).toHaveBeenCalledOnce();
+      expect(s.scheduled.findEditable).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([2_000, 2_499, 2_500, 2_501])(
+    "does not read an interaction already %sms old",
+    async (age) => {
+      vi.useFakeTimers();
+      const s = services();
+      const f = commandInteraction({ subcommand: "edit", value: editableScheduleId });
+      Object.defineProperty(f.interaction, "createdTimestamp", { value: Date.now() - age });
+      await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+      expect(s.scheduled.findEditable).not.toHaveBeenCalled();
+      expect(f.reply).toHaveBeenCalledTimes(age < 2_500 ? 1 : 0);
+      expect(f.showModal).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it("rejects a late schedule result even before its timeout callback runs", async () => {
+    vi.useFakeTimers();
+    const s = services();
+    const f = commandInteraction({ subcommand: "edit", value: editableScheduleId });
+    const gate = pendingSchedule();
+    s.scheduled.findEditable.mockReturnValueOnce(gate.promise);
+    const operation = handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.spyOn(performance, "now").mockReturnValue(2_001);
+    gate.resolve(editableSchedule());
+    await operation;
+    expect(f.showModal).not.toHaveBeenCalled();
+    expect(f.reply).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([
+    "NOT_FOUND_OR_WRONG_CONTEXT",
+    "EXECUTING",
+    "COMPLETED",
+    "CANCELLED",
+    "FAILED",
+    "CORRUPT",
+    "UNAVAILABLE",
+  ] as const)("preserves editable-state rejection %s", async (outcome) => {
+    const s = services();
+    const f = commandInteraction({ subcommand: "edit", value: editableScheduleId });
+    s.scheduled.findEditable.mockResolvedValueOnce({ outcome });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    expect(f.showModal).not.toHaveBeenCalled();
+    expect(f.reply).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      }),
+    );
+  });
+});
+
+describe("recurring-create Modal failure classification", () => {
+  function fixture(options: Record<string, string | null> = {}) {
+    const s = services();
+    const f = commandInteraction({
+      subcommand: "recurring-create",
+      value: "",
+      options: {
+        frequency: "daily",
+        time: "09:30",
+        weekdays: null,
+        timezone: "UTC",
+        ...options,
+      },
+    });
+    return { ...f, ...s };
+  }
+
+  it.each([
+    { frequency: "invalid" },
+    { time: "9:30" },
+    { weekdays: "mon" },
+    { timezone: "invalid/timezone" },
+  ])("reports grounded recurrence validation failure for %j", async (options) => {
+    const f = fixture(options);
+    await handleMessageCommand(f.interaction, f.managed, f.scheduled);
+    expect(f.reply).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        content:
+          "Enter daily without weekdays, or weekly with unique comma-separated weekdays, strict HH:MM, and a named IANA timezone.",
+      }),
+    );
+    expect(f.showModal).not.toHaveBeenCalled();
+    expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
+  });
+
+  it("reports timezone length only for the known encoded identity limit", async () => {
+    const f = fixture();
+    vi.spyOn(globalThis, "encodeURIComponent").mockReturnValueOnce("x".repeat(101));
+    await handleMessageCommand(f.interaction, f.managed, f.scheduled);
+    expect(f.reply).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ content: "The recurring timezone is too long for this form." }),
+    );
+    expect(f.showModal).not.toHaveBeenCalled();
+  });
+
+  it.each(["construction", "serialization"])(
+    "reports generic %s failure and propagates it for bounded logging",
+    async (stage) => {
+      const f = fixture();
+      const error = new Error("private failure, not evidence of an invalid timezone");
+      const method = stage === "construction" ? "setTitle" : "toJSON";
+      vi.spyOn(ModalBuilder.prototype, method).mockImplementationOnce(() => {
+        throw error;
+      });
+      // Even a failed generic reply must not replace the preparation failure.
+      f.reply.mockRejectedValueOnce(new Error("reply lost"));
+      await expect(handleMessageCommand(f.interaction, f.managed, f.scheduled)).rejects.toBe(error);
+      expect(f.reply).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          content: "WEFT could not prepare the message form. Please try again later.",
+          flags: MessageFlags.Ephemeral,
+          allowedMentions: { parse: [] },
+        }),
+      );
+      expect(f.showModal).not.toHaveBeenCalled();
+      expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["rejected", "ambiguous"])(
+    "does not reply after %s showModal, regardless of local flags",
+    async (outcome) => {
+      const f = fixture();
+      Object.defineProperties(f.interaction, {
+        replied: { value: false },
+        deferred: { value: false },
+      });
+      const error =
+        outcome === "rejected"
+          ? Object.assign(new Error("rejected"), { code: 10062 })
+          : new Error("response lost");
+      f.showModal.mockRejectedValueOnce(error);
+      await expect(handleMessageCommand(f.interaction, f.managed, f.scheduled)).rejects.toBe(error);
+      expect(f.showModal).toHaveBeenCalledOnce();
+      expect(f.reply).not.toHaveBeenCalled();
+      expect(f.deferReply).not.toHaveBeenCalled();
+      expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
+    },
+  );
+});
+
+it.each([499, 500, 501])(
+  "subtracts the scheduled interaction's existing age from the lookup budget (%sms)",
+  async (delay) => {
+    vi.useFakeTimers();
+    const s = services();
+    const f = commandInteraction({ subcommand: "edit", value: editableScheduleId });
+    Object.defineProperty(f.interaction, "createdTimestamp", { value: Date.now() - 1_500 });
+    const gate = pendingSchedule();
+    s.scheduled.findEditable.mockReturnValueOnce(gate.promise);
+    const operation = handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    await vi.advanceTimersByTimeAsync(delay);
+    gate.resolve(editableSchedule());
+    await operation;
+    expect(f.showModal).toHaveBeenCalledTimes(delay < 500 ? 1 : 0);
+    expect(f.reply).toHaveBeenCalledTimes(delay < 500 ? 0 : 1);
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
+it.each(["serialization-deadline", "serialization-failure", "showModal-failure"])(
+  "handles scheduled edit %s without a second initial response",
+  async (stage) => {
+    vi.useFakeTimers();
+    const s = services();
+    const f = commandInteraction({ subcommand: "edit", value: editableScheduleId });
+    s.scheduled.findEditable.mockResolvedValueOnce(editableSchedule());
+    const error = new Error("private preparation or transport failure");
+    if (stage === "serialization-deadline") {
+      const result = createScheduledMessageEditModal(editableScheduleId, 4, {
+        content: "prefilled scheduled content",
+        embed: null,
+      }).toJSON();
+      vi.spyOn(ModalBuilder.prototype, "toJSON").mockImplementationOnce(() => {
+        vi.spyOn(performance, "now").mockReturnValue(2_000);
+        return result;
+      });
+    } else if (stage === "serialization-failure") {
+      vi.spyOn(ModalBuilder.prototype, "toJSON").mockImplementationOnce(() => {
+        throw error;
+      });
+    } else {
+      f.showModal.mockRejectedValueOnce(error);
+    }
+    const operation = handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    if (stage === "serialization-deadline") await operation;
+    else await expect(operation).rejects.toBe(error);
+    expect(f.showModal).toHaveBeenCalledTimes(stage === "showModal-failure" ? 1 : 0);
+    expect(f.reply).toHaveBeenCalledTimes(stage === "showModal-failure" ? 0 : 1);
+    expect(s.scheduled.findEditable).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
+it("does not start a late scheduled edit authorization response", async () => {
+  vi.useFakeTimers();
+  const s = services();
+  const f = commandInteraction({
+    subcommand: "edit",
+    value: editableScheduleId,
+    authorized: false,
+  });
+  Object.defineProperty(f.interaction, "createdTimestamp", { value: Date.now() - 2_500 });
+  await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+  expect(f.reply).not.toHaveBeenCalled();
+  expect(f.showModal).not.toHaveBeenCalled();
+  expect(s.scheduled.findEditable).not.toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
 });
