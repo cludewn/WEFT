@@ -113,7 +113,6 @@ type ManagedMessageServiceDependencies = {
   generateNonce?: ManagedMessageNonceGenerator;
   generateAuditId?: () => string;
   now?: () => Date;
-  modalLookupTimeoutMs?: number;
 };
 
 export function createManagedMessageService({
@@ -124,7 +123,6 @@ export function createManagedMessageService({
   generateNonce = generateManagedMessageNonce,
   generateAuditId = randomUUID,
   now = () => new Date(),
-  modalLookupTimeoutMs = 2_000,
 }: ManagedMessageServiceDependencies): ManagedMessageService {
   const editQueues = new Map<string, Promise<void>>();
 
@@ -574,18 +572,7 @@ export function createManagedMessageService({
       input: Parameters<ManagedMessageService["findForEdit"]>[0],
     ): Promise<ManagedMessageEditLookupResult> {
       try {
-        let timeout: ReturnType<typeof setTimeout> | undefined;
-        const message = await Promise.race([
-          store.find(input.messageId),
-          new Promise<never>((_resolve, reject) => {
-            timeout = setTimeout(
-              () => reject(new Error("Managed message lookup timed out")),
-              modalLookupTimeoutMs,
-            );
-          }),
-        ]).finally(() => {
-          if (timeout !== undefined) clearTimeout(timeout);
-        });
+        const message = await store.find(input.messageId);
         if (
           message === undefined ||
           message.messageId !== input.messageId ||

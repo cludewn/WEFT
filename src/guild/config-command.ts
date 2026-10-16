@@ -267,12 +267,28 @@ export async function handleConfigCommand(
   }
 
   if (subcommand === "show") {
-    const [settings, view] = await Promise.all([
-      store.getOrCreate(interaction.guildId),
-      automaticClose.show(interaction.guildId),
-    ]);
-    await interaction.reply(
-      ephemeralReply(
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const reads = [
+      Promise.resolve().then(() => store.getOrCreate(interaction.guildId)),
+      Promise.resolve().then(() => automaticClose.show(interaction.guildId)),
+    ] as const;
+    let settings;
+    let view;
+    try {
+      try {
+        [settings, view] = await Promise.all(reads);
+      } finally {
+        await Promise.allSettled(reads);
+      }
+    } catch (error) {
+      return reportConfigurationReadFailure(
+        interaction,
+        "WEFT could not load the configuration. Please try again later.",
+        error,
+      );
+    }
+    await interaction.editReply(
+      editReply(
         `Timezone: ${settings.timezone}\nClosed prefix: ${settings.closedPrefix}\n${formatAuditLogDestination(settings.auditLogChannelId)}\n${formatAutomaticCloseSummary(view)}\nLink preview mode: ${settings.linkPreviewMode}`,
       ),
     );
@@ -328,8 +344,18 @@ async function handleAutomaticCloseSubcommand(
   }
 
   if (subcommand === "show") {
-    const view = await automaticClose.show(guildId);
-    await interaction.reply(ephemeralReply(formatAutomaticCloseDetail(view)));
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    let view;
+    try {
+      view = await automaticClose.show(guildId);
+    } catch (error) {
+      return reportConfigurationReadFailure(
+        interaction,
+        "WEFT could not load the automatic close configuration. Please try again later.",
+        error,
+      );
+    }
+    await interaction.editReply(editReply(formatAutomaticCloseDetail(view)));
     return;
   }
 
@@ -473,23 +499,18 @@ async function handleAuditLogSubcommand(
     return;
   }
   if (subcommand === "show") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     let channelId: string | null;
     try {
       channelId = await service.show(guildId);
     } catch (error) {
-      try {
-        await interaction.reply(
-          ephemeralReply(
-            "WEFT could not load the audit log configuration. Please try again later.",
-          ),
-        );
-      } catch {
-        // Do not attempt a second response if Discord rejects the first reply.
-      }
-      // Keep the common handler's bounded operational logging after the single reply attempt.
-      throw error;
+      return reportConfigurationReadFailure(
+        interaction,
+        "WEFT could not load the audit log configuration. Please try again later.",
+        error,
+      );
     }
-    await interaction.reply(ephemeralReply(formatAuditLogDestination(channelId)));
+    await interaction.editReply(editReply(formatAuditLogDestination(channelId)));
     return;
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -519,4 +540,17 @@ async function handleAuditLogSubcommand(
     return;
   }
   throw new Error(`Unsupported config audit-log subcommand: ${subcommand}`);
+}
+
+async function reportConfigurationReadFailure(
+  interaction: ChatInputCommandInteraction,
+  message: string,
+  error: unknown,
+): Promise<never> {
+  try {
+    await interaction.editReply(editReply(message));
+  } catch {
+    // Preserve the read error for the dispatcher's bounded operational logging.
+  }
+  throw error;
 }

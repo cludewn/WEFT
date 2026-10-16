@@ -1,3 +1,4 @@
+import type { CommandDependencies } from "../../src/commands.js";
 import {
   ChannelType,
   Events,
@@ -1393,3 +1394,142 @@ function createRawThreadUpdate({
     },
   };
 }
+
+it.each([null, "auto-close", "audit-log"])(
+  "routes config %s show through deferred acknowledgement and bounded error logging",
+  async (group) => {
+    const f = createModalRoutingFixture();
+    const gate = Promise.withResolvers<void>();
+    const error = new Error("private database details");
+    const read = vi.fn(async () => {
+      await gate.promise;
+      throw error;
+    });
+    const deferReply = vi.fn(() => Promise.resolve());
+    const reply = vi.fn();
+    const editReply = vi.fn(() => Promise.resolve());
+    registerDiscordCommandHandler(
+      f.client,
+      {
+        guildSettings: { getOrCreate: read },
+        automaticCloseConfiguration: { show: read },
+        auditLogDestination: { show: read },
+        logger: f.logger,
+      } as unknown as CommandDependencies,
+      f.ingress,
+    );
+    f.client.emit(Events.InteractionCreate, {
+      commandName: "config",
+      isChatInputCommand: () => true,
+      isModalSubmit: () => false,
+      inGuild: () => true,
+      guildId: "guild-id",
+      memberPermissions: { has: () => true },
+      options: { getSubcommand: () => "show", getSubcommandGroup: () => group },
+      deferReply,
+      reply,
+      editReply,
+    } as unknown as ChatInputCommandInteraction);
+    const operation: unknown = f.run.mock.results.at(-1)!.value;
+    const rejected = expect(operation).rejects.toBe(error);
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    expect(deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+    expect(read).toHaveBeenCalledTimes(group === null ? 2 : 1);
+    expect(deferReply.mock.invocationCallOrder[0]).toBeLessThan(read.mock.invocationCallOrder[0]!);
+    expect(editReply).not.toHaveBeenCalled();
+    gate.resolve();
+    await rejected;
+    expect(editReply).toHaveBeenCalledOnce();
+    expect(reply).not.toHaveBeenCalled();
+    expect(f.logger.error).toHaveBeenCalledWith(
+      { event: "command_failed", commandName: "config", errorName: "Error" },
+      "Discord command failed",
+    );
+    expect(JSON.stringify(vi.mocked(f.logger.error).mock.calls)).not.toContain("private");
+    await f.client.destroy();
+  },
+);
+
+it.each(["success", "rejected", "ambiguous"])(
+  "routes recurring-create %s through the real command and Modal dispatchers",
+  async (outcome) => {
+    const f = createModalRoutingFixture();
+    registerDiscordCommandHandler(
+      f.client,
+      {
+        managedMessages: f.managed,
+        scheduledMessages: f.scheduled,
+        logger: f.logger,
+      } as unknown as CommandDependencies,
+      f.ingress,
+    );
+    const showModal = vi.fn((modal: { custom_id: string }) => {
+      void modal;
+      return Promise.resolve();
+    });
+    const reply = vi.fn();
+    const error = Object.assign(
+      new Error("private response loss"),
+      outcome === "rejected" ? { code: 10062 } : {},
+    );
+    if (outcome !== "success") showModal.mockRejectedValueOnce(error);
+    const options: Record<string, string | null> = {
+      frequency: "weekly",
+      time: "09:30",
+      weekdays: "mon,fri",
+      timezone: "UTC",
+    };
+    f.client.emit(Events.InteractionCreate, {
+      commandName: "message",
+      createdTimestamp: Date.now(),
+      isChatInputCommand: () => true,
+      isModalSubmit: () => false,
+      inGuild: () => true,
+      guildId: "guild-id",
+      channelId: "channel-id",
+      channel: { type: ChannelType.GuildText },
+      memberPermissions: { has: () => true },
+      replied: false,
+      deferred: false,
+      options: {
+        getSubcommand: () => "recurring-create",
+        getSubcommandGroup: () => "schedule",
+        getString: (name: string) => options[name] ?? null,
+      },
+      showModal,
+      reply,
+    } as unknown as ChatInputCommandInteraction);
+    const operation: unknown = f.run.mock.results.at(-1)!.value;
+    if (outcome === "success") await operation;
+    else await expect(operation).rejects.toBe(error);
+    expect(showModal).toHaveBeenCalledOnce();
+    expect(reply).not.toHaveBeenCalled();
+    expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
+    if (outcome === "success") {
+      const customId = showModal.mock.calls[0]![0].custom_id;
+      expect(customId).toBe(
+        createRecurringMessageCreateModalId({
+          frequency: "weekly",
+          time: "09:30",
+          weekdays: "mon,fri",
+          timezone: "UTC",
+        }),
+      );
+      f.client.emit(Events.InteractionCreate, createModal(customId).interaction);
+      await f.run.mock.results.at(-1)!.value;
+      expect(f.scheduled.createRecurring).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          recurrence: { frequency: "weekly", time: "09:30", weekdays: "mon,fri", timezone: "UTC" },
+        }),
+      );
+      expect(f.logger.error).not.toHaveBeenCalled();
+    } else {
+      expect(f.logger.error).toHaveBeenCalledWith(
+        { event: "command_failed", commandName: "message", errorName: "Error" },
+        "Discord command failed",
+      );
+      expect(JSON.stringify(vi.mocked(f.logger.error).mock.calls)).not.toContain("private");
+    }
+    await f.client.destroy();
+  },
+);

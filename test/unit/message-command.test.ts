@@ -3,12 +3,13 @@ import {
   ComponentType,
   InteractionContextType,
   MessageFlags,
+  ModalBuilder,
   PermissionFlagsBits,
   TextInputStyle,
 } from "discord.js";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { ChatInputCommandInteraction, ModalBuilder, ModalSubmitInteraction } from "discord.js";
+import type { ChatInputCommandInteraction, ModalSubmitInteraction } from "discord.js";
 
 import {
   createManagedMessageSendModal,
@@ -291,7 +292,9 @@ describe("message command", () => {
     });
     expect(fixture.showModal).toHaveBeenCalledOnce();
     const shownModal = fixture.showModal.mock.calls[0]?.[0];
-    expect(shownModal?.toJSON()).toMatchObject({
+    expect(
+      shownModal === undefined ? undefined : ModalBuilder.from(shownModal).toJSON(),
+    ).toMatchObject({
       custom_id: "managed-message:edit:900000000000000001:7",
       components: [
         { component: { value: "persisted exact content" } },
@@ -576,7 +579,7 @@ function createCommandInteraction(
 ) {
   const type = overrides.type ?? ChannelType.GuildText;
   const reply = vi.fn(() => Promise.resolve());
-  const showModal = vi.fn((modal: ModalBuilder) => {
+  const showModal = vi.fn((modal: Parameters<typeof ModalBuilder.from>[0]) => {
     void modal;
     return Promise.resolve();
   });
@@ -596,6 +599,7 @@ function createCommandInteraction(
       getSubcommandGroup: () => null,
       getString: () => overrides.messageReference ?? "900000000000000001",
     },
+    createdTimestamp: Date.now(),
     inGuild: () => overrides.inGuild ?? true,
     channel,
     memberPermissions: { has: () => overrides.canManage ?? true },
@@ -684,3 +688,233 @@ it("keeps one-time option descriptions within Discord's 100-character limit", ()
     }
   }
 });
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
+});
+
+function pendingLookup() {
+  let resolve!: (value: Awaited<ReturnType<ManagedMessageService["findForEdit"]>>) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<Awaited<ReturnType<ManagedMessageService["findForEdit"]>>>(
+    (res, rej) => {
+      resolve = res;
+      reject = rej;
+    },
+  );
+  return { promise, resolve, reject };
+}
+const editableMessage = {
+  outcome: "FOUND" as const,
+  messageId: "900000000000000001",
+  revision: 3,
+  payload: { content: "persisted", embed: null },
+};
+
+describe("managed edit bounded Modal preparation", () => {
+  it.each([1_999, 2_000, 2_001])("enforces the creation deadline at %sms", async (age) => {
+    vi.useFakeTimers();
+    const f = createCommandInteraction({ subcommand: "edit" });
+    const gate = pendingLookup();
+    f.service.findForEdit.mockReturnValueOnce(gate.promise);
+    const operation = handleMessageCommand(f.interaction, f.service);
+    await vi.advanceTimersByTimeAsync(age);
+    gate.resolve(editableMessage);
+    await operation;
+    expect(f.showModal).toHaveBeenCalledTimes(age < 2_000 ? 1 : 0);
+    expect(f.reply).toHaveBeenCalledTimes(age < 2_000 ? 0 : 1);
+    expect(f.service.findForEdit).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([1_999, 2_000, 2_499, 2_500, 2_501])(
+    "uses the interaction age before starting a lookup at %sms",
+    async (age) => {
+      vi.useFakeTimers();
+      const f = createCommandInteraction({ subcommand: "edit" });
+      Object.defineProperty(f.interaction, "createdTimestamp", { value: Date.now() - age });
+      f.service.findForEdit.mockResolvedValueOnce(editableMessage);
+      await handleMessageCommand(f.interaction, f.service);
+      expect(f.service.findForEdit).toHaveBeenCalledTimes(age < 2_000 ? 1 : 0);
+      expect(f.showModal).toHaveBeenCalledTimes(age < 2_000 ? 1 : 0);
+      expect(f.reply).toHaveBeenCalledTimes(age >= 2_000 && age < 2_500 ? 1 : 0);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(["resolve", "reject"])(
+    "keeps the handler pending after timeout until late %s",
+    async (outcome) => {
+      vi.useFakeTimers();
+      const f = createCommandInteraction({ subcommand: "edit" });
+      const gate = pendingLookup();
+      f.service.findForEdit.mockReturnValueOnce(gate.promise);
+      let done = false;
+      const operation = handleMessageCommand(f.interaction, f.service).then(() => {
+        done = true;
+      });
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(f.reply).toHaveBeenCalledExactlyOnceWith({
+        content: "WEFT could not load the managed message. Please try again later.",
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      });
+      expect(done).toBe(false);
+      if (outcome === "resolve") gate.resolve(editableMessage);
+      else gate.reject(new Error("late private DB error"));
+      await operation;
+      expect(done).toBe(true);
+      expect(f.showModal).not.toHaveBeenCalled();
+      expect(f.reply).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it("retains the read and preserves a failed timeout response over late DB rejection", async () => {
+    vi.useFakeTimers();
+    const f = createCommandInteraction({ subcommand: "edit" });
+    const gate = pendingLookup();
+    const error = new Error("timeout reply lost");
+    f.reply.mockRejectedValueOnce(error);
+    f.service.findForEdit.mockReturnValueOnce(gate.promise);
+    let done = false;
+    const operation = handleMessageCommand(f.interaction, f.service).catch((reason: unknown) => {
+      done = true;
+      return reason;
+    });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(done).toBe(false);
+    gate.reject(new Error("late DB failure"));
+    expect(await operation).toBe(error);
+    expect(f.showModal).not.toHaveBeenCalled();
+    expect(f.reply).toHaveBeenCalledOnce();
+  });
+
+  it.each([2_499, 2_500, 2_501])(
+    "does not start a timeout response past the response ceiling (%s)",
+    async (age) => {
+      vi.useFakeTimers();
+      const f = createCommandInteraction({ subcommand: "edit" });
+      const gate = pendingLookup();
+      f.service.findForEdit.mockReturnValueOnce(gate.promise);
+      const operation = handleMessageCommand(f.interaction, f.service);
+      await vi.advanceTimersByTimeAsync(0);
+      // Simulate a busy event loop: the timeout callback cannot run until this age.
+      vi.spyOn(performance, "now").mockReturnValue(age);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(f.reply).toHaveBeenCalledTimes(age < 2_500 ? 1 : 0);
+      gate.resolve(editableMessage);
+      await operation;
+      expect(f.showModal).not.toHaveBeenCalled();
+    },
+  );
+
+  it("checks elapsed time when a DB microtask wins before the timeout callback", async () => {
+    vi.useFakeTimers();
+    const f = createCommandInteraction({ subcommand: "edit" });
+    const gate = pendingLookup();
+    f.service.findForEdit.mockReturnValueOnce(gate.promise);
+    const operation = handleMessageCommand(f.interaction, f.service);
+    await vi.advanceTimersByTimeAsync(0);
+    vi.spyOn(performance, "now").mockReturnValue(2_001);
+    gate.resolve(editableMessage);
+    await operation;
+    expect(f.showModal).not.toHaveBeenCalled();
+    expect(f.reply).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("includes serialization in the budget and rechecks immediately before showModal", async () => {
+    vi.useFakeTimers();
+    const f = createCommandInteraction({ subcommand: "edit" });
+    f.service.findForEdit.mockResolvedValueOnce(editableMessage);
+    const data = createManagedMessageEditModal(
+      editableMessage.messageId,
+      editableMessage.revision,
+      editableMessage.payload,
+    ).toJSON();
+    vi.spyOn(ModalBuilder.prototype, "toJSON").mockImplementationOnce(() => {
+      vi.spyOn(performance, "now").mockReturnValue(2_000);
+      return data;
+    });
+    await handleMessageCommand(f.interaction, f.service);
+    expect(f.showModal).not.toHaveBeenCalled();
+    expect(f.reply).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("uses monotonic elapsed time even when wall time moves backwards", async () => {
+    vi.useFakeTimers();
+    const f = createCommandInteraction({ subcommand: "edit" });
+    const gate = pendingLookup();
+    f.service.findForEdit.mockReturnValueOnce(gate.promise);
+    const operation = handleMessageCommand(f.interaction, f.service);
+    vi.setSystemTime(Date.now() - 60_000);
+    await vi.advanceTimersByTimeAsync(2_000);
+    gate.resolve(editableMessage);
+    await operation;
+    expect(f.showModal).not.toHaveBeenCalled();
+    expect(f.reply).toHaveBeenCalledOnce();
+  });
+
+  it.each(["lookup", "construction", "serialization", "showModal"])(
+    "keeps %s failure separate and never retries a Modal response",
+    async (stage) => {
+      const f = createCommandInteraction({ subcommand: "edit" });
+      const error = new Error(`private ${stage} failure`);
+      f.service.findForEdit.mockResolvedValueOnce(editableMessage);
+      if (stage === "lookup") f.service.findForEdit.mockReset().mockRejectedValueOnce(error);
+      if (stage === "construction")
+        vi.spyOn(ModalBuilder.prototype, "setTitle").mockImplementationOnce(() => {
+          throw error;
+        });
+      if (stage === "serialization")
+        vi.spyOn(ModalBuilder.prototype, "toJSON").mockImplementationOnce(() => {
+          throw error;
+        });
+      if (stage === "showModal") f.showModal.mockRejectedValueOnce(error);
+      await expect(handleMessageCommand(f.interaction, f.service)).rejects.toBe(error);
+      expect(f.reply).toHaveBeenCalledTimes(stage === "showModal" ? 0 : 1);
+      expect(f.showModal).toHaveBeenCalledTimes(stage === "showModal" ? 1 : 0);
+      expect(f.service.findForEdit).toHaveBeenCalledOnce();
+    },
+  );
+});
+
+it.each([499, 500, 501])(
+  "subtracts the managed interaction's existing age from the lookup budget (%sms)",
+  async (delay) => {
+    vi.useFakeTimers();
+    const f = createCommandInteraction({ subcommand: "edit" });
+    Object.defineProperty(f.interaction, "createdTimestamp", { value: Date.now() - 1_500 });
+    const gate = pendingLookup();
+    f.service.findForEdit.mockReturnValueOnce(gate.promise);
+    const operation = handleMessageCommand(f.interaction, f.service);
+    await vi.advanceTimersByTimeAsync(delay);
+    gate.resolve(editableMessage);
+    await operation;
+    expect(f.showModal).toHaveBeenCalledTimes(delay < 500 ? 1 : 0);
+    expect(f.reply).toHaveBeenCalledTimes(delay < 500 ? 0 : 1);
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);
+
+it.each(["context", "authorization", "reference"])(
+  "does not start a late managed edit validation response (%s)",
+  async (failure) => {
+    vi.useFakeTimers();
+    const f = createCommandInteraction({
+      subcommand: "edit",
+      inGuild: failure !== "context",
+      canManage: failure !== "authorization",
+      messageReference: failure === "reference" ? "bad" : editableMessage.messageId,
+    });
+    Object.defineProperty(f.interaction, "createdTimestamp", { value: Date.now() - 2_500 });
+    await handleMessageCommand(f.interaction, f.service);
+    expect(f.reply).not.toHaveBeenCalled();
+    expect(f.showModal).not.toHaveBeenCalled();
+    expect(f.service.findForEdit).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);

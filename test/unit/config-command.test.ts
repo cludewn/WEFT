@@ -82,7 +82,7 @@ describe("config command", () => {
 
   it("shows initialized settings ephemerally", async () => {
     const store = createStore();
-    const { interaction, reply } = createInteraction({ subcommand: "show" });
+    const { interaction, editReply } = createInteraction({ subcommand: "show" });
 
     await handleConfigCommand(
       interaction,
@@ -93,8 +93,8 @@ describe("config command", () => {
     );
 
     expect(store.getOrCreate).toHaveBeenCalledWith(defaultSettings.guildId);
-    expect(reply).toHaveBeenCalledWith(
-      ephemeral(
+    expect(editReply).toHaveBeenCalledWith(
+      edited(
         "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: disabled\nAutomatic close: disabled (no parent channels)\nLink preview mode: hybrid",
       ),
     );
@@ -103,7 +103,7 @@ describe("config command", () => {
   it("includes a configured audit destination in top-level show", async () => {
     const settings = { ...defaultSettings, auditLogChannelId: "stored-channel" };
     const store = createStore({ getOrCreate: vi.fn(() => Promise.resolve(settings)) });
-    const { interaction, reply } = createInteraction({ subcommand: "show" });
+    const { interaction, editReply } = createInteraction({ subcommand: "show" });
     await handleConfigCommand(
       interaction,
       store,
@@ -111,8 +111,8 @@ describe("config command", () => {
       createAuditDestination(),
       createPreviewConfig(),
     );
-    expect(reply).toHaveBeenCalledWith(
-      ephemeral(
+    expect(editReply).toHaveBeenCalledWith(
+      edited(
         "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: <#stored-channel>\nAutomatic close: disabled (no parent channels)\nLink preview mode: hybrid",
       ),
     );
@@ -277,7 +277,10 @@ describe("audit log configuration command", () => {
     const store = createStore();
     const destination = createAuditDestination();
     destination.show = vi.fn(() => Promise.resolve("stale-id"));
-    const { interaction, reply } = createInteraction({ group: "audit-log", subcommand: "show" });
+    const { interaction, editReply } = createInteraction({
+      group: "audit-log",
+      subcommand: "show",
+    });
     await handleConfigCommand(
       interaction,
       store,
@@ -285,13 +288,16 @@ describe("audit log configuration command", () => {
       destination,
       createPreviewConfig(),
     );
-    expect(reply).toHaveBeenCalledWith(ephemeral("Audit log: <#stale-id>"));
+    expect(editReply).toHaveBeenCalledWith(edited("Audit log: <#stale-id>"));
     expect(store.getOrCreate).not.toHaveBeenCalled();
     expect(destination.show).toHaveBeenCalledWith(defaultSettings.guildId);
   });
 
   it("reports disabled for an absent settings row", async () => {
-    const { interaction, reply } = createInteraction({ group: "audit-log", subcommand: "show" });
+    const { interaction, editReply } = createInteraction({
+      group: "audit-log",
+      subcommand: "show",
+    });
     await handleConfigCommand(
       interaction,
       createStore(),
@@ -299,14 +305,17 @@ describe("audit log configuration command", () => {
       createAuditDestination(),
       createPreviewConfig(),
     );
-    expect(reply).toHaveBeenCalledWith(ephemeral("Audit log: disabled"));
+    expect(editReply).toHaveBeenCalledWith(edited("Audit log: disabled"));
   });
 
   it("replies once with a bounded ephemeral error when the read fails", async () => {
     const destination = createAuditDestination();
     const failure = new Error("private database details must stay hidden");
     destination.show = vi.fn(() => Promise.reject(failure));
-    const { interaction, reply } = createInteraction({ group: "audit-log", subcommand: "show" });
+    const { interaction, editReply } = createInteraction({
+      group: "audit-log",
+      subcommand: "show",
+    });
     await expect(
       handleConfigCommand(
         interaction,
@@ -316,19 +325,22 @@ describe("audit log configuration command", () => {
         createPreviewConfig(),
       ),
     ).rejects.toBe(failure);
-    expect(reply).toHaveBeenCalledOnce();
-    expect(reply).toHaveBeenCalledWith(
-      ephemeral("WEFT could not load the audit log configuration. Please try again later."),
+    expect(editReply).toHaveBeenCalledOnce();
+    expect(editReply).toHaveBeenCalledWith(
+      edited("WEFT could not load the audit log configuration. Please try again later."),
     );
-    expect(JSON.stringify(reply.mock.calls)).not.toContain("private database details");
+    expect(JSON.stringify(editReply.mock.calls)).not.toContain("private database details");
   });
 
   it("does not retry the response when the error reply fails", async () => {
     const destination = createAuditDestination();
     const failure = new Error("private database details must stay hidden");
     destination.show = vi.fn(() => Promise.reject(failure));
-    const { interaction, reply } = createInteraction({ group: "audit-log", subcommand: "show" });
-    reply.mockImplementation(() => {
+    const { interaction, editReply } = createInteraction({
+      group: "audit-log",
+      subcommand: "show",
+    });
+    editReply.mockImplementation(() => {
       throw new Error("Discord reply failed");
     });
     await expect(
@@ -340,7 +352,7 @@ describe("audit log configuration command", () => {
         createPreviewConfig(),
       ),
     ).rejects.toBe(failure);
-    expect(reply).toHaveBeenCalledOnce();
+    expect(editReply).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -487,7 +499,10 @@ describe("automatic close configuration command", () => {
         }),
       ),
     });
-    const { interaction, reply } = createInteraction({ group: "auto-close", subcommand: "show" });
+    const { interaction, editReply } = createInteraction({
+      group: "auto-close",
+      subcommand: "show",
+    });
 
     await handleConfigCommand(
       interaction,
@@ -497,8 +512,8 @@ describe("automatic close configuration command", () => {
       createPreviewConfig(),
     );
 
-    expect(reply).toHaveBeenCalledWith(
-      ephemeral(
+    expect(editReply).toHaveBeenCalledWith(
+      edited(
         "Inactivity: 12h\nBot messages count as activity: yes\nParent channels (2): <#111> <#222>",
       ),
     );
@@ -515,7 +530,10 @@ describe("automatic close configuration command", () => {
         }),
       ),
     });
-    const { interaction, reply } = createInteraction({ group: "auto-close", subcommand: "show" });
+    const { interaction, editReply } = createInteraction({
+      group: "auto-close",
+      subcommand: "show",
+    });
 
     await handleConfigCommand(
       interaction,
@@ -525,7 +543,7 @@ describe("automatic close configuration command", () => {
       createPreviewConfig(),
     );
 
-    const content = (reply.mock.calls[0]?.[0] as { content: string }).content;
+    const content = (editReply.mock.calls[0]?.[0] as { content: string }).content;
     expect(content).toContain(`Parent channels (30):`);
     expect(content).toContain("... and 5 more");
     expect(content.match(/<#/g)).toHaveLength(AUTO_CLOSE_PARENT_DISPLAY_LIMIT);
@@ -542,7 +560,7 @@ describe("automatic close configuration command", () => {
         }),
       ),
     });
-    const { interaction, reply } = createInteraction({ subcommand: "show" });
+    const { interaction, editReply } = createInteraction({ subcommand: "show" });
 
     await handleConfigCommand(
       interaction,
@@ -552,8 +570,8 @@ describe("automatic close configuration command", () => {
       createPreviewConfig(),
     );
 
-    expect(reply).toHaveBeenCalledWith(
-      ephemeral(
+    expect(editReply).toHaveBeenCalledWith(
+      edited(
         "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: disabled\nAutomatic close: 7d inactivity, 1 parent channel, bot messages counted\nLink preview mode: hybrid",
       ),
     );
@@ -1041,6 +1059,138 @@ describe("configuration acknowledgement and unknown results", () => {
           ? store[method]
           : automatic[method];
       expect(target).toHaveBeenCalledOnce();
+      expect(f.editReply).toHaveBeenCalledOnce();
+    },
+  );
+});
+
+function edited(content: string) {
+  return { content, allowedMentions: { parse: [] } };
+}
+
+function controlled<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+async function flushReadMicrotasks() {
+  for (let i = 0; i < 12; i++) await Promise.resolve();
+}
+
+describe("configuration read acknowledgement and ownership", () => {
+  for (const group of [null, "auto-close", "audit-log"]) {
+    function fixture() {
+      const f = createInteraction({ group, subcommand: "show" });
+      const store = createStore();
+      const automatic = createAutomaticClose();
+      const audit = createAuditDestination();
+      const read = vi.mocked(
+        group === null ? store.getOrCreate : group === "auto-close" ? automatic.show : audit.show,
+      );
+      const run = () =>
+        handleConfigCommand(f.interaction, store, automatic, audit, createPreviewConfig());
+      return { ...f, store, automatic, audit, read, run };
+    }
+
+    it(`waits for the ephemeral defer before any ${group ?? "config"} show read`, async () => {
+      const f = fixture();
+      const ack = controlled<void>();
+      f.deferReply.mockReturnValueOnce(ack.promise);
+      const operation = f.run();
+      await flushReadMicrotasks();
+      expect(f.deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+      expect(f.store.getOrCreate).not.toHaveBeenCalled();
+      expect(f.automatic.show).not.toHaveBeenCalled();
+      expect(f.audit.show).not.toHaveBeenCalled();
+      ack.resolve();
+      await operation;
+      expect(f.read).toHaveBeenCalledExactlyOnceWith(defaultSettings.guildId);
+      expect(f.editReply).toHaveBeenCalledOnce();
+      expect(f.editReply.mock.calls[0]![0]).toMatchObject({ allowedMentions: { parse: [] } });
+      expect(f.reply).not.toHaveBeenCalled();
+    });
+
+    it(`does not read or re-acknowledge ${group ?? "config"} show after defer rejection`, async () => {
+      const f = fixture();
+      const error = new Error("ack response lost");
+      f.deferReply.mockRejectedValueOnce(error);
+      await expect(f.run()).rejects.toBe(error);
+      expect(f.store.getOrCreate).not.toHaveBeenCalled();
+      expect(f.automatic.show).not.toHaveBeenCalled();
+      expect(f.audit.show).not.toHaveBeenCalled();
+      expect(f.reply).not.toHaveBeenCalled();
+      expect(f.editReply).not.toHaveBeenCalled();
+      expect(f.deferReply).toHaveBeenCalledOnce();
+    });
+
+    it(`reports ${group ?? "config"} show unavailability and preserves the DB error over response failure`, async () => {
+      const f = fixture();
+      const error = new Error("private DB error");
+      f.read.mockRejectedValueOnce(error);
+      f.editReply.mockRejectedValueOnce(new Error("edit lost"));
+      await expect(f.run()).rejects.toBe(error);
+      expect(f.editReply).toHaveBeenCalledExactlyOnceWith(
+        edited(
+          group === "audit-log"
+            ? "WEFT could not load the audit log configuration. Please try again later."
+            : group === "auto-close"
+              ? "WEFT could not load the automatic close configuration. Please try again later."
+              : "WEFT could not load the configuration. Please try again later.",
+        ),
+      );
+      expect(f.reply).not.toHaveBeenCalled();
+      expect(f.read).toHaveBeenCalledOnce();
+    });
+
+    it(`does not classify successful ${group ?? "config"} show delivery loss as a DB failure or replay`, async () => {
+      const f = fixture();
+      const error = new Error("edit response lost");
+      f.editReply.mockRejectedValueOnce(error);
+      await expect(f.run()).rejects.toBe(error);
+      expect(f.read).toHaveBeenCalledOnce();
+      expect(f.editReply).toHaveBeenCalledOnce();
+      expect(JSON.stringify(f.editReply.mock.calls)).not.toContain("could not load");
+      expect(f.reply).not.toHaveBeenCalled();
+    });
+  }
+
+  it.each(["settings", "automatic"])(
+    "owns the sibling after %s rejects first and preserves that rejection",
+    async (first) => {
+      const f = createInteraction();
+      const settings = controlled<GuildSettings>();
+      const automatic =
+        controlled<Awaited<ReturnType<AutomaticCloseConfigurationService["show"]>>>();
+      const store = createStore({ getOrCreate: vi.fn(() => settings.promise) });
+      const service = createAutomaticClose({ show: vi.fn(() => automatic.promise) });
+      const error = new Error("first failure");
+      let done = false;
+      const operation = handleConfigCommand(
+        f.interaction,
+        store,
+        service,
+        createAuditDestination(),
+        createPreviewConfig(),
+      ).catch((reason: unknown) => {
+        done = true;
+        return reason;
+      });
+      await flushReadMicrotasks();
+      if (first === "settings") settings.reject(error);
+      else automatic.reject(error);
+      await flushReadMicrotasks();
+      expect(done).toBe(false);
+      expect(f.editReply).not.toHaveBeenCalled();
+      if (first === "settings") automatic.reject(new Error("late sibling"));
+      else settings.reject(new Error("late sibling"));
+      expect(await operation).toBe(error);
+      expect(store.getOrCreate).toHaveBeenCalledOnce();
+      expect(service.show).toHaveBeenCalledOnce();
       expect(f.editReply).toHaveBeenCalledOnce();
     },
   );

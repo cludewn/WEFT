@@ -7,7 +7,7 @@ import {
 import { registerDiscordCommandHandler } from "../../src/discord.js";
 import type { CommandDependencies } from "../../src/commands.js";
 import { ComponentType } from "discord.js";
-import type { ModalSubmitInteraction } from "discord.js";
+import type { ChatInputCommandInteraction, ModalSubmitInteraction } from "discord.js";
 import type { Client } from "discord.js";
 import {
   createLinkPreviewDiscord,
@@ -990,3 +990,149 @@ it("drains raw Modal observation after the bounded user failure and rejects new 
   expect(closeManually).not.toHaveBeenCalled();
   expect(editReply.mock.calls.at(-1)?.[0]).toMatchObject({ content: BULK_PREPARATION_FAILURE });
 });
+
+it.each([
+  ["managed", "resolve"],
+  ["managed", "reject"],
+  ["managed", "reply-loss"],
+  ["scheduled", "resolve"],
+  ["scheduled", "reject"],
+  ["scheduled", "reply-loss"],
+] as const)(
+  "drains dispatcher-admitted %s Modal reads after timeout and %s",
+  async (kind, outcome) => {
+    vi.useFakeTimers();
+    const f = createFixture();
+    const raw = deferred();
+    const find = vi.fn(async () => {
+      await raw.promise;
+      return {
+        messageId: "900000000000000001",
+        guildId: "700000000000000001",
+        channelId: "800000000000000001",
+        creatorUserId: "600000000000000001",
+        payload: { content: "persisted private content", embed: null },
+        revision: 1,
+        status: "ACTIVE" as const,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+    });
+    const managed = createManagedMessageService({
+      store: { ...createManagedMessageStore({} as DatabaseClient), find },
+      discord: {} as ManagedMessageDiscord,
+      logger: f.logger,
+    });
+    const findEditable = vi.fn(async () => {
+      await raw.promise;
+      return {
+        outcome: "ACTIVE" as const,
+        definition: {
+          action: {
+            id: "11111111-1111-4111-8111-111111111111",
+            guildId: "700000000000000001",
+            targetId: "800000000000000001",
+            actionType: "SEND_MESSAGE",
+            status: "ACTIVE",
+            executeAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          },
+          creatorUserId: "600000000000000001",
+          retryCount: 0,
+          revision: 4,
+          payload: { content: "scheduled private content", embed: null },
+          resultMessageId: null,
+        },
+      };
+    });
+    const reply = vi.fn(() => Promise.resolve());
+    const responseError = new Error("private reply transport failure");
+    if (outcome === "reply-loss") reply.mockRejectedValueOnce(responseError);
+    const showModal = vi.fn();
+    const client = new EventEmitter() as unknown as Client;
+    const accepted: Promise<unknown>[] = [];
+    registerDiscordCommandHandler(
+      client,
+      {
+        managedMessages: managed,
+        scheduledMessages: { findEditable },
+        logger: f.logger,
+      } as unknown as CommandDependencies,
+      {
+        run: (operation) => {
+          const result = f.runtime.ingress.run(operation);
+          if (result) accepted.push(result);
+          return result;
+        },
+      },
+    );
+    const interaction = {
+      commandName: "message",
+      createdTimestamp: Date.now(),
+      isChatInputCommand: () => true,
+      options: {
+        getSubcommand: () => "edit",
+        getSubcommandGroup: () => (kind === "managed" ? null : "schedule"),
+        getString: () =>
+          kind === "managed" ? "900000000000000001" : "11111111-1111-4111-8111-111111111111",
+      },
+      inGuild: () => true,
+      channel: { type: ChannelType.GuildText },
+      memberPermissions: { has: (permission: bigint) => permission === P.ManageMessages },
+      guildId: "700000000000000001",
+      channelId: "800000000000000001",
+      reply,
+      showModal,
+    } as unknown as ChatInputCommandInteraction;
+    client.emit(Events.InteractionCreate, interaction);
+    expect(accepted).toHaveLength(0);
+    expect(find).not.toHaveBeenCalled();
+    expect(findEditable).not.toHaveBeenCalled();
+    await f.runtime.start();
+    client.emit(Events.InteractionCreate, interaction);
+    expect(accepted).toHaveLength(1);
+    let done = false;
+    const operation = accepted[0]!.then(
+      () => {
+        done = true;
+        return undefined;
+      },
+      (error: unknown) => {
+        done = true;
+        return error;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(2_001);
+    expect(reply).toHaveBeenCalledOnce();
+    expect(done).toBe(false);
+    const shutdown = f.runtime.shutdown("SIGTERM");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.runtime.getState()).toBe("SHUTTING_DOWN");
+    client.emit(Events.InteractionCreate, interaction);
+    expect(accepted).toHaveLength(1);
+    expect(kind === "managed" ? find : findEditable).toHaveBeenCalledOnce();
+    expect(reply).toHaveBeenCalledOnce();
+    expect(showModal).not.toHaveBeenCalled();
+    expect(f.dependencies.drainThreadLifecycle).not.toHaveBeenCalled();
+    expect(f.dependencies.stopPgBoss).not.toHaveBeenCalled();
+    expect(f.dependencies.destroyDiscord).not.toHaveBeenCalled();
+    expect(f.dependencies.closeDatabase).not.toHaveBeenCalled();
+    expect(SHUTDOWN_TIMEOUT_MS).toBe(30_000);
+    if (outcome === "resolve") raw.resolve();
+    else raw.reject(new Error("private late DB failure"));
+    expect(await operation).toBe(outcome === "reply-loss" ? responseError : undefined);
+    await shutdown;
+    expect(done).toBe(true);
+    expect(f.runtime.getState()).toBe("STOPPED");
+    expect(f.dependencies.destroyDiscord).toHaveBeenCalledOnce();
+    expect(f.dependencies.closeDatabase).toHaveBeenCalledOnce();
+    const bossIndex = f.calls.findIndex((call) => call.startsWith("boss-stop:"));
+    expect(bossIndex).toBeLessThan(f.calls.indexOf("discord-destroy"));
+    expect(f.calls.indexOf("discord-destroy")).toBeLessThan(f.calls.indexOf("database-close"));
+    expect(reply).toHaveBeenCalledOnce();
+    expect(showModal).not.toHaveBeenCalled();
+    expect(JSON.stringify(vi.mocked(f.logger.error).mock.calls)).not.toContain("private");
+    expect(vi.getTimerCount()).toBe(0);
+  },
+);

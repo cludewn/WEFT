@@ -147,6 +147,8 @@ export function parseScheduledMessageCreateModalId(
     : undefined;
 }
 
+class RecurringModalTimezoneTooLongError extends Error {}
+
 const weekdays = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 
 export function createRecurringMessageCreateModalId(input: RecurringCommandInput): string {
@@ -155,7 +157,8 @@ export function createRecurringMessageCreateModalId(input: RecurringCommandInput
   const timezone =
     parsed.explicitTimezone === undefined ? "-" : encodeURIComponent(parsed.explicitTimezone);
   const customId = `${RECURRING_MESSAGE_CREATE_MODAL_PREFIX}${parsed.frequency === "DAILY" ? "d" : "w"}:${parsed.localTime.replace(":", "")}:${parsed.weekdayMask}:${timezone}`;
-  if (customId.length > 100) throw new Error("Recurring modal identity exceeds Discord limit");
+  if (customId.length > 100)
+    throw new RecurringModalTimezoneTooLongError("Recurring modal identity exceeds Discord limit");
   return customId;
 }
 
@@ -528,14 +531,98 @@ function isSupportedTarget(channel: ChatInputCommandInteraction["channel"]): boo
   return channel !== null && isSupportedManagedMessageTargetType(channel.type);
 }
 
+const EDIT_MODAL_PREPARATION_MS = 2_000;
+const MODAL_ERROR_RESPONSE_MS = 2_500;
+const MODAL_PREPARATION_FAILURE =
+  "WEFT could not prepare the message form. Please try again later.";
+
+async function replyBeforeModalDeadline(
+  interaction: ChatInputCommandInteraction,
+  elapsed: () => number,
+  message: string,
+): Promise<void> {
+  if (elapsed() < MODAL_ERROR_RESPONSE_MS) await interaction.reply(ephemeralReply(message));
+}
+
+async function showEditableMessageModal<T>(
+  interaction: ChatInputCommandInteraction,
+  elapsed: () => number,
+  read: () => Promise<T>,
+  prepare: (target: T) => ModalBuilder | string,
+  unavailable: string,
+): Promise<void> {
+  if (elapsed() >= EDIT_MODAL_PREPARATION_MS) {
+    await replyBeforeModalDeadline(interaction, elapsed, unavailable);
+    return;
+  }
+
+  // Observe a bounded result, but keep the admitted handler alive until the raw read settles.
+  const raw = (async () => read())();
+  const settled = raw.then(
+    (value) => ({ status: "fulfilled" as const, value }),
+    (error: unknown) => ({ status: "rejected" as const, error }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    let prepared;
+    try {
+      const result = await Promise.race([
+        settled,
+        new Promise<{ status: "timeout" }>((resolve) => {
+          timer = setTimeout(
+            () => resolve({ status: "timeout" }),
+            Math.max(0, EDIT_MODAL_PREPARATION_MS - elapsed()),
+          );
+        }),
+      ]);
+      clearTimeout(timer);
+      // Check the clock even if the read's microtask beat the timeout callback.
+      if (result.status === "timeout" || elapsed() >= EDIT_MODAL_PREPARATION_MS) {
+        prepared = unavailable;
+      } else {
+        if (result.status === "rejected") throw result.error;
+        const modal = prepare(result.value);
+        // Pass serialized data so showModal cannot perform deferred builder validation.
+        prepared = typeof modal === "string" ? modal : modal.toJSON();
+      }
+    } catch (error) {
+      try {
+        await replyBeforeModalDeadline(interaction, elapsed, MODAL_PREPARATION_FAILURE);
+      } catch {
+        // Preparation remains the primary error for bounded dispatcher logging.
+      }
+      throw error;
+    }
+
+    if (elapsed() >= EDIT_MODAL_PREPARATION_MS) {
+      await replyBeforeModalDeadline(interaction, elapsed, unavailable);
+    } else if (typeof prepared === "string") {
+      await replyBeforeModalDeadline(interaction, elapsed, prepared);
+    } else {
+      // Once attempted, an ambiguous Modal acknowledgement must never cause another reply.
+      await interaction.showModal(prepared);
+    }
+  } finally {
+    clearTimeout(timer);
+    await settled;
+  }
+}
+
 export async function handleMessageCommand(
   interaction: ChatInputCommandInteraction,
   service: ManagedMessageService,
   scheduledMessages?: ScheduledMessageCommandService,
 ): Promise<void> {
+  const startedAt = performance.now();
+  const initialAge = Math.max(0, Date.now() - interaction.createdTimestamp);
+  const elapsed = () => initialAge + performance.now() - startedAt;
   const subcommand = interaction.options.getSubcommand();
   const group = interaction.options.getSubcommandGroup(false);
   const scheduled = group === "schedule";
+  const replyContextError = (message: string) =>
+    subcommand === "edit"
+      ? replyBeforeModalDeadline(interaction, elapsed, message)
+      : interaction.reply(ephemeralReply(message));
   if (
     (!scheduled && subcommand !== "send" && subcommand !== "edit") ||
     (scheduled &&
@@ -556,19 +643,15 @@ export async function handleMessageCommand(
       ? isSupportedTarget(interaction.channel)
       : isActiveSupportedTarget(interaction.channel));
   if (!supportedContext) {
-    await interaction.reply(
-      ephemeralReply(
-        scheduled && subcommand !== "create" && subcommand !== "recurring-create"
-          ? "Scheduled-message administration is only supported in a guild text or thread channel."
-          : "Managed messages are only supported in a guild text or active thread channel.",
-      ),
+    await replyContextError(
+      scheduled && subcommand !== "create" && subcommand !== "recurring-create"
+        ? "Scheduled-message administration is only supported in a guild text or thread channel."
+        : "Managed messages are only supported in a guild text or active thread channel.",
     );
     return;
   }
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
-    await interaction.reply(
-      ephemeralReply("You need the Manage Messages permission to manage messages."),
-    );
+    await replyContextError("You need the Manage Messages permission to manage messages.");
     return;
   }
   if (scheduled) {
@@ -597,34 +680,50 @@ export async function handleMessageCommand(
         );
         return;
       }
+      let modal;
       try {
-        await interaction.showModal(createRecurringMessageCreateModal(recurrence));
-      } catch {
-        await interaction.reply(
-          ephemeralReply("The recurring timezone is too long for this form."),
-        );
+        modal = createRecurringMessageCreateModal(recurrence).toJSON();
+      } catch (error) {
+        if (error instanceof RecurringModalTimezoneTooLongError) {
+          await replyBeforeModalDeadline(
+            interaction,
+            elapsed,
+            "The recurring timezone is too long for this form.",
+          );
+          return;
+        }
+        try {
+          await replyBeforeModalDeadline(interaction, elapsed, MODAL_PREPARATION_FAILURE);
+        } catch {
+          // Preserve the construction/serialization error for bounded dispatcher logging.
+        }
+        throw error;
       }
+      await interaction.showModal(modal);
       return;
     }
 
     const scheduledActionId =
       subcommand === "list" ? undefined : interaction.options.getString("id", true);
     if (subcommand === "edit") {
-      const target = await scheduledMessages.findEditable({
-        scheduledActionId: scheduledActionId!,
-        guildId: interaction.guildId,
-        channelId: interaction.channelId,
-      });
-      if (target.outcome !== "ACTIVE") {
-        await interaction.reply(ephemeralReply(scheduledMessageEditableLoadMessage(target)));
-        return;
-      }
-      await interaction.showModal(
-        createScheduledMessageEditModal(
-          target.definition.action.id,
-          target.definition.revision,
-          target.definition.payload,
-        ),
+      await showEditableMessageModal(
+        interaction,
+        elapsed,
+        () =>
+          scheduledMessages.findEditable({
+            scheduledActionId: scheduledActionId!,
+            guildId: interaction.guildId,
+            channelId: interaction.channelId,
+          }),
+        (target) =>
+          target.outcome === "ACTIVE"
+            ? createScheduledMessageEditModal(
+                target.definition.action.id,
+                target.definition.revision,
+                target.definition.payload,
+              )
+            : scheduledMessageEditableLoadMessage(target),
+        "WEFT could not load the scheduled message. Please try again later.",
       );
       return;
     }
@@ -708,32 +807,33 @@ export async function handleMessageCommand(
     interaction.channelId,
   );
   if (!reference.ok) {
-    await interaction.reply(
-      ephemeralReply(
-        reference.code === "CURRENT_CHANNEL_MISMATCH"
-          ? "The managed message must be in the current guild and channel."
-          : "Enter a valid Discord message ID or canonical discord.com message link.",
-      ),
+    await replyBeforeModalDeadline(
+      interaction,
+      elapsed,
+      reference.code === "CURRENT_CHANNEL_MISMATCH"
+        ? "The managed message must be in the current guild and channel."
+        : "Enter a valid Discord message ID or canonical discord.com message link.",
     );
     return;
   }
-  const target = await service.findForEdit({
-    guildId: interaction.guildId,
-    channelId: interaction.channelId,
-    messageId: reference.messageId,
-  });
-  if (target.outcome !== "FOUND") {
-    const message =
-      target.outcome === "DELETED"
-        ? "That managed message has been deleted."
-        : target.outcome === "FAILURE"
-          ? "WEFT could not load the managed message. Please try again later."
-          : "No active managed message was found in this channel for that target.";
-    await interaction.reply(ephemeralReply(message));
-    return;
-  }
-  await interaction.showModal(
-    createManagedMessageEditModal(target.messageId, target.revision, target.payload),
+  await showEditableMessageModal(
+    interaction,
+    elapsed,
+    () =>
+      service.findForEdit({
+        guildId: interaction.guildId,
+        channelId: interaction.channelId,
+        messageId: reference.messageId,
+      }),
+    (target) =>
+      target.outcome === "FOUND"
+        ? createManagedMessageEditModal(target.messageId, target.revision, target.payload)
+        : target.outcome === "DELETED"
+          ? "That managed message has been deleted."
+          : target.outcome === "FAILURE"
+            ? "WEFT could not load the managed message. Please try again later."
+            : "No active managed message was found in this channel for that target.",
+    "WEFT could not load the managed message. Please try again later.",
   );
 }
 
