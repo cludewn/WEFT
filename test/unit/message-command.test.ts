@@ -14,6 +14,9 @@ import type { ChatInputCommandInteraction, ModalSubmitInteraction } from "discor
 import {
   createManagedMessageSendModal,
   createManagedMessageEditModal,
+  createScheduledMessageCreateModal,
+  createScheduledMessageEditModal,
+  createRecurringMessageCreateModal,
   createRecurringMessageCreateModalId,
   parseRecurringMessageCreateModalId,
   handleManagedMessageModalSubmit,
@@ -454,7 +457,7 @@ describe("managed message modal submit", () => {
       payload: { content: "<@123> exact", embed: null },
     });
     expect(fixture.editReply).toHaveBeenCalledWith({
-      content: "Managed message sent.",
+      content: "Managed message `message-id` sent.",
       allowedMentions: { parse: [] },
     });
   });
@@ -639,7 +642,7 @@ function createModalInteraction(
   const service = {
     send,
     findForEdit: vi.fn(),
-    edit: vi.fn(() =>
+    edit: vi.fn<ManagedMessageService["edit"]>(() =>
       Promise.resolve({ outcome: "SUCCESS", messageId: "message-id", revision: 2 } as const),
     ),
   } satisfies ManagedMessageService;
@@ -918,3 +921,150 @@ it.each(["context", "authorization", "reference"])(
     expect(vi.getTimerCount()).toBe(0);
   },
 );
+
+it.each(["send", "edit", "scheduled-create", "scheduled-edit", "recurring-create"] as const)(
+  "serializes concise labels and five optional inputs for %s without changing identity or values",
+  (kind) => {
+    const payload = {
+      content: "**Keep** <@123>",
+      embed: {
+        title: "Title",
+        description: "Description",
+        color: 0x5865f2,
+        imageUrl: "https://example.invalid/image.png",
+      },
+    };
+    const scheduleId = "11111111-1111-4111-8111-111111111111";
+    const modals = {
+      send: createManagedMessageSendModal(),
+      edit: createManagedMessageEditModal("900000000000000001", 3, payload),
+      "scheduled-create": createScheduledMessageCreateModal({ kind: "AFTER", durationMs: 60_000 }),
+      "scheduled-edit": createScheduledMessageEditModal(scheduleId, 3, payload),
+      "recurring-create": createRecurringMessageCreateModal({ frequency: "daily", time: "09:30" }),
+    };
+    const expectedIds = {
+      send: "managed-message:send",
+      edit: "managed-message:edit:900000000000000001:3",
+      "scheduled-create": "scheduled-message:schedule-create:60000",
+      "scheduled-edit": `scheduled-message:schedule-edit:${scheduleId}:3`,
+      "recurring-create": "recurring-message:create:d:0930:127:-",
+    };
+    const modal = modals[kind].toJSON();
+    expect(modal.custom_id).toBe(expectedIds[kind]);
+    expect(modal.custom_id.length).toBeLessThanOrEqual(100);
+    expect(ModalBuilder.from(modal).toJSON()).toEqual(modal);
+    expect(modal.components).toHaveLength(5);
+    const labels = modal.components.map((label) => {
+      if (!("label" in label)) throw new Error("Expected Modal label");
+      return label;
+    });
+    expect(labels.map(({ label, description }) => ({ label, description }))).toEqual([
+      { label: "Message content", description: "Enter text or provide a visible embed." },
+      { label: "Embed title", description: undefined },
+      { label: "Embed description", description: undefined },
+      { label: "Embed color", description: "Hex color: RRGGBB or #RRGGBB." },
+      { label: "Embed image URL", description: "Absolute HTTP or HTTPS URL." },
+    ]);
+    expect(Object.hasOwn(labels[1]!, "description")).toBe(false);
+    expect(Object.hasOwn(labels[2]!, "description")).toBe(false);
+    const inputs = labels.map((label) => label.component);
+    const expectedInputs = [
+      {
+        custom_id: MANAGED_MESSAGE_CONTENT_INPUT_ID,
+        style: TextInputStyle.Paragraph,
+        max_length: 2000,
+      },
+      {
+        custom_id: MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID,
+        style: TextInputStyle.Short,
+        max_length: 256,
+      },
+      {
+        custom_id: MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID,
+        style: TextInputStyle.Paragraph,
+        max_length: 4000,
+      },
+      {
+        custom_id: MANAGED_MESSAGE_EMBED_COLOR_INPUT_ID,
+        style: TextInputStyle.Short,
+        max_length: 7,
+      },
+      {
+        custom_id: MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID,
+        style: TextInputStyle.Short,
+        max_length: 2048,
+      },
+    ];
+    const prefilled = kind === "edit" || kind === "scheduled-edit";
+    const values = [payload.content, "Title", "Description", "#5865F2", payload.embed.imageUrl];
+    for (const [index, input] of inputs.entries()) {
+      expect(input).toMatchObject({
+        ...expectedInputs[index],
+        type: ComponentType.TextInput,
+        required: false,
+      });
+      if (prefilled) expect(input).toMatchObject({ value: values[index] });
+      else expect(Object.hasOwn(input, "value")).toBe(false);
+    }
+    for (const label of labels) {
+      expect(label.label.length).toBeLessThanOrEqual(45);
+      if (label.description !== undefined) {
+        expect(label.description.length).toBeLessThanOrEqual(100);
+        expect(label.description).not.toMatch(/optional|leave empty|whitespace/i);
+      }
+    }
+  },
+);
+
+it("identifies confirmed send, edit and unchanged results while retaining management uncertainty", async () => {
+  const messageId = "18446744073709551615";
+  const send = createModalInteraction({
+    sendImplementation: () => Promise.resolve({ outcome: "SUCCESS", messageId }),
+  });
+  await handleManagedMessageModalSubmit(send.interaction, send.service);
+  expect(send.editReply).toHaveBeenCalledWith({
+    content: `Managed message \`${messageId}\` sent.`,
+    allowedMentions: { parse: [] },
+  });
+  for (const outcome of ["SUCCESS", "UNCHANGED"] as const) {
+    const edit = createModalInteraction({ customId: "managed-message:edit:900000000000000001:3" });
+    edit.service.edit.mockResolvedValue(
+      outcome === "SUCCESS" ? { outcome, messageId, revision: 4 } : { outcome, messageId },
+    );
+    await handleManagedMessageModalSubmit(edit.interaction, edit.service);
+    expect(edit.editReply).toHaveBeenCalledWith({
+      content: `Managed message \`${messageId}\` ${outcome === "SUCCESS" ? "edited" : "unchanged"}.`,
+      allowedMentions: { parse: [] },
+    });
+    expect(edit.service.send).not.toHaveBeenCalled();
+  }
+  const uncertain = createModalInteraction({
+    sendImplementation: () => Promise.resolve({ outcome: "UNCONFIRMED", messageId }),
+  });
+  await handleManagedMessageModalSubmit(uncertain.interaction, uncertain.service);
+  expect(uncertain.editReply).toHaveBeenCalledWith({
+    content: `WEFT sent message \`${messageId}\`, but could not confirm whether it is managed. WEFT did not attempt removal. Check its state before retrying or deleting it.`,
+    allowedMentions: { parse: [] },
+  });
+});
+
+it("distinguishes configured scheduling timezones from preserved recurring timezones", () => {
+  const group = messageCommandDefinition
+    .toJSON()
+    .options?.find((option) => option.name === "schedule");
+  if (!group || !("options" in group)) throw new Error("Expected schedule group");
+  const descriptions = new Map(
+    group.options?.map((command) => [command.name, JSON.stringify(command)]),
+  );
+  expect(descriptions.get("create")).toContain("configured guild timezone");
+  expect(descriptions.get("reschedule")).toContain("configured guild timezone");
+  expect(descriptions.get("recurring-create")).toContain("defaults to current guild timezone");
+  expect(descriptions.get("recurrence-edit")).toContain(
+    "omitted keeps the existing series timezone",
+  );
+  for (const name of ["recurring-create", "recurrence-edit"]) {
+    expect(descriptions.get(name)).toContain("Asia/Tokyo or UTC");
+    expect(descriptions.get(name)).toContain("HH:MM");
+    expect(descriptions.get(name)).toContain("mon,tue,wed,thu,fri,sat,sun");
+  }
+});

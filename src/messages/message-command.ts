@@ -1,5 +1,6 @@
 import {
   ChannelType,
+  escapeMarkdown,
   InteractionContextType,
   LabelBuilder,
   MessageFlags,
@@ -43,7 +44,12 @@ import type {
   CreateScheduledMessageCommandResult,
   ScheduledMessageCommandService,
 } from "./scheduled-message-command.js";
-import { parseRecurringCommandInput, type RecurringCommandInput } from "./recurring-message.js";
+import {
+  parseRecurringCommandInput,
+  validateRecurringCommandInput,
+  type RecurringCommandInput,
+  type RecurringInputField,
+} from "./recurring-message.js";
 
 export const MANAGED_MESSAGE_SEND_MODAL_ID = "managed-message:send";
 export const MANAGED_MESSAGE_EDIT_MODAL_PREFIX = "managed-message:edit:";
@@ -270,7 +276,9 @@ export const messageCommandDefinition = new SlashCommandBuilder()
           .addStringOption((option) =>
             option
               .setName("at")
-              .setDescription("Guild-local YYYY-MM-DD HH:mm (24-hour clock); choose after or at")
+              .setDescription(
+                "YYYY-MM-DD HH:mm in the configured guild timezone; choose after or at",
+              )
               .setMinLength(16)
               .setMaxLength(16),
           ),
@@ -287,13 +295,24 @@ export const messageCommandDefinition = new SlashCommandBuilder()
               .addChoices({ name: "daily", value: "daily" }, { name: "weekly", value: "weekly" }),
           )
           .addStringOption((option) =>
-            option.setName("time").setDescription("Local time HH:MM").setRequired(true),
+            option
+              .setName("time")
+              .setDescription("24-hour local time HH:MM, e.g. 09:30")
+              .setRequired(true),
           )
           .addStringOption((option) =>
-            option.setName("weekdays").setDescription("Weekly days, e.g. mon,wed,fri"),
+            option
+              .setName("weekdays")
+              .setDescription(
+                "Weekly: unique mon,tue,wed,thu,fri,sat,sun separated by commas; omit for daily",
+              ),
           )
           .addStringOption((option) =>
-            option.setName("timezone").setDescription("Named IANA timezone"),
+            option
+              .setName("timezone")
+              .setDescription(
+                "IANA timezone, e.g. Asia/Tokyo or UTC; defaults to current guild timezone",
+              ),
           ),
       )
       .addSubcommand((subcommand) =>
@@ -343,7 +362,9 @@ export const messageCommandDefinition = new SlashCommandBuilder()
           .addStringOption((option) =>
             option
               .setName("at")
-              .setDescription("Guild-local YYYY-MM-DD HH:mm (24-hour clock); choose after or at")
+              .setDescription(
+                "YYYY-MM-DD HH:mm in the configured guild timezone; choose after or at",
+              )
               .setMinLength(16)
               .setMaxLength(16),
           ),
@@ -363,13 +384,24 @@ export const messageCommandDefinition = new SlashCommandBuilder()
               .addChoices({ name: "daily", value: "daily" }, { name: "weekly", value: "weekly" }),
           )
           .addStringOption((option) =>
-            option.setName("time").setDescription("Local time HH:MM").setRequired(true),
+            option
+              .setName("time")
+              .setDescription("24-hour local time HH:MM, e.g. 09:30")
+              .setRequired(true),
           )
           .addStringOption((option) =>
-            option.setName("weekdays").setDescription("Weekly days, e.g. mon,wed,fri"),
+            option
+              .setName("weekdays")
+              .setDescription(
+                "Weekly: unique mon,tue,wed,thu,fri,sat,sun separated by commas; omit for daily",
+              ),
           )
           .addStringOption((option) =>
-            option.setName("timezone").setDescription("Named IANA timezone"),
+            option
+              .setName("timezone")
+              .setDescription(
+                "IANA timezone, e.g. Asia/Tokyo or UTC; omitted keeps the existing series timezone",
+              ),
           ),
       ),
   );
@@ -410,6 +442,7 @@ function createPayloadModal(
     .addLabelComponents(
       new LabelBuilder()
         .setLabel("Message content")
+        .setDescription("Enter text or provide a visible embed.")
         .setTextInputComponent(
           createInput(
             MANAGED_MESSAGE_CONTENT_INPUT_ID,
@@ -440,6 +473,7 @@ function createPayloadModal(
         ),
       new LabelBuilder()
         .setLabel("Embed color")
+        .setDescription("Hex color: RRGGBB or #RRGGBB.")
         .setTextInputComponent(
           createInput(
             MANAGED_MESSAGE_EMBED_COLOR_INPUT_ID,
@@ -452,6 +486,7 @@ function createPayloadModal(
         ),
       new LabelBuilder()
         .setLabel("Embed image URL")
+        .setDescription("Absolute HTTP or HTTPS URL.")
         .setTextInputComponent(
           createInput(
             MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID,
@@ -672,11 +707,10 @@ export async function handleMessageCommand(
 
     if (subcommand === "recurring-create") {
       const recurrence = recurrenceOptions(interaction);
-      if (parseRecurringCommandInput(recurrence) === undefined) {
+      const recurrenceValidation = validateRecurringCommandInput(recurrence);
+      if (!recurrenceValidation.ok) {
         await interaction.reply(
-          ephemeralReply(
-            "Enter daily without weekdays, or weekly with unique comma-separated weekdays, strict HH:MM, and a named IANA timezone.",
-          ),
+          ephemeralReply(recurrenceInputGuidance(recurrenceValidation.field)),
         );
         return;
       }
@@ -752,7 +786,9 @@ export async function handleMessageCommand(
         actorUserId: interaction.user.id,
         recurrence: recurrenceOptions(interaction),
       });
-      await interaction.editReply(editReply(recurrenceEditResultMessage(result)));
+      await interaction.editReply(
+        editReply(recurrenceEditResultMessage(result, scheduledActionId!)),
+      );
       return;
     }
     if (subcommand === "cancel") {
@@ -762,7 +798,9 @@ export async function handleMessageCommand(
         channelId: interaction.channelId,
         actorUserId: interaction.user.id,
       });
-      await interaction.editReply(editReply(cancelScheduledMessageResultMessage(result)));
+      await interaction.editReply(
+        editReply(cancelScheduledMessageResultMessage(result, scheduledActionId!)),
+      );
       return;
     }
     if (subcommand === "list") {
@@ -837,10 +875,60 @@ export async function handleMessageCommand(
   );
 }
 
+function safeScheduleMetadata(value: string): string {
+  return escapeMarkdown(value.replace(/[\r\n]/g, " "), {
+    maskedLink: true,
+    heading: true,
+    bulletedList: true,
+    numberedList: true,
+  })
+    .replaceAll("<", "\\<")
+    .replaceAll(">", "\\>");
+}
+
+function scheduleStateLabel(state: string): string {
+  switch (state) {
+    case "ACTIVE":
+    case "PENDING":
+    case "EXECUTING":
+    case "RETRY_PENDING":
+    case "CANCELLED":
+    case "COMPLETED":
+    case "FAILED":
+    case "SKIPPED":
+      return `**${state}**`;
+    default:
+      return "**UNKNOWN**";
+  }
+}
+
+function recurringTimeLabel(status: string, occurrence: string | null, compact = false): string {
+  if (status === "CANCELLED") return compact ? "Historical" : "Historical scheduled time";
+  if (occurrence === "PENDING") return compact ? "Next" : "Next scheduled occurrence";
+  if (occurrence === null)
+    return compact ? "Last materialized" : "Last materialized scheduled time";
+  return compact ? "Current" : "Current occurrence scheduled time";
+}
+
+function recurrenceInputGuidance(field?: RecurringInputField): string {
+  switch (field) {
+    case "frequency":
+      return "Choose daily or weekly for frequency.";
+    case "time":
+      return "Enter time as HH:MM on a 24-hour clock, e.g. 09:30.";
+    case "weekdays":
+      return "For daily, omit weekdays. For weekly, enter unique comma-separated mon,tue,wed,thu,fri,sat,sun tokens, e.g. mon,wed,fri.";
+    case "timezone":
+      return "Enter a named IANA timezone, e.g. Asia/Tokyo, or UTC. Numeric offsets are not supported.";
+    default:
+      return "Choose daily without weekdays, or weekly with unique comma-separated mon,tue,wed,thu,fri,sat,sun; use HH:MM and a named IANA timezone such as Asia/Tokyo or UTC.";
+  }
+}
+
 function createScheduledMessageResultMessage(result: CreateScheduledMessageCommandResult): string {
   if (result.outcome === "SUCCESS") {
     const when = Math.floor(result.definition.action.executeAt.getTime() / 1_000);
-    const base = `Scheduled message \`${result.definition.action.id}\` created. Target: <#${result.definition.action.targetId}>. Runs: <t:${when}:F> (<t:${when}:R>).`;
+    const base = `One-time schedule \`${result.definition.action.id}\` created. Target: <#${result.definition.action.targetId}>. Scheduled for: <t:${when}:F> (<t:${when}:R>).`;
     return result.deliveryPendingReconciliation
       ? `${base} Delivery is pending reconciliation.`
       : base;
@@ -887,18 +975,22 @@ function createScheduledMessageResultMessage(result: CreateScheduledMessageComma
     case "CURRENT_STATE_CHECK_FAILED":
       return "WEFT could not verify the current channel or permissions. Please try again later.";
     case "PERSISTENCE_UNCONFIRMED":
-      return "WEFT could not confirm that the schedule was saved. No delivery was enqueued.";
+      return "WEFT could not confirm that the schedule was saved. No delivery was enqueued. Inspect the schedule list before retrying.";
   }
 }
 
 function cancelScheduledMessageResultMessage(
   result: Awaited<ReturnType<ScheduledMessageCommandService["cancel"]>>,
+  scheduledActionId: string,
 ): string {
   if (result.outcome === "CANCELLED" || result.outcome === "ALREADY_CANCELLED") {
-    const base =
-      result.outcome === "CANCELLED"
-        ? "Scheduled message cancelled."
-        : "That scheduled message was already cancelled.";
+    const kind = result.kind === "RECURRING" ? "Recurring schedule" : "One-time schedule";
+    const resultText = result.outcome === "CANCELLED" ? "cancelled" : "already cancelled";
+    const warning =
+      result.kind === "RECURRING"
+        ? " Future occurrences will not be scheduled. An occurrence already executing may still finish."
+        : "";
+    const base = `${kind} \`${scheduledActionId}\` ${resultText}.${warning}`;
     return result.deliveryCleanupPending
       ? `${base} Delivery cleanup could not be confirmed, but the schedule remains cancelled.`
       : base;
@@ -913,7 +1005,7 @@ function cancelScheduledMessageResultMessage(
     case "NOT_FOUND_OR_WRONG_CONTEXT":
       return "No scheduled message was found in this channel for that ID.";
     case "PERSISTENCE_UNCONFIRMED":
-      return "WEFT could not confirm the cancellation. Please try again later.";
+      return "WEFT could not confirm the cancellation. Inspect the schedule before retrying.";
     case "CONFLICT":
       return "The scheduled message changed concurrently. Review it before retrying.";
   }
@@ -924,26 +1016,28 @@ function createRecurringMessageResultMessage(
 ): string {
   if (result.outcome === "SUCCESS") {
     const when = Math.floor(result.scheduledFor.getTime() / 1_000);
-    return `Recurring message scheduled as \`${result.scheduledActionId}\`. First occurrence: <t:${when}:F>.${result.deliveryPendingReconciliation ? " Delivery is pending reconciliation." : ""}`;
+    return `Recurring schedule created as \`${result.scheduledActionId}\`. First occurrence: <t:${when}:F>.${result.deliveryPendingReconciliation ? " Delivery is pending reconciliation." : ""}`;
   }
   if (result.outcome === "FAILURE") return createScheduledMessageResultMessage(result);
   if (result.outcome === "INVALID_GUILD_TIMEZONE")
     return "Configure a valid named IANA guild timezone or supply an explicit valid timezone.";
-  if (result.outcome === "INVALID_RECURRENCE") return "The recurrence is invalid.";
+  if (result.outcome === "INVALID_RECURRENCE") return recurrenceInputGuidance(result.field);
   if (result.outcome === "PERSISTENCE_UNCONFIRMED")
-    return "WEFT could not confirm that the recurring schedule was saved. No delivery was enqueued.";
+    return "WEFT could not confirm that the recurring schedule was saved. No delivery was enqueued. Inspect the schedule list before retrying.";
   return "Recurring scheduling is temporarily unavailable.";
 }
 
 function recurrenceEditResultMessage(
   result: Awaited<ReturnType<NonNullable<ScheduledMessageCommandService["editRecurrence"]>>>,
+  scheduledActionId: string,
 ): string {
   if (result.outcome === "COMMITTED")
-    return `Recurrence updated.${result.effect.deferredMaterialization ? " The current in-flight occurrence remains unchanged; future materialization is deferred." : ""}${result.deliveryPendingReconciliation ? " Delivery is pending reconciliation." : ""}`;
-  if (result.outcome === "UNCHANGED") return "The recurrence is already unchanged.";
+    return `Recurring schedule \`${scheduledActionId}\` recurrence updated.${result.effect.deferredMaterialization ? " An occurrence already claimed or executing keeps its existing recurrence; future scheduling is deferred." : ""}${result.deliveryPendingReconciliation ? " Delivery is pending reconciliation." : ""}`;
+  if (result.outcome === "UNCHANGED")
+    return `Recurring schedule \`${scheduledActionId}\` recurrence unchanged.`;
   if (result.outcome === "WRONG_KIND")
     return "This is a one-time schedule; use /message schedule reschedule.";
-  if (result.outcome === "INVALID_RECURRENCE") return "The recurrence is invalid.";
+  if (result.outcome === "INVALID_RECURRENCE") return recurrenceInputGuidance(result.field);
   if (result.outcome === "CONFLICT")
     return "The recurring schedule changed concurrently. Review it before retrying.";
   if (result.outcome === "NOT_FOUND_OR_WRONG_CONTEXT")
@@ -959,27 +1053,52 @@ function scheduledMessageStatusMessage(
   if (result.outcome === "FOUND") {
     const schedule = result.schedule;
     const when = Math.floor(schedule.executeAt.getTime() / 1_000);
+    const creator = `Creator: <@${schedule.creatorUserId}> (\`${schedule.creatorUserId}\`)`;
     if ("kind" in schedule) {
       const days =
         schedule.frequency === "WEEKLY"
-          ? ` weekdays: ${weekdays.filter((_, index) => (schedule.weekdayMask & (1 << index)) !== 0).join(",")};`
+          ? `Weekdays: ${weekdays.filter((_, index) => (schedule.weekdayMask & (1 << index)) !== 0).join(", ")}\n`
           : "";
-      const timeMeaning =
-        schedule.status === "CANCELLED"
-          ? "Historical scheduled time"
-          : schedule.currentOccurrenceStatus === "PENDING"
-            ? "Next scheduled occurrence"
-            : schedule.currentOccurrenceStatus === null
-              ? "Last materialized scheduled time"
-              : "Current occurrence scheduled time";
-      return `Schedule \`${schedule.scheduledActionId}\` is **${schedule.status}** (recurring). Creator ID: \`${schedule.creatorUserId}\`. Revision: ${schedule.revision}. ${schedule.frequency.toLowerCase()};${days} local time: ${schedule.localTime.slice(0, 5)}; timezone: ${schedule.timezone}. ${timeMeaning}: <t:${when}:F>. Current occurrence: \`${schedule.currentOccurrenceId ?? "none"}\` (${schedule.currentOccurrenceStatus ?? "none"}); retry count: ${schedule.currentOccurrenceId === null ? "none" : (schedule.retryCount ?? "none")}.`;
+      const timeMeaning = recurringTimeLabel(schedule.status, schedule.currentOccurrenceStatus);
+      return [
+        `Recurring schedule \`${schedule.scheduledActionId}\``,
+        `Series status: ${scheduleStateLabel(schedule.status)}`,
+        `Target: <#${schedule.channelId}>`,
+        creator,
+        `Revision: ${schedule.revision}`,
+        "",
+        `Recurrence: ${schedule.frequency === "DAILY" ? "Daily" : "Weekly"}`,
+        `${days}Local time: ${safeScheduleMetadata(schedule.localTime.slice(0, 5))}`,
+        `Scheduling timezone: ${safeScheduleMetadata(schedule.timezone)}`,
+        `${timeMeaning}: <t:${when}:F>`,
+        "Discord timestamps display in your local timezone.",
+        "",
+        `Current occurrence: ${schedule.currentOccurrenceId === null ? "none" : `\`${schedule.currentOccurrenceId}\``}`,
+        `Occurrence status: ${schedule.currentOccurrenceStatus === null ? "none" : scheduleStateLabel(schedule.currentOccurrenceStatus)}`,
+        `Occurrence retry count: ${schedule.currentOccurrenceId === null ? "none" : (schedule.retryCount ?? "none")}`,
+      ].join("\n");
     }
-    const messageLink =
-      schedule.status === "COMPLETED" && schedule.resultMessageId !== null
-        ? ` Message: https://discord.com/channels/${schedule.guildId}/${schedule.channelId}/${schedule.resultMessageId}.`
-        : "";
-    return `Schedule \`${schedule.scheduledActionId}\` is **${schedule.status}**. Target: <#${schedule.channelId}>. Runs: <t:${when}:F> (<t:${when}:R>). Creator ID: \`${schedule.creatorUserId}\`. Retry count: ${schedule.retryCount}.${messageLink}`;
+    const timeMeaning =
+      schedule.status === "ACTIVE"
+        ? "Scheduled for"
+        : schedule.status === "EXECUTING"
+          ? "Current execution scheduled for"
+          : "Originally scheduled for";
+    const lines = [
+      `One-time schedule \`${schedule.scheduledActionId}\``,
+      `Status: ${scheduleStateLabel(schedule.status)}`,
+      `Target: <#${schedule.channelId}>`,
+      `${timeMeaning}: <t:${when}:F> (<t:${when}:R>)`,
+      creator,
+      `Retry count: ${schedule.retryCount}`,
+    ];
+    if (schedule.status === "COMPLETED" && schedule.resultMessageId !== null)
+      lines.push(
+        `Message: https://discord.com/channels/${schedule.guildId}/${schedule.channelId}/${schedule.resultMessageId}`,
+      );
+    return lines.join("\n");
   }
+
   switch (result.outcome) {
     case "NOT_FOUND_OR_WRONG_CONTEXT":
       return "No scheduled message was found in this channel for that ID.";
@@ -1032,19 +1151,19 @@ function scheduledMessageListMessage(
   }
   const rows = result.schedules.map((schedule) => {
     const when = Math.floor(schedule.executeAt.getTime() / 1_000);
+    const creator = `<@${schedule.creatorUserId}> (\`${schedule.creatorUserId}\`)`;
     if ("kind" in schedule && schedule.kind === "RECURRING") {
-      const label =
-        schedule.currentOccurrenceStatus === "PENDING"
-          ? "next"
-          : schedule.currentOccurrenceStatus === null
-            ? "last"
-            : "current";
-      return `- \`${schedule.scheduledActionId}\` — recurring ${schedule.frequency} — **${schedule.currentOccurrenceStatus ?? schedule.status}** — ${label}: <t:${when}:F> — creator \`${schedule.creatorUserId}\``;
+      const label = recurringTimeLabel(schedule.status, schedule.currentOccurrenceStatus, true);
+      const occurrence =
+        schedule.currentOccurrenceStatus === null
+          ? "none"
+          : scheduleStateLabel(schedule.currentOccurrenceStatus);
+      return `- \`${schedule.scheduledActionId}\` Recurring ${schedule.frequency === "DAILY" ? "daily" : "weekly"} · ${scheduleStateLabel(schedule.status)} / ${occurrence}\n  ${label}: <t:${when}:F> · By: ${creator}`;
     }
-    return `- \`${schedule.scheduledActionId}\` — one-time — **${schedule.status}** — runs: <t:${when}:F> — creator \`${schedule.creatorUserId}\``;
+    return `- \`${schedule.scheduledActionId}\` One-time · ${scheduleStateLabel(schedule.status)}\n  Scheduled: <t:${when}:F> · By: ${creator}`;
   });
   const content = [
-    `Scheduled messages — page ${page}`,
+    `Scheduled messages — page ${page} (series / occurrence)`,
     ...rows,
     "Details: /message schedule status id:<schedule-id>.",
   ].join("\n");
@@ -1054,8 +1173,14 @@ function scheduledMessageListMessage(
 function scheduledMessageEditResultMessage(
   result: Awaited<ReturnType<ScheduledMessageCommandService["edit"]>>,
 ): string {
-  if (result.outcome === "EDITED") return "Scheduled message edited.";
-  if (result.outcome === "UNCHANGED") return "The scheduled message is already unchanged.";
+  if (result.outcome === "EDITED" || result.outcome === "UNCHANGED") {
+    const kind = result.kind === "RECURRING" ? "Recurring schedule" : "One-time schedule";
+    const warning =
+      result.kind === "RECURRING"
+        ? " An occurrence already claimed or executing keeps its existing payload."
+        : "";
+    return `${kind} \`${result.definition.action.id}\` payload ${result.outcome === "EDITED" ? "updated" : "unchanged"}.${warning}`;
+  }
   if (result.outcome === "INVALID_PAYLOAD") {
     return createScheduledMessageResultMessage({ outcome: "FAILURE", code: result.code });
   }
@@ -1085,7 +1210,7 @@ function scheduledMessageRescheduleResultMessage(
 ): string {
   if (result.outcome === "RESCHEDULED") {
     const when = Math.floor(result.definition.action.executeAt.getTime() / 1_000);
-    const base = `Scheduled message rescheduled for <t:${when}:F> (<t:${when}:R>).`;
+    const base = `One-time schedule \`${result.definition.action.id}\` rescheduled for <t:${when}:F> (<t:${when}:R>).`;
     return result.deliveryPendingReconciliation
       ? `${base} Delivery is pending reconciliation.`
       : base;
@@ -1120,7 +1245,7 @@ function scheduledMessageRescheduleResultMessage(
 }
 
 function sendResultMessage(result: ManagedMessageSendResult): string {
-  if (result.outcome === "SUCCESS") return "Managed message sent.";
+  if (result.outcome === "SUCCESS") return `Managed message \`${result.messageId}\` sent.`;
   if (result.outcome === "UNCONFIRMED") {
     return `WEFT sent message \`${result.messageId}\`, but could not confirm whether it is managed. WEFT did not attempt removal. Check its state before retrying or deleting it.`;
   }
@@ -1168,8 +1293,8 @@ function sendResultMessage(result: ManagedMessageSendResult): string {
 }
 
 function editResultMessage(result: ManagedMessageEditResult): string {
-  if (result.outcome === "SUCCESS") return "Managed message edited.";
-  if (result.outcome === "UNCHANGED") return "The managed message is already unchanged.";
+  if (result.outcome === "SUCCESS") return `Managed message \`${result.messageId}\` edited.`;
+  if (result.outcome === "UNCHANGED") return `Managed message \`${result.messageId}\` unchanged.`;
   if (result.outcome === "DELETED")
     return "The Discord message no longer exists and is now marked as deleted in WEFT.";
   if (result.outcome === "PARTIAL_FAILURE") {

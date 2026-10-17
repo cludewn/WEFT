@@ -10,9 +10,11 @@ export const ONE_TIME_SCHEDULE_ERRORS = {
   MISSING_SELECTOR: "Specify either after or at.",
   CONFLICTING_SELECTORS: "Specify only one of after or at.",
   INVALID_DURATION: "Enter one duration from 1m through 365d using m, h, or d.",
-  INVALID_AT_FORMAT: "Enter at as YYYY-MM-DD HH:mm using a 24-hour clock.",
+  INVALID_AT_FORMAT:
+    "Enter at as YYYY-MM-DD HH:mm using a 24-hour clock in the configured guild timezone.",
   INVALID_AT_DATE: "Enter a valid calendar date for at.",
-  INVALID_GUILD_TIMEZONE: "Configure a valid named IANA guild timezone before using at.",
+  INVALID_GUILD_TIMEZONE:
+    "Configure a named IANA guild timezone, e.g. Asia/Tokyo or UTC, before using at.",
   TIMEZONE_UNAVAILABLE: "WEFT could not load the guild timezone. Please try again later.",
   DST_GAP: "That local time does not exist in the guild timezone. Choose another time.",
   DST_OVERLAP:

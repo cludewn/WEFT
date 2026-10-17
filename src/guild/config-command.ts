@@ -1,5 +1,6 @@
 import {
   ChannelType,
+  escapeMarkdown,
   InteractionContextType,
   MessageFlags,
   PermissionFlagsBits,
@@ -14,7 +15,11 @@ import type {
 
 import { createConfigurationAuditContext } from "./guild-configuration-audit.js";
 import type { LinkPreviewConfiguration } from "../link-previews/link-preview-configuration.js";
-import { LINK_PREVIEW_MODES } from "../link-previews/link-preview.js";
+import {
+  LINK_PREVIEW_MODES,
+  isLinkPreviewMode,
+  type LinkPreviewMode,
+} from "../link-previews/link-preview.js";
 import type { AuditLogDestinationService } from "../audit/audit-log-destination.js";
 import type {
   AutomaticCloseConfigurationService,
@@ -44,6 +49,13 @@ const SUPPORTED_PARENT_CHANNEL_TYPES = [
 
 export const AUTO_CLOSE_PARENT_DISPLAY_LIMIT = 25;
 
+const LINK_PREVIEW_LABELS: Record<LinkPreviewMode, string> = {
+  hybrid: "Automatic public previews + optional buttons",
+  "public-only": "Automatic public previews only",
+  "button-only": "Preview buttons only",
+  off: "Off",
+};
+
 export const configCommandDefinition = new SlashCommandBuilder()
   .setName("config")
   .setDescription("View or update WEFT settings for this guild")
@@ -57,7 +69,10 @@ export const configCommandDefinition = new SlashCommandBuilder()
       .setName("timezone")
       .setDescription("Set this guild's IANA timezone")
       .addStringOption((option) =>
-        option.setName("value").setDescription("IANA timezone, such as UTC").setRequired(true),
+        option
+          .setName("value")
+          .setDescription("IANA timezone, e.g. Asia/Tokyo or UTC")
+          .setRequired(true),
       ),
   )
   .addSubcommand((subcommand) =>
@@ -82,23 +97,27 @@ export const configCommandDefinition = new SlashCommandBuilder()
           .addStringOption((option) =>
             option
               .setName("value")
-              .setDescription("Preview mode")
+              .setDescription("Automatic previews for public links, access-checked buttons, or Off")
               .setRequired(true)
-              .addChoices(...LINK_PREVIEW_MODES.map((value) => ({ name: value, value }))),
+              .addChoices(
+                ...LINK_PREVIEW_MODES.map((value) => ({ name: LINK_PREVIEW_LABELS[value], value })),
+              ),
           ),
       ),
   )
   .addSubcommandGroup((group) =>
     group
       .setName("audit-log")
-      .setDescription("Configure the optional audit log destination")
+      .setDescription("Configure optional Discord audit notifications")
       .addSubcommand((subcommand) =>
-        subcommand.setName("show").setDescription("Show the audit log destination"),
+        subcommand
+          .setName("show")
+          .setDescription("Show the Discord audit notification destination"),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("set")
-          .setDescription("Set the audit log destination")
+          .setDescription("Set the Discord audit notification destination")
           .addChannelOption((option) =>
             option
               .setName("channel")
@@ -108,7 +127,9 @@ export const configCommandDefinition = new SlashCommandBuilder()
           ),
       )
       .addSubcommand((subcommand) =>
-        subcommand.setName("disable").setDescription("Disable the audit log destination"),
+        subcommand
+          .setName("disable")
+          .setDescription("Disable Discord audit notifications; keep database auditing"),
       ),
   )
   .addSubcommandGroup((group) =>
@@ -121,7 +142,7 @@ export const configCommandDefinition = new SlashCommandBuilder()
       .addSubcommand((subcommand) =>
         subcommand
           .setName("inactivity")
-          .setDescription("Set how long a thread may stay inactive before it is closed")
+          .setDescription("Set the guild-wide inactivity threshold for all enabled parent channels")
           .addStringOption((option) =>
             option
               .setName("value")
@@ -179,7 +200,7 @@ function isSupportedParentChannelType(type: ChannelType): boolean {
 
 export function formatAutomaticCloseSummary(view: AutomaticCloseConfigurationView): string {
   if (view.parentChannelIds.length === 0) {
-    return "Automatic close: disabled (no parent channels)";
+    return `Automatic close: disabled (no enabled parent channels); guild-wide inactivity threshold: ${formatAutoCloseInactivitySeconds(view.inactivitySeconds)}`;
   }
 
   const inactivity = formatAutoCloseInactivitySeconds(view.inactivitySeconds);
@@ -188,17 +209,17 @@ export function formatAutomaticCloseSummary(view: AutomaticCloseConfigurationVie
   const botMessages = view.botMessagesCountAsActivity
     ? "bot messages counted"
     : "bot messages ignored";
-  return `Automatic close: ${inactivity} inactivity, ${channelCount} ${channelLabel}, ${botMessages}`;
+  return `Automatic close: guild-wide inactivity threshold ${inactivity}, ${channelCount} enabled ${channelLabel}, ${botMessages}; individual thread exclusions apply`;
 }
 
 export function formatAutomaticCloseDetail(view: AutomaticCloseConfigurationView): string {
   const lines = [
-    `Inactivity: ${formatAutoCloseInactivitySeconds(view.inactivitySeconds)}`,
+    `Guild-wide inactivity threshold: ${formatAutoCloseInactivitySeconds(view.inactivitySeconds)} (shared by all enabled parents)`,
     `Bot messages count as activity: ${view.botMessagesCountAsActivity ? "yes" : "no"}`,
   ];
 
   if (view.parentChannelIds.length === 0) {
-    lines.push("Parent channels: none (automatic close disabled)");
+    lines.push("Enabled parent channels: none (automatic close disabled)");
     return lines.join("\n");
   }
 
@@ -206,11 +227,25 @@ export function formatAutomaticCloseDetail(view: AutomaticCloseConfigurationView
   const remaining = view.parentChannelIds.length - shown.length;
   const mentions = shown.map((channelId) => `<#${channelId}>`).join(" ");
   lines.push(
-    `Parent channels (${view.parentChannelIds.length}): ${mentions}${
+    `Enabled parent channels (${view.parentChannelIds.length}): ${mentions}${
       remaining > 0 ? ` ... and ${remaining} more` : ""
     }`,
   );
+  lines.push(
+    "Individual thread exclusions apply. The threshold determines eligibility; closing occurs on a later sweep after state and permission checks.",
+  );
   return lines.join("\n");
+}
+
+function configurationText(value: string): string {
+  return escapeMarkdown(value.replace(/[\r\n]/g, " "), {
+    maskedLink: true,
+    heading: true,
+    bulletedList: true,
+    numberedList: true,
+  })
+    .replaceAll("<", "\\<")
+    .replaceAll(">", "\\>");
 }
 
 export async function handleConfigCommand(
@@ -238,16 +273,16 @@ export async function handleConfigCommand(
     let response: string;
     try {
       if (subcommand === "show") {
-        response = `Link preview mode: ${await linkPreview.show(interaction.guildId)}`;
+        response = `Link preview mode: ${LINK_PREVIEW_LABELS[await linkPreview.show(interaction.guildId)]}`;
       } else {
         const value = interaction.options.getString("value", true);
         const result = await linkPreview.set(interaction.guildId, interaction.user.id, value);
         response =
           result.outcome === "INVALID"
-            ? "Choose hybrid, public-only, button-only, or off."
+            ? "Choose automatic public previews with buttons, automatic public previews only, preview buttons only, or Off."
             : result.outcome === "UNCONFIRMED"
               ? "WEFT could not confirm the preview mode change. Check the setting before trying again."
-              : `Link preview mode: ${value}${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+              : `Link preview mode: ${LINK_PREVIEW_LABELS[value as LinkPreviewMode]}${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
       }
     } catch {
       response = "WEFT could not load the preview configuration.";
@@ -289,7 +324,7 @@ export async function handleConfigCommand(
     }
     await interaction.editReply(
       editReply(
-        `Timezone: ${settings.timezone}\nClosed prefix: ${settings.closedPrefix}\n${formatAuditLogDestination(settings.auditLogChannelId)}\n${formatAutomaticCloseSummary(view)}\nLink preview mode: ${settings.linkPreviewMode}`,
+        `Timezone: ${configurationText(settings.timezone)}\nClosed prefix: ${configurationText(settings.closedPrefix)}\n${formatAuditLogDestination(settings.auditLogChannelId)}\n${formatAutomaticCloseSummary(view)}\nLink preview mode: ${isLinkPreviewMode(settings.linkPreviewMode) ? LINK_PREVIEW_LABELS[settings.linkPreviewMode] : "Unknown"}`,
       ),
     );
     return;
@@ -321,7 +356,7 @@ export async function handleConfigCommand(
     response =
       result.outcome === "UNCONFIRMED"
         ? CONFIGURATION_UNCONFIRMED
-        : `${subcommand === "timezone" ? "Timezone" : "Closed prefix"} set to ${subcommand === "timezone" ? result.settings.timezone : result.settings.closedPrefix}.${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+        : `${subcommand === "timezone" ? "Timezone" : "Closed prefix"} set to ${subcommand === "timezone" ? configurationText(result.settings.timezone) : configurationText(result.settings.closedPrefix)}.${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
   } catch {
     response = CONFIGURATION_UNCONFIRMED;
   }
@@ -386,7 +421,7 @@ async function handleAutomaticCloseSubcommand(
       response =
         result.outcome === "UNCONFIRMED"
           ? CONFIGURATION_UNCONFIRMED
-          : `Automatic close inactivity set to ${formatAutoCloseInactivitySeconds(result.settings.autoCloseInactivitySeconds)}.${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+          : `Guild-wide automatic-close inactivity threshold set to ${formatAutoCloseInactivitySeconds(result.settings.autoCloseInactivitySeconds)}.${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
     } catch {
       response = CONFIGURATION_UNCONFIRMED;
     }
@@ -485,7 +520,9 @@ function addParentChannelMessage(
 }
 
 function formatAuditLogDestination(channelId: string | null): string {
-  return channelId === null ? "Audit log: disabled" : `Audit log: <#${channelId}>`;
+  return channelId === null
+    ? "Discord audit notifications: disabled; database auditing and retention remain enabled"
+    : `Discord audit notifications: <#${channelId}>; database auditing and retention remain enabled`;
 }
 
 async function handleAuditLogSubcommand(
@@ -506,7 +543,7 @@ async function handleAuditLogSubcommand(
     } catch (error) {
       return reportConfigurationReadFailure(
         interaction,
-        "WEFT could not load the audit log configuration. Please try again later.",
+        "WEFT could not load the Discord audit notification configuration. Please try again later.",
         error,
       );
     }
@@ -519,12 +556,12 @@ async function handleAuditLogSubcommand(
     const result = await service.set(guildId, interaction.user.id, requestedId);
     const message =
       result.outcome === "VALIDATION_FAILED"
-        ? "WEFT cannot use that channel as an audit log destination. Check its type and WEFT's View Channel and Send Messages permissions."
+        ? "WEFT cannot use that channel as a Discord audit notification destination. Check its type and WEFT's View Channel and Send Messages permissions."
         : result.outcome === "UNCONFIRMED"
-          ? "WEFT could not confirm the audit log configuration result. Check the setting before trying again."
+          ? "WEFT could not confirm the Discord audit notification configuration result. Check the setting before trying again."
           : result.outcome === "NO_CHANGE"
-            ? `Audit log destination is already <#${requestedId}>.`
-            : `Audit log destination set to <#${requestedId}>.`;
+            ? `Discord audit notification destination is already <#${requestedId}>.`
+            : `Discord audit notification destination set to <#${requestedId}>.`;
     await interaction.editReply(editReply(message));
     return;
   }
@@ -532,10 +569,10 @@ async function handleAuditLogSubcommand(
     const result = await service.disable(guildId, interaction.user.id);
     const message =
       result.outcome === "CHANGED"
-        ? "Audit log destination disabled."
+        ? "Discord audit notifications disabled. Database auditing and retention remain enabled."
         : result.outcome === "NO_CHANGE"
-          ? "Audit log destination is already disabled."
-          : "WEFT could not confirm the audit log configuration result. Check the setting before trying again.";
+          ? "Discord audit notifications already disabled (unchanged). Database auditing and retention remain enabled."
+          : "WEFT could not confirm the Discord audit notification configuration result. Check the setting before trying again.";
     await interaction.editReply(editReply(message));
     return;
   }

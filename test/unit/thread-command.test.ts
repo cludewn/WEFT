@@ -140,7 +140,7 @@ describe("thread command", () => {
     await handleThreadCommand(open.interaction, lifecycle, logger);
 
     expect(close.editReply).toHaveBeenCalledWith(edited("Thread is already closed."));
-    expect(open.editReply).toHaveBeenCalledWith(edited("Thread is already opened."));
+    expect(open.editReply).toHaveBeenCalledWith(edited("Thread is already open."));
   });
 
   it("returns safe lifecycle failures ephemerally", async () => {
@@ -203,11 +203,13 @@ describe("thread command", () => {
     );
   });
 
-  it("warns the user when a lifecycle write outcome is unknown", async () => {
+  it.each([
+    "STATE_WRITE_OUTCOME_UNKNOWN",
+    "AUDIT_WRITE_OUTCOME_UNKNOWN",
+    "DISCORD_RECONCILIATION_UNCONFIRMED",
+  ] as const)("warns the user when lifecycle outcome %s is unconfirmed", async (code) => {
     const lifecycle = createLifecycle({
-      close: vi.fn(() =>
-        Promise.resolve({ ok: false, code: "STATE_WRITE_OUTCOME_UNKNOWN" } as const),
-      ),
+      close: vi.fn(() => Promise.resolve({ ok: false, code } as const)),
     });
     const { interaction, editReply } = createInteraction();
 
@@ -288,11 +290,13 @@ describe("thread command", () => {
       "2h",
     );
     expect(created.editReply).toHaveBeenCalledWith(
-      edited("Thread close scheduled for <t:1893553440:F> (<t:1893553440:R>)."),
+      edited(
+        "Thread close schedule `scheduled-action-id` created for <t:1893553440:F> (<t:1893553440:R>).",
+      ),
     );
     expect(replaced.editReply).toHaveBeenCalledWith(
       edited(
-        "Scheduled thread close replaced. New close time: <t:1893553440:F> (<t:1893553440:R>).",
+        "Thread close schedule `scheduled-action-id` replaced. New close time: <t:1893553440:F> (<t:1893553440:R>).",
       ),
     );
   });
@@ -321,7 +325,7 @@ describe("thread command", () => {
 
     expect(fixture.editReply).toHaveBeenCalledWith(
       edited(
-        "The scheduled close for <t:1893553440:F> (<t:1893553440:R>) was saved, but WEFT could not confirm its delivery yet. WEFT will reconcile it automatically.",
+        "Thread close schedule `scheduled-action-id` for <t:1893553440:F> (<t:1893553440:R>) was saved, but WEFT could not confirm its delivery yet. WEFT will reconcile it automatically.",
       ),
     );
     expect(JSON.stringify(fixture.editReply.mock.calls)).not.toContain("retry");
@@ -330,7 +334,7 @@ describe("thread command", () => {
   it.each([
     [
       { ok: true, outcome: "CANCELLED", action: createScheduledAction(new Date()) } as const,
-      "Scheduled thread close cancelled.",
+      "Thread close schedule `scheduled-action-id` cancelled.",
     ],
     [
       { ok: true, outcome: "NOT_SCHEDULED" } as const,
@@ -354,7 +358,7 @@ describe("thread command", () => {
     ],
     [
       { ok: false, code: "PERSISTENCE_FAILURE" } as const,
-      "WEFT could not cancel the scheduled close. Please try again later.",
+      "WEFT could not confirm cancellation of the scheduled close. Check the thread status before retrying.",
     ],
   ])("routes cancel-close result %# ephemerally", async (result, message) => {
     const scheduledThreadClose = createScheduledThreadClose({
@@ -382,7 +386,7 @@ describe("thread command", () => {
     ],
     [
       { outcome: "PERSISTENCE_FAILURE" } as const,
-      "WEFT could not confirm cancellation of the scheduled close, so the thread was not changed.",
+      "WEFT could not confirm cancellation of the scheduled close, so no new thread update was started. Check the thread status before retrying.",
     ],
   ])("maps manual close preparation result %#", async (result, message) => {
     const scheduledThreadClose = createScheduledThreadClose({
@@ -470,19 +474,19 @@ describe("thread command", () => {
   it.each([
     [
       { ok: true, outcome: "TRACKED", parentEnabled: true } as const,
-      "Thread is now tracked for automatic close.",
+      "Individual thread exclusion removed. Automatic-close participation is enabled under the enabled parent.",
     ],
     [
       { ok: true, outcome: "TRACKED", parentEnabled: false } as const,
-      "Thread is tracked, but automatic close is disabled because this parent channel is not configured.",
+      "Individual thread exclusion removed. Automatic-close participation remains disabled because the parent is not enabled. Track does not enable the parent.",
     ],
     [
       { ok: true, outcome: "ALREADY_TRACKED", parentEnabled: true } as const,
-      "Thread is already tracked for automatic close.",
+      "No individual thread exclusion to remove (unchanged). Automatic-close participation is enabled under the enabled parent.",
     ],
     [
       { ok: true, outcome: "ALREADY_TRACKED", parentEnabled: false } as const,
-      "Thread is already individually included, but automatic close is disabled because this parent channel is not configured.",
+      "No individual thread exclusion to remove (unchanged). Automatic-close participation remains disabled because the parent is not enabled. Track does not enable the parent.",
     ],
   ])("routes track result %#", async (result, message) => {
     const maintenance = createMaintenance({ track: vi.fn(() => Promise.resolve(result)) });
@@ -503,10 +507,13 @@ describe("thread command", () => {
   });
 
   it.each([
-    [{ ok: true, outcome: "EXCLUDED" } as const, "Thread excluded from automatic close."],
+    [
+      { ok: true, outcome: "EXCLUDED" } as const,
+      "Thread excluded from automatic close. Parent-channel settings are unchanged.",
+    ],
     [
       { ok: true, outcome: "ALREADY_EXCLUDED" } as const,
-      "Thread is already excluded from automatic close.",
+      "Thread is already excluded from automatic close (unchanged). Parent-channel settings are unchanged.",
     ],
   ])("routes untrack result %#", async (result, message) => {
     const maintenance = createMaintenance({ untrack: vi.fn(() => Promise.resolve(result)) });
@@ -539,7 +546,7 @@ describe("thread command", () => {
           executeAt: new Date("2030-01-03T03:04:00.000Z"),
         },
       },
-      "Automatic close: enabled\nParent policy: enabled\nThread exclusion: none\nInactivity: 7d\nLast activity: <t:1893553440:F> (<t:1893553440:R>)\nScheduled close: <t:1893639840:F> (<t:1893639840:R>)",
+      "Effective automatic-close participation: enabled\nParent automatic-close policy: enabled\nIndividual thread exclusion: none\nGuild-wide inactivity threshold: 7d\nRecorded activity or baseline: <t:1893553440:F> (<t:1893553440:R>)\nExplicit scheduled close: <t:1893639840:F> (<t:1893639840:R>)\nThe recorded timestamp may be an established baseline, not the most recent message. The threshold determines eligibility, not an exact close time.",
     ],
     [
       {
@@ -550,7 +557,7 @@ describe("thread command", () => {
         lastActivityAt: null,
         scheduledClose: { status: "EXECUTING" as const, executeAt: new Date(0) },
       },
-      "Automatic close: disabled\nParent policy: disabled\nThread exclusion: none\nInactivity: 1h\nLast activity: not recorded\nScheduled close: executing",
+      "Effective automatic-close participation: disabled\nParent automatic-close policy: disabled\nIndividual thread exclusion: none\nGuild-wide inactivity threshold: 1h\nRecorded activity or baseline: not recorded\nExplicit scheduled close: executing\nThe recorded timestamp may be an established baseline, not the most recent message. The threshold determines eligibility, not an exact close time.",
     ],
     [
       {
@@ -561,7 +568,7 @@ describe("thread command", () => {
         lastActivityAt: null,
         scheduledClose: undefined,
       },
-      "Automatic close: disabled\nParent policy: enabled\nThread exclusion: excluded\nInactivity: 5m\nLast activity: not recorded\nScheduled close: none",
+      "Effective automatic-close participation: disabled\nParent automatic-close policy: enabled\nIndividual thread exclusion: excluded\nGuild-wide inactivity threshold: 5m\nRecorded activity or baseline: not recorded\nExplicit scheduled close: none\nThe recorded timestamp may be an established baseline, not the most recent message. The threshold determines eligibility, not an exact close time.",
     ],
   ])("formats status result %# as plain text", async (status, message) => {
     const maintenance = createMaintenance({

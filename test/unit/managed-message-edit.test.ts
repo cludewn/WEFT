@@ -37,6 +37,7 @@ describe("managed message edit service", () => {
 
     await expect(fixture.service.edit({ ...baseInput, payload: oldPayload })).resolves.toEqual({
       outcome: "UNCHANGED",
+      messageId: baseInput.messageId,
     });
     expect(fixture.discord.editManagedMessage).toHaveBeenCalledExactlyOnceWith({
       guildId: baseInput.guildId,
@@ -282,7 +283,7 @@ describe("managed message edit service", () => {
       outcome: "FAILURE",
       code: "CURRENT_STATE_CHECK_FAILED",
     });
-    await expect(second).resolves.toEqual({ outcome: "UNCHANGED" });
+    await expect(second).resolves.toEqual({ outcome: "UNCHANGED", messageId: baseInput.messageId });
     expect(fixture.discord.editManagedMessage).toHaveBeenCalledTimes(2);
   });
 
@@ -306,7 +307,10 @@ describe("managed message edit service", () => {
       payload: oldPayload,
     });
     await vi.waitFor(() => expect(fixture.discord.editManagedMessage).toHaveBeenCalledTimes(2));
-    await expect(second).resolves.toEqual({ outcome: "UNCHANGED" });
+    await expect(second).resolves.toEqual({
+      outcome: "UNCHANGED",
+      messageId: "900000000000000002",
+    });
     settleFirst();
     await expect(first).resolves.toMatchObject({ outcome: "SUCCESS" });
   });

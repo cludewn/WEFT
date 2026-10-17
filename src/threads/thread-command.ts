@@ -55,10 +55,14 @@ export const threadCommandDefinition = new SlashCommandBuilder()
     subcommand.setName("cancel-close").setDescription("Cancel the scheduled thread close"),
   )
   .addSubcommand((subcommand) =>
-    subcommand.setName("track").setDescription("Include this thread in automatic close"),
+    subcommand
+      .setName("track")
+      .setDescription("Remove this thread's exclusion; parent must already be enabled"),
   )
   .addSubcommand((subcommand) =>
-    subcommand.setName("untrack").setDescription("Exclude this thread from automatic close"),
+    subcommand
+      .setName("untrack")
+      .setDescription("Exclude only this thread; keep parent automatic-close settings"),
   )
   .addSubcommand((subcommand) =>
     subcommand.setName("status").setDescription("Show this thread's automatic close status"),
@@ -78,7 +82,11 @@ const editReply = (content: string): InteractionEditReplyOptions => ({
 });
 
 function failureMessage(code: ThreadFailureCode): string {
-  if (code === "STATE_WRITE_OUTCOME_UNKNOWN" || code === "AUDIT_WRITE_OUTCOME_UNKNOWN") {
+  if (
+    code === "STATE_WRITE_OUTCOME_UNKNOWN" ||
+    code === "AUDIT_WRITE_OUTCOME_UNKNOWN" ||
+    code === "DISCORD_RECONCILIATION_UNCONFIRMED"
+  ) {
     return "WEFT could not confirm the final outcome. Check the current thread state before retrying.";
   }
   if (code === "ACTOR_PERMISSION_MISSING") {
@@ -96,7 +104,7 @@ function failureMessage(code: ThreadFailureCode): string {
   if (code === "INVALID_THREAD_NAME") {
     return "The configured closed prefix cannot form a valid thread name.";
   }
-  return "WEFT could not update this thread. Please try again.";
+  return "WEFT could not complete this thread operation. Check the current thread state before retrying.";
 }
 
 type ThreadCommandOperation =
@@ -251,7 +259,7 @@ export async function handleThreadCommand(
         "A scheduled close is already executing for this thread. The manual close was not started.";
     } else if (manualClose.outcome === "PERSISTENCE_FAILURE") {
       finalContent =
-        "WEFT could not confirm cancellation of the scheduled close, so the thread was not changed.";
+        "WEFT could not confirm cancellation of the scheduled close, so no new thread update was started. Check the thread status before retrying.";
     } else {
       const result = manualClose.result;
       finalContent = result.ok
@@ -271,7 +279,7 @@ export async function handleThreadCommand(
     finalContent = result.ok
       ? result.changed
         ? "Thread opened."
-        : "Thread is already opened."
+        : "Thread is already open."
       : result.pending
         ? "Discord is still processing this thread update. This can happen when Discord rate-limits thread name changes, and completion may take several minutes."
         : failureMessage(result.code);
@@ -305,8 +313,8 @@ export async function handleThreadCommand(
     );
     finalContent = result.ok
       ? result.outcome === "EXCLUDED"
-        ? "Thread excluded from automatic close."
-        : "Thread is already excluded from automatic close."
+        ? "Thread excluded from automatic close. Parent-channel settings are unchanged."
+        : "Thread is already excluded from automatic close (unchanged). Parent-channel settings are unchanged."
       : automaticCloseMaintenanceFailureMessage(result.code, "UNTRACK");
   } else {
     const result = await automaticCloseMaintenance.status(
@@ -330,12 +338,12 @@ function trackAutomaticCloseMessage(result: TrackAutomaticCloseThreadCommandResu
   }
   if (result.outcome === "TRACKED") {
     return result.parentEnabled
-      ? "Thread is now tracked for automatic close."
-      : "Thread is tracked, but automatic close is disabled because this parent channel is not configured.";
+      ? "Individual thread exclusion removed. Automatic-close participation is enabled under the enabled parent."
+      : "Individual thread exclusion removed. Automatic-close participation remains disabled because the parent is not enabled. Track does not enable the parent.";
   }
   return result.parentEnabled
-    ? "Thread is already tracked for automatic close."
-    : "Thread is already individually included, but automatic close is disabled because this parent channel is not configured.";
+    ? "No individual thread exclusion to remove (unchanged). Automatic-close participation is enabled under the enabled parent."
+    : "No individual thread exclusion to remove (unchanged). Automatic-close participation remains disabled because the parent is not enabled. Track does not enable the parent.";
 }
 
 function automaticCloseMaintenanceFailureMessage(
@@ -369,12 +377,13 @@ export function formatAutomaticCloseThreadStatus(status: AutomaticCloseThreadSta
         : discordTimestamp(status.scheduledClose.executeAt);
 
   return [
-    `Automatic close: ${status.effectiveEnabled ? "enabled" : "disabled"}`,
-    `Parent policy: ${status.parentEnabled ? "enabled" : "disabled"}`,
-    `Thread exclusion: ${status.excluded ? "excluded" : "none"}`,
-    `Inactivity: ${formatAutoCloseInactivitySeconds(status.inactivitySeconds)}`,
-    `Last activity: ${lastActivity}`,
-    `Scheduled close: ${scheduledClose}`,
+    `Effective automatic-close participation: ${status.effectiveEnabled ? "enabled" : "disabled"}`,
+    `Parent automatic-close policy: ${status.parentEnabled ? "enabled" : "disabled"}`,
+    `Individual thread exclusion: ${status.excluded ? "excluded" : "none"}`,
+    `Guild-wide inactivity threshold: ${formatAutoCloseInactivitySeconds(status.inactivitySeconds)}`,
+    `Recorded activity or baseline: ${lastActivity}`,
+    `Explicit scheduled close: ${scheduledClose}`,
+    "The recorded timestamp may be an established baseline, not the most recent message. The threshold determines eligibility, not an exact close time.",
   ].join("\n");
 }
 
@@ -383,7 +392,7 @@ function scheduledThreadCloseCancellationMessage(
 ): string {
   if (result.ok) {
     return result.outcome === "CANCELLED"
-      ? "Scheduled thread close cancelled."
+      ? `Thread close schedule \`${result.action.id}\` cancelled.`
       : "No scheduled close is active for this thread.";
   }
 
@@ -397,7 +406,7 @@ function scheduledThreadCloseCancellationMessage(
     case "CONTEXT_VALIDATION_FAILURE":
       return "WEFT could not verify the current thread or your permissions. Please try again later.";
     case "PERSISTENCE_FAILURE":
-      return "WEFT could not cancel the scheduled close. Please try again later.";
+      return "WEFT could not confirm cancellation of the scheduled close. Check the thread status before retrying.";
   }
 }
 
@@ -405,12 +414,12 @@ function scheduledThreadCloseMessage(result: ScheduledThreadCloseCommandResult):
   if (result.ok) {
     const timestamp = discordTimestamp(result.action.executeAt);
     if (result.outcome === "CREATED") {
-      return `Thread close scheduled for ${timestamp}.`;
+      return `Thread close schedule \`${result.action.id}\` created for ${timestamp}.`;
     }
     if (result.outcome === "REPLACED") {
-      return `Scheduled thread close replaced. New close time: ${timestamp}.`;
+      return `Thread close schedule \`${result.action.id}\` replaced. New close time: ${timestamp}.`;
     }
-    return `The scheduled close for ${timestamp} was saved, but WEFT could not confirm its delivery yet. WEFT will reconcile it automatically.`;
+    return `Thread close schedule \`${result.action.id}\` for ${timestamp} was saved, but WEFT could not confirm its delivery yet. WEFT will reconcile it automatically.`;
   }
 
   switch (result.code) {
@@ -431,7 +440,7 @@ function scheduledThreadCloseMessage(result: ScheduledThreadCloseCommandResult):
     case "CONTEXT_VALIDATION_FAILURE":
       return "WEFT could not verify the current thread state. Please try again later.";
     case "PERSISTENCE_FAILURE":
-      return "WEFT could not save the scheduled close. Please try again later.";
+      return "WEFT could not confirm that the scheduled close was saved. Check the thread status before retrying.";
   }
 }
 

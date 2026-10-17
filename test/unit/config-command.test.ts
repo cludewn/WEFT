@@ -1,6 +1,6 @@
 import { createLinkPreviewConfiguration } from "../../src/link-previews/link-preview-configuration.js";
 import { ChannelType, InteractionContextType, MessageFlags, PermissionFlagsBits } from "discord.js";
-import type { ChatInputCommandInteraction } from "discord.js";
+import type { ChatInputCommandInteraction, InteractionEditReplyOptions } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AuditLogDestinationService } from "../../src/audit/audit-log-destination.js";
@@ -95,7 +95,7 @@ describe("config command", () => {
     expect(store.getOrCreate).toHaveBeenCalledWith(defaultSettings.guildId);
     expect(editReply).toHaveBeenCalledWith(
       edited(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: disabled\nAutomatic close: disabled (no parent channels)\nLink preview mode: hybrid",
+        "Timezone: UTC\nClosed prefix: [CLOSED]\nDiscord audit notifications: disabled; database auditing and retention remain enabled\nAutomatic close: disabled (no enabled parent channels); guild-wide inactivity threshold: 7d\nLink preview mode: Automatic public previews + optional buttons",
       ),
     );
   });
@@ -113,7 +113,7 @@ describe("config command", () => {
     );
     expect(editReply).toHaveBeenCalledWith(
       edited(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: <#stored-channel>\nAutomatic close: disabled (no parent channels)\nLink preview mode: hybrid",
+        "Timezone: UTC\nClosed prefix: [CLOSED]\nDiscord audit notifications: <#stored-channel>; database auditing and retention remain enabled\nAutomatic close: disabled (no enabled parent channels); guild-wide inactivity threshold: 7d\nLink preview mode: Automatic public previews + optional buttons",
       ),
     );
   });
@@ -199,7 +199,7 @@ describe("config command", () => {
       expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
       expect(editReply).toHaveBeenCalledOnce();
       expect(editReply).toHaveBeenCalledWith({
-        content: `Timezone set to ${value}.`,
+        content: `Timezone set to ${value.replaceAll("_", "\\_")}.`,
         allowedMentions: { parse: [] },
       });
     },
@@ -219,7 +219,9 @@ describe("config command", () => {
         createPreviewConfig(),
       );
       expect(reply).toHaveBeenCalledOnce();
-      expect(reply).toHaveBeenCalledWith(ephemeral("Timezone must be a valid IANA timezone"));
+      expect(reply).toHaveBeenCalledWith(
+        ephemeral("Timezone must be a named IANA timezone, e.g. Asia/Tokyo, or UTC"),
+      );
       expect(database.insert).not.toHaveBeenCalled();
       expect(database.select).not.toHaveBeenCalled();
       expect(database.update).not.toHaveBeenCalled();
@@ -252,7 +254,7 @@ describe("config command", () => {
     );
 
     expect(timezoneInteraction.reply).toHaveBeenCalledWith(
-      ephemeral("Timezone must be a valid IANA timezone"),
+      ephemeral("Timezone must be a named IANA timezone, e.g. Asia/Tokyo, or UTC"),
     );
     expect(prefixInteraction.reply).toHaveBeenCalledWith(
       ephemeral("Closed prefix must be 1 to 20 characters and contain no control characters"),
@@ -260,7 +262,7 @@ describe("config command", () => {
   });
 });
 
-describe("audit log configuration command", () => {
+describe("Discord audit notification configuration command", () => {
   it("restricts set to text and announcement channels", () => {
     const group = configCommandDefinition
       .toJSON()
@@ -288,7 +290,11 @@ describe("audit log configuration command", () => {
       destination,
       createPreviewConfig(),
     );
-    expect(editReply).toHaveBeenCalledWith(edited("Audit log: <#stale-id>"));
+    expect(editReply).toHaveBeenCalledWith(
+      edited(
+        "Discord audit notifications: <#stale-id>; database auditing and retention remain enabled",
+      ),
+    );
     expect(store.getOrCreate).not.toHaveBeenCalled();
     expect(destination.show).toHaveBeenCalledWith(defaultSettings.guildId);
   });
@@ -305,7 +311,11 @@ describe("audit log configuration command", () => {
       createAuditDestination(),
       createPreviewConfig(),
     );
-    expect(editReply).toHaveBeenCalledWith(edited("Audit log: disabled"));
+    expect(editReply).toHaveBeenCalledWith(
+      edited(
+        "Discord audit notifications: disabled; database auditing and retention remain enabled",
+      ),
+    );
   });
 
   it("replies once with a bounded ephemeral error when the read fails", async () => {
@@ -327,7 +337,9 @@ describe("audit log configuration command", () => {
     ).rejects.toBe(failure);
     expect(editReply).toHaveBeenCalledOnce();
     expect(editReply).toHaveBeenCalledWith(
-      edited("WEFT could not load the audit log configuration. Please try again later."),
+      edited(
+        "WEFT could not load the Discord audit notification configuration. Please try again later.",
+      ),
     );
     expect(JSON.stringify(editReply.mock.calls)).not.toContain("private database details");
   });
@@ -356,15 +368,18 @@ describe("audit log configuration command", () => {
   });
 
   it.each([
-    [{ outcome: "CHANGED", previousChannelId: null }, "Audit log destination set to <#target>."],
-    [{ outcome: "NO_CHANGE" }, "Audit log destination is already <#target>."],
+    [
+      { outcome: "CHANGED", previousChannelId: null },
+      "Discord audit notification destination set to <#target>.",
+    ],
+    [{ outcome: "NO_CHANGE" }, "Discord audit notification destination is already <#target>."],
     [
       { outcome: "UNCONFIRMED" },
-      "WEFT could not confirm the audit log configuration result. Check the setting before trying again.",
+      "WEFT could not confirm the Discord audit notification configuration result. Check the setting before trying again.",
     ],
     [
       { outcome: "VALIDATION_FAILED" },
-      "WEFT cannot use that channel as an audit log destination. Check its type and WEFT's View Channel and Send Messages permissions.",
+      "WEFT cannot use that channel as a Discord audit notification destination. Check its type and WEFT's View Channel and Send Messages permissions.",
     ],
   ] as const)("maps set result %# to one bounded ephemeral response", async (result, expected) => {
     const destination = createAuditDestination();
@@ -388,11 +403,17 @@ describe("audit log configuration command", () => {
   });
 
   it.each([
-    [{ outcome: "CHANGED", previousChannelId: "old" }, "Audit log destination disabled."],
-    [{ outcome: "NO_CHANGE" }, "Audit log destination is already disabled."],
+    [
+      { outcome: "CHANGED", previousChannelId: "old" },
+      "Discord audit notifications disabled. Database auditing and retention remain enabled.",
+    ],
+    [
+      { outcome: "NO_CHANGE" },
+      "Discord audit notifications already disabled (unchanged). Database auditing and retention remain enabled.",
+    ],
     [
       { outcome: "UNCONFIRMED" },
-      "WEFT could not confirm the audit log configuration result. Check the setting before trying again.",
+      "WEFT could not confirm the Discord audit notification configuration result. Check the setting before trying again.",
     ],
   ] as const)(
     "maps disable result %# to one bounded ephemeral response",
@@ -436,7 +457,7 @@ describe("audit log configuration command", () => {
     expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
     expect(editReply).toHaveBeenCalledWith({
       content:
-        "WEFT could not confirm the audit log configuration result. Check the setting before trying again.",
+        "WEFT could not confirm the Discord audit notification configuration result. Check the setting before trying again.",
       allowedMentions: { parse: [] },
     });
   });
@@ -457,7 +478,8 @@ describe("audit log configuration command", () => {
     );
     expect(destination.disable).toHaveBeenCalledWith(defaultSettings.guildId, "actor");
     expect(editReply).toHaveBeenCalledWith({
-      content: "Audit log destination is already disabled.",
+      content:
+        "Discord audit notifications already disabled (unchanged). Database auditing and retention remain enabled.",
       allowedMentions: { parse: [] },
     });
   });
@@ -514,7 +536,7 @@ describe("automatic close configuration command", () => {
 
     expect(editReply).toHaveBeenCalledWith(
       edited(
-        "Inactivity: 12h\nBot messages count as activity: yes\nParent channels (2): <#111> <#222>",
+        "Guild-wide inactivity threshold: 12h (shared by all enabled parents)\nBot messages count as activity: yes\nEnabled parent channels (2): <#111> <#222>\nIndividual thread exclusions apply. The threshold determines eligibility; closing occurs on a later sweep after state and permission checks.",
       ),
     );
   });
@@ -544,7 +566,7 @@ describe("automatic close configuration command", () => {
     );
 
     const content = (editReply.mock.calls[0]?.[0] as { content: string }).content;
-    expect(content).toContain(`Parent channels (30):`);
+    expect(content).toContain(`Enabled parent channels (30):`);
     expect(content).toContain("... and 5 more");
     expect(content.match(/<#/g)).toHaveLength(AUTO_CLOSE_PARENT_DISPLAY_LIMIT);
     expect(content.length).toBeLessThan(2_000);
@@ -572,7 +594,7 @@ describe("automatic close configuration command", () => {
 
     expect(editReply).toHaveBeenCalledWith(
       edited(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nAudit log: disabled\nAutomatic close: 7d inactivity, 1 parent channel, bot messages counted\nLink preview mode: hybrid",
+        "Timezone: UTC\nClosed prefix: [CLOSED]\nDiscord audit notifications: disabled; database auditing and retention remain enabled\nAutomatic close: guild-wide inactivity threshold 7d, 1 enabled parent channel, bot messages counted; individual thread exclusions apply\nLink preview mode: Automatic public previews + optional buttons",
       ),
     );
   });
@@ -599,7 +621,7 @@ describe("automatic close configuration command", () => {
       "actor",
     );
     expect(editReply).toHaveBeenCalledWith({
-      content: "Automatic close inactivity set to 12h.",
+      content: "Guild-wide automatic-close inactivity threshold set to 12h.",
       allowedMentions: { parse: [] },
     });
   });
@@ -914,7 +936,7 @@ describe("link preview configuration commands", () => {
     expect(read).toHaveBeenCalledOnce();
     expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
     expect(f.editReply).toHaveBeenCalledWith({
-      content: "Link preview mode: hybrid",
+      content: "Link preview mode: Automatic public previews + optional buttons",
       allowedMentions: { parse: [] },
     });
     const invalid = createInteraction({
@@ -931,31 +953,33 @@ describe("link preview configuration commands", () => {
     );
     expect(change).not.toHaveBeenCalled();
   });
-  it.each(["hybrid", "public-only", "button-only", "off"])(
-    "sets %s with a stable audit input",
-    async (mode) => {
-      const change = vi.fn(() => Promise.resolve({ outcome: "NO_CHANGE" as const }));
-      const service = createLinkPreviewConfiguration({
-        read: () => Promise.resolve("hybrid"),
-        change,
-      });
-      const f = createInteraction({ group: "link-preview", subcommand: "mode", value: mode });
-      await handleConfigCommand(
-        f.interaction,
-        createStore(),
-        createAutomaticClose(),
-        createAuditDestination(),
-        service,
-      );
-      expect(change.mock.calls[0]).toMatchObject([
-        { guildId: defaultSettings.guildId, actorUserId: "actor", newMode: mode },
-      ]);
-      expect(f.editReply).toHaveBeenCalledWith({
-        content: `Link preview mode: ${mode} (unchanged)`,
-        allowedMentions: { parse: [] },
-      });
-    },
-  );
+  it.each([
+    ["hybrid", "Automatic public previews + optional buttons"],
+    ["public-only", "Automatic public previews only"],
+    ["button-only", "Preview buttons only"],
+    ["off", "Off"],
+  ])("sets %s with a stable audit input", async (mode, label) => {
+    const change = vi.fn(() => Promise.resolve({ outcome: "NO_CHANGE" as const }));
+    const service = createLinkPreviewConfiguration({
+      read: () => Promise.resolve("hybrid"),
+      change,
+    });
+    const f = createInteraction({ group: "link-preview", subcommand: "mode", value: mode });
+    await handleConfigCommand(
+      f.interaction,
+      createStore(),
+      createAutomaticClose(),
+      createAuditDestination(),
+      service,
+    );
+    expect(change.mock.calls[0]).toMatchObject([
+      { guildId: defaultSettings.guildId, actorUserId: "actor", newMode: mode },
+    ]);
+    expect(f.editReply).toHaveBeenCalledWith({
+      content: `Link preview mode: ${label} (unchanged)`,
+      allowedMentions: { parse: [] },
+    });
+  });
 });
 
 describe("configuration acknowledgement and unknown results", () => {
@@ -1137,7 +1161,7 @@ describe("configuration read acknowledgement and ownership", () => {
       expect(f.editReply).toHaveBeenCalledExactlyOnceWith(
         edited(
           group === "audit-log"
-            ? "WEFT could not load the audit log configuration. Please try again later."
+            ? "WEFT could not load the Discord audit notification configuration. Please try again later."
             : group === "auto-close"
               ? "WEFT could not load the automatic close configuration. Please try again later."
               : "WEFT could not load the configuration. Please try again later.",
@@ -1194,4 +1218,44 @@ describe("configuration read acknowledgement and ownership", () => {
       expect(f.editReply).toHaveBeenCalledOnce();
     },
   );
+});
+
+it("keeps preview choice values while exposing understandable labels and timezone guidance", () => {
+  const definition = configCommandDefinition.toJSON();
+  const preview = definition.options?.find((option) => option.name === "link-preview");
+  if (!preview || !("options" in preview)) throw new Error("Expected link-preview group");
+  const mode = preview.options?.find((option) => option.name === "mode");
+  if (!mode || !("options" in mode)) throw new Error("Expected mode subcommand");
+  expect(mode.options?.[0]).toMatchObject({
+    name: "value",
+    choices: [
+      { name: "Automatic public previews + optional buttons", value: "hybrid" },
+      { name: "Automatic public previews only", value: "public-only" },
+      { name: "Preview buttons only", value: "button-only" },
+      { name: "Off", value: "off" },
+    ],
+  });
+  const timezone = definition.options?.find((option) => option.name === "timezone");
+  if (!timezone || !("options" in timezone)) throw new Error("Expected timezone subcommand");
+  expect(timezone.options?.[0]?.description).toContain("Asia/Tokyo or UTC");
+});
+
+it("escapes untrusted configuration metadata without changing persisted values", async () => {
+  const prefix = "**Done** [`x`](url)";
+  const store = createStore({
+    getOrCreate: vi.fn(() => Promise.resolve({ ...defaultSettings, closedPrefix: prefix })),
+  });
+  const f = createInteraction({ subcommand: "show" });
+  await handleConfigCommand(
+    f.interaction,
+    store,
+    createAutomaticClose(),
+    createAuditDestination(),
+    createPreviewConfig(),
+  );
+  const response = f.editReply.mock.calls[0]![0] as InteractionEditReplyOptions;
+  expect(response.content).toContain("Closed prefix: \\*\\*Done\\*\\* \\[\\`x\\`](url)");
+  expect(response.content).not.toContain(prefix);
+  expect(response.allowedMentions).toEqual({ parse: [] });
+  expect(store.setClosedPrefix).not.toHaveBeenCalled();
 });

@@ -509,7 +509,7 @@ describe("managed message modal routing", () => {
         f.scheduled.createRecurring.mock.invocationCallOrder[0]!,
       );
       expect(modal.editReply).toHaveBeenCalledWith({
-        content: "Recurring message scheduled as `series-id`. First occurrence: <t:1893490200:F>.",
+        content: "Recurring schedule created as `series-id`. First occurrence: <t:1893490200:F>.",
         allowedMentions: { parse: [] },
       });
       expect(f.managed.send).not.toHaveBeenCalled();

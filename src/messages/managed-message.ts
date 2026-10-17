@@ -74,7 +74,7 @@ export type ManagedMessageEditFailureCode =
   | "PERSISTENCE_UNCONFIRMED_COMPENSATED";
 export type ManagedMessageEditResult =
   | { outcome: "SUCCESS"; messageId: string; revision: number }
-  | { outcome: "UNCHANGED" }
+  | { outcome: "UNCHANGED"; messageId: string }
   | { outcome: "DELETED" }
   | { outcome: "FAILURE"; code: ManagedMessageEditFailureCode }
   | {
@@ -653,7 +653,8 @@ export function createManagedMessageService({
         if (discordResult.outcome === "FAILURE") {
           return { outcome: "FAILURE", code: discordResult.code };
         }
-        if (discordResult.outcome === "UNCHANGED") return { outcome: "UNCHANGED" };
+        if (discordResult.outcome === "UNCHANGED")
+          return { outcome: "UNCHANGED", messageId: current.messageId };
 
         if (execution) {
           execution.attempt.discordEvidence = "EDIT_CONFIRMED";

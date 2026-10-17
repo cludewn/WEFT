@@ -310,6 +310,20 @@ describe("bulk interaction surface and safe payloads", () => {
         ...embed.fields!.flatMap((field) => [field.name, field.value]),
         embed.footer!.text,
       ].join("");
+      const warning = embed.fields!.find((field) => field.name === "Before confirming")!.value;
+      expect(warning.split("\n")).toHaveLength(4);
+      for (const required of [
+        "configured closed prefix",
+        "archives without locking",
+        "cancellation is not reversed if closing fails",
+        "skips or failures",
+        "Results may be partial",
+        "pending work may finish later",
+        "candidate snapshot is fixed",
+        "New matching threads are never added",
+      ])
+        expect(warning).toContain(required);
+      expect(warning.length).toBeLessThanOrEqual(1024);
       expect(allText.length).toBeLessThan(6000);
       expect(allText).not.toContain("@everyone");
       expect(allText).not.toContain("<@9>");

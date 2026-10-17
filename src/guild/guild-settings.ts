@@ -86,7 +86,7 @@ export type GuildSettingsStore = {
 
 export class InvalidTimezoneError extends Error {
   constructor() {
-    super("Timezone must be a valid IANA timezone");
+    super("Timezone must be a named IANA timezone, e.g. Asia/Tokyo, or UTC");
     this.name = "InvalidTimezoneError";
   }
 }

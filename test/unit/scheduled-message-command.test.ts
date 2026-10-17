@@ -229,7 +229,7 @@ describe("scheduled message command service", () => {
         channelId: "channel-id",
         actorUserId: "actor-id",
       }),
-    ).resolves.toEqual({ outcome: "CANCELLED", deliveryCleanupPending: true });
+    ).resolves.toEqual({ outcome: "CANCELLED", kind: "ONE_TIME", deliveryCleanupPending: true });
 
     f.cancel.mockResolvedValue({ outcome: "EXECUTING" });
     await expect(
@@ -641,4 +641,46 @@ describe("absolute normalization preserves existing delivery boundaries", () => 
       expect(f.getOrCreate).not.toHaveBeenCalled();
     },
   );
+});
+
+it.each(["EDITED", "UNCHANGED"] as const)(
+  "carries one-time kind and confirmed ID for %s without extra reads",
+  async (outcome) => {
+    const f = fixture();
+    f.edit.mockResolvedValue({ outcome, definition: f.definition });
+    await expect(
+      f.service.edit({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        scheduledActionId: "schedule-id",
+        actorUserId: "actor-id",
+        expectedRevision: 0,
+        payload: f.definition.payload,
+      }),
+    ).resolves.toEqual({ outcome, kind: "ONE_TIME", definition: f.definition });
+    expect(f.find).not.toHaveBeenCalled();
+    expect(f.findStatus).not.toHaveBeenCalled();
+    expect(f.findEditable).not.toHaveBeenCalled();
+    expect(f.edit).toHaveBeenCalledOnce();
+  },
+);
+
+it("carries one-time kind on already-cancelled results without additional state reads", async () => {
+  const f = fixture();
+  f.cancel.mockResolvedValue({ outcome: "ALREADY_CANCELLED", definition: f.definition });
+  await expect(
+    f.service.cancel({
+      guildId: "guild-id",
+      channelId: "channel-id",
+      scheduledActionId: "schedule-id",
+      actorUserId: "actor-id",
+    }),
+  ).resolves.toEqual({
+    outcome: "ALREADY_CANCELLED",
+    kind: "ONE_TIME",
+    deliveryCleanupPending: false,
+  });
+  expect(f.find).not.toHaveBeenCalled();
+  expect(f.findStatus).not.toHaveBeenCalled();
+  expect(f.cancel).toHaveBeenCalledOnce();
 });

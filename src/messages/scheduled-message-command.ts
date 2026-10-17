@@ -26,6 +26,7 @@ import type {
   ScheduledMessageAdministrationStore,
   CombinedScheduleListItem,
   RecurringAdministrationView,
+  ScheduleKind,
 } from "./scheduled-message-administration-persistence.js";
 import type {
   RecurringMessageStore,
@@ -36,7 +37,8 @@ import type { GuildSettingsStore } from "../guild/guild-settings.js";
 import {
   findNextOccurrence,
   normalizeRecurringTimezone,
-  parseRecurringCommandInput,
+  validateRecurringCommandInput,
+  type RecurringInputField,
   validateRecurrence,
   type RecurringCommandInput,
 } from "./recurring-message.js";
@@ -75,7 +77,11 @@ export type CreateScheduledMessageCommandResult =
     };
 
 export type CancelScheduledMessageCommandResult =
-  | { outcome: "CANCELLED" | "ALREADY_CANCELLED"; deliveryCleanupPending: boolean }
+  | {
+      outcome: "CANCELLED" | "ALREADY_CANCELLED";
+      kind: ScheduleKind;
+      deliveryCleanupPending: boolean;
+    }
   | {
       outcome:
         | "EXECUTING"
@@ -102,8 +108,11 @@ export type CreateRecurringCommandResult =
       deliveryPendingReconciliation: boolean;
     }
   | {
-      outcome:
-        "INVALID_RECURRENCE" | "INVALID_GUILD_TIMEZONE" | "PERSISTENCE_UNCONFIRMED" | "UNAVAILABLE";
+      outcome: "INVALID_RECURRENCE";
+      field?: RecurringInputField;
+    }
+  | {
+      outcome: "INVALID_GUILD_TIMEZONE" | "PERSISTENCE_UNCONFIRMED" | "UNAVAILABLE";
     }
   | {
       outcome: "FAILURE";
@@ -111,6 +120,7 @@ export type CreateRecurringCommandResult =
     };
 
 export type EditRecurrenceCommandResult =
+  | { outcome: "INVALID_RECURRENCE"; field?: RecurringInputField }
   | { outcome: "COMMITTED"; effect: RecurrenceEditEffect; deliveryPendingReconciliation: boolean }
   | {
       outcome:
@@ -118,10 +128,15 @@ export type EditRecurrenceCommandResult =
         | "CONFLICT"
         | "WRONG_KIND"
         | "NOT_FOUND_OR_WRONG_CONTEXT"
-        | "INVALID_RECURRENCE"
         | "PERSISTENCE_UNCONFIRMED"
         | "UNAVAILABLE";
     };
+
+export type EditScheduledMessageCommandResult =
+  | (Extract<EditScheduledMessageResult, { outcome: "EDITED" | "UNCHANGED" }> & {
+      kind: ScheduleKind;
+    })
+  | Exclude<EditScheduledMessageResult, { outcome: "EDITED" | "UNCHANGED" }>;
 
 export type CombinedScheduledMessageStatusResult =
   ScheduledMessageStatusResult | { outcome: "FOUND"; schedule: RecurringAdministrationView };
@@ -175,7 +190,7 @@ export type ScheduledMessageCommandService = {
     expectedRevision: number;
     payload: ManagedMessagePayloadInput;
   }) => Promise<
-    | EditScheduledMessageResult
+    | EditScheduledMessageCommandResult
     | { outcome: "INVALID_PAYLOAD"; code: ManagedMessagePayloadValidationCode }
   >;
   reschedule: (input: {
@@ -423,8 +438,10 @@ export function createScheduledMessageCommandService({
     async createRecurring(input) {
       if (recurring === undefined || recurringWorker === undefined || guildSettings === undefined)
         return { outcome: "UNAVAILABLE" };
-      const parsed = parseRecurringCommandInput(input.recurrence);
-      if (parsed === undefined) return { outcome: "INVALID_RECURRENCE" };
+      const validationInput = validateRecurringCommandInput(input.recurrence);
+      if (!validationInput.ok)
+        return { outcome: "INVALID_RECURRENCE", field: validationInput.field };
+      const parsed = validationInput.input;
       let timezone = parsed.explicitTimezone;
       if (timezone === undefined) {
         try {
@@ -568,8 +585,10 @@ export function createScheduledMessageCommandService({
       }
       if (kind === null) return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" };
       if (kind === "ONE_TIME") return { outcome: "WRONG_KIND" };
-      const parsed = parseRecurringCommandInput(input.recurrence);
-      if (parsed === undefined) return { outcome: "INVALID_RECURRENCE" };
+      const validationInput = validateRecurringCommandInput(input.recurrence);
+      if (!validationInput.ok)
+        return { outcome: "INVALID_RECURRENCE", field: validationInput.field };
+      const parsed = validationInput.input;
       let series;
       try {
         series = await recurring.find(input.scheduledActionId);
@@ -602,6 +621,7 @@ export function createScheduledMessageCommandService({
         .catch(() => ({ outcome: "PERSISTENCE_UNCONFIRMED" }) as const);
       if (result.outcome !== "COMMITTED") {
         await recordScheduleFailure(attempt, input, "RECURRING_MESSAGE_RECURRENCE_EDIT");
+        if (result.outcome === "INVALID_RECURRENCE") return { outcome: "INVALID_RECURRENCE" };
         return {
           outcome: result.outcome === "NOT_FOUND" ? "NOT_FOUND_OR_WRONG_CONTEXT" : result.outcome,
         };
@@ -692,7 +712,11 @@ export function createScheduledMessageCommandService({
           }
           if (series === undefined) return { outcome: "PERSISTENCE_UNCONFIRMED" };
           if (series.action.status === "CANCELLED")
-            return { outcome: "ALREADY_CANCELLED", deliveryCleanupPending: false };
+            return {
+              outcome: "ALREADY_CANCELLED",
+              kind: "RECURRING",
+              deliveryCleanupPending: false,
+            };
           const result = await recurring
             .cancel({
               scheduledActionId: input.scheduledActionId,
@@ -704,7 +728,7 @@ export function createScheduledMessageCommandService({
             })
             .catch(() => ({ outcome: "PERSISTENCE_UNCONFIRMED" }) as const);
           if (result.outcome === "COMMITTED")
-            return { outcome: "CANCELLED", deliveryCleanupPending: false };
+            return { outcome: "CANCELLED", kind: "RECURRING", deliveryCleanupPending: false };
           await recordScheduleFailure(attempt, input, "RECURRING_MESSAGE_CANCEL");
           return {
             outcome: result.outcome === "CONFLICT" ? "CONFLICT" : "PERSISTENCE_UNCONFIRMED",
@@ -761,7 +785,7 @@ export function createScheduledMessageCommandService({
           "Cancelled scheduled message delivery cleanup could not be confirmed",
         );
       }
-      return { outcome: result.outcome, deliveryCleanupPending };
+      return { outcome: result.outcome, kind: "ONE_TIME", deliveryCleanupPending };
     },
 
     async status(input) {
@@ -877,9 +901,9 @@ export function createScheduledMessageCommandService({
             })
             .catch(() => ({ outcome: "PERSISTENCE_UNCONFIRMED" }) as const);
           if (result.outcome === "COMMITTED")
-            return { outcome: "EDITED", definition: result.series };
+            return { outcome: "EDITED", kind: "RECURRING", definition: result.series };
           if (result.outcome === "UNCHANGED")
-            return { outcome: "UNCHANGED", definition: result.series };
+            return { outcome: "UNCHANGED", kind: "RECURRING", definition: result.series };
           if (result.outcome === "CONFLICT") return { outcome: "CONFLICT" };
           if (result.outcome === "NOT_FOUND") return { outcome: "NOT_FOUND_OR_WRONG_CONTEXT" };
           await recordScheduleFailure(attempt, input, "RECURRING_MESSAGE_PAYLOAD_EDIT");
@@ -909,7 +933,9 @@ export function createScheduledMessageCommandService({
       });
       if (result.outcome === "PERSISTENCE_UNCONFIRMED")
         await recordScheduleFailure(attempt, input, "ONE_TIME_MESSAGE_EDIT");
-      return result;
+      return result.outcome === "EDITED" || result.outcome === "UNCHANGED"
+        ? { ...result, kind: "ONE_TIME" }
+        : result;
     },
 
     async reschedule(input) {
