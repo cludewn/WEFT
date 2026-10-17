@@ -95,6 +95,37 @@ PostgreSQL integration tests use a separate set of required variables and never 
 | `TEST_DATABASE_PASSWORD` | Yes      | Dedicated test database password                   |
 | `TEST_DATABASE_SSL`      | Yes      | Set to `true` to require certificate-verified TLS  |
 
+## Closed-thread title prefix
+
+The default closed prefix is `[CLOSED]`. Administrators with Manage Server can use:
+
+```text
+/config closed-prefix set value:[DONE]
+/config closed-prefix disable
+/config closed-prefix set value:[CLOSED]
+```
+
+`set` requires 1–20 Unicode code points after trimming and rejects empty, whitespace-only, and
+control-character input. `disable` takes no options and stores an empty string. `/config show`
+explicitly displays `Closed prefix: Disabled`. The previous flat `/config closed-prefix value:...`
+syntax is removed; redeploy commands to every previously used Guild/Global scope as described above.
+
+Manual, automatic, scheduled, and bulk closes with an empty applied prefix archive without
+locking or changing the title. Opening reconciles a thread already active on Discord; WEFT does not add
+an unarchive operation. A managed CLOSED thread keeps its saved applied prefix across guild setting
+changes: an older `[CLOSED]` marker is still removed on open after disabling, while a thread closed
+with an empty prefix keeps its title after a new prefix is enabled. Repeated closes retain that
+saved prefix until OPEN; the next close then uses current guild settings. Manual title edits outside
+the saved leading marker are preserved. Settings changes never rename existing threads.
+
+Before running this release, apply migration 0023 after 0000–0022 using the explicit
+[production migration procedure](docs/development.md#production-migration-operations), then start
+WEFT and redeploy commands. It removes the managed-thread nonempty-prefix CHECK and permits
+0–20 code points in both closed-prefix audit values, preserving NOT NULL, the default, other
+constraints, existing rows, and audit history. See the
+[verification procedure](docs/development.md#prefix-free-thread-closing-issue-120) for upgrade,
+clean-install, and development-guild checks.
+
 ## PostgreSQL
 
 Start the PostgreSQL development service:
@@ -179,7 +210,7 @@ use the controls. The session expires after five minutes; selection and navigati
 
 The candidate snapshot never gains threads. Confirm freezes exactly the current selected subset;
 deselected candidates never execute. Current state, filters or permissions can still cause skips.
-Closing adds the configured prefix and archives without locking. It may cancel an active scheduled
+Closing adds a closed prefix when enabled and archives without locking. It may cancel an active scheduled
 close; cancellation is not restored if the later close fails or remains Pending. Execution uses a
 shared maximum of three unresolved bulk operations and stops starting new targets five minutes after
 confirmation. The aggregate distinguishes selected, attempted, closed, already closed, pending,

@@ -1106,7 +1106,8 @@ describe("notification and retention integration", () => {
 describe("committed history survives Discord interaction failure", () => {
   it.each([
     [null, "timezone", "Asia/Tokyo", "TIMEZONE"],
-    [null, "closed-prefix", "[DONE]", "CLOSED_PREFIX"],
+    ["closed-prefix", "set", "[DONE]", "CLOSED_PREFIX"],
+    ["closed-prefix", "disable", "", "CLOSED_PREFIX"],
     ["auto-close", "inactivity", "12h", "AUTO_CLOSE_INACTIVITY"],
     ["auto-close", "bot-messages", "", "AUTO_CLOSE_BOT_MESSAGES"],
     ["auto-close", "add-parent", "", "AUTO_CLOSE_PARENT"],
@@ -1243,4 +1244,118 @@ it("observes serialization of concurrent first-time scalar establishment", async
     );
     await database.client.execute(sql.raw(`drop function ${functionName}()`));
   }
+});
+
+describe("disabled closed-prefix persistence and evidence", () => {
+  it("commits prefix -> empty -> prefix with exact audits and a silent empty -> empty no-op", async () => {
+    const id = guild();
+    const publish = vi.fn<AuditNotificationPublisher["publish"]>();
+    const store = createGuildSettingsStore(database.client, { publish });
+    const disable = context();
+    expect(await store.disableClosedPrefix(id, disable)).toMatchObject({
+      outcome: "CHANGED",
+      settings: { closedPrefix: "" },
+    });
+    expect(await history(id)).toEqual([
+      configurationAudit(disable, id, {
+        action: "SET",
+        settingType: "CLOSED_PREFIX",
+        targetType: "GUILD",
+        targetId: id,
+        previousText: "[CLOSED]",
+        newText: "",
+      }),
+    ]);
+    const before = await state(id);
+    const audits = await history(id);
+    expect(await store.disableClosedPrefix(id, context())).toMatchObject({ outcome: "NO_CHANGE" });
+    expect(await state(id)).toEqual(before);
+    expect(await history(id)).toEqual(audits);
+    expect(publish).toHaveBeenCalledOnce();
+    const enable = context();
+    expect(await store.setClosedPrefix(id, "[DONE]", enable)).toMatchObject({ outcome: "CHANGED" });
+    expect(await history(id)).toContainEqual(
+      configurationAudit(enable, id, {
+        action: "SET",
+        settingType: "CLOSED_PREFIX",
+        targetType: "GUILD",
+        targetId: id,
+        previousText: "",
+        newText: "[DONE]",
+      }),
+    );
+    expect(publish).toHaveBeenCalledTimes(2);
+  });
+
+  it("confirms a lost disable commit using exact historical audit after a later change", async () => {
+    const id = guild();
+    const audit = context();
+    const result = await createGuildSettingsStore(
+      lostResponse(async () => {
+        await settings.setClosedPrefix(id, "[LATER]", context());
+      }),
+    ).disableClosedPrefix(id, audit);
+    expect(result).toMatchObject({ outcome: "CHANGED", settings: { closedPrefix: "" } });
+    expect((await state(id)).settings[0]?.closedPrefix).toBe("[LATER]");
+    expect(await history(id)).toContainEqual(
+      configurationAudit(audit, id, {
+        action: "SET",
+        settingType: "CLOSED_PREFIX",
+        targetType: "GUILD",
+        targetId: id,
+        previousText: "[CLOSED]",
+        newText: "",
+      }),
+    );
+  });
+
+  it("does not confirm response loss from matching configuration when the exact audit is absent", async () => {
+    const id = guild();
+    const audit = context();
+    const result = await createGuildSettingsStore(
+      lostResponse(async () => {
+        await database.client
+          .delete(guildConfigurationAudits)
+          .where(eq(guildConfigurationAudits.id, audit.auditId));
+      }),
+    ).disableClosedPrefix(id, audit);
+    expect(result).toEqual({ outcome: "UNCONFIRMED" });
+    expect((await state(id)).settings[0]?.closedPrefix).toBe("");
+    expect(await history(id)).toEqual([]);
+  });
+
+  it("rolls back disabling and timestamp updates together if the audit insert fails", async () => {
+    const id = guild();
+    const seed = context();
+    await settings.setClosedPrefix(id, "[SEED]", seed);
+    const before = await state(id);
+    const audits = await history(id);
+    expect(await settings.disableClosedPrefix(id, seed)).toEqual({ outcome: "UNCONFIRMED" });
+    expect(await state(id)).toEqual(before);
+    expect(await history(id)).toEqual(audits);
+  });
+
+  it.each([
+    { previousText: null, newText: "" },
+    { previousText: "", newText: null },
+    { previousText: "", newText: "" },
+    { previousText: "x".repeat(21), newText: "" },
+    { previousText: "", newText: "😀".repeat(21) },
+    { previousText: "bad\n", newText: "" },
+    { previousText: "", newText: "bad\u0085" },
+    { previousText: "[DONE]", newText: "", newInteger: 1 },
+  ])("rejects invalid empty-prefix audit shape %j", async (values) => {
+    const id = guild();
+    await expect(
+      database.client.insert(guildConfigurationAudits).values(
+        configurationAudit(context(), id, {
+          action: "SET",
+          settingType: "CLOSED_PREFIX",
+          targetType: "GUILD",
+          targetId: id,
+          ...values,
+        }),
+      ),
+    ).rejects.toThrow();
+  });
 });

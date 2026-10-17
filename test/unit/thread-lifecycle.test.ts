@@ -1,6 +1,9 @@
 import { ChannelType } from "discord.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createAutomaticCloseExecutor } from "../../src/threads/automatic-close-execution.js";
+import { createScheduledThreadCloseExecutor } from "../../src/threads/scheduled-thread-close.js";
+import type { ScheduledAction } from "../../src/scheduled-action-persistence.js";
 import { createBulkCloseService } from "../../src/threads/bulk-thread-close.js";
 import { createScheduledThreadCloseCommandService } from "../../src/threads/scheduled-thread-close-command.js";
 import type { ChatInputCommandInteraction } from "discord.js";
@@ -45,6 +48,14 @@ const automaticCloseMaintenanceStub = {} as AutomaticCloseThreadMaintenanceServi
 afterEach(() => vi.useRealTimers());
 
 describe("thread title rules", () => {
+  it.each(["", " ", "  Topic", "😀".repeat(120), "[CLOSED] Topic"])(
+    "preserves the exact title with an empty prefix: %j",
+    (title) => {
+      expect(addClosedPrefix(title, "")).toBe(title);
+      expect(removeClosedPrefix(title, "")).toBe(title);
+    },
+  );
+
   it("adds one prefix and removes only the saved leading prefix", () => {
     expect(addClosedPrefix("Topic", "[CLOSED]")).toBe("[CLOSED] Topic");
     expect(addClosedPrefix("[CLOSED] Topic", "[CLOSED]")).toBe("[CLOSED] Topic");
@@ -966,91 +977,94 @@ describe("thread lifecycle", () => {
     ]);
   });
 
-  it("drains actual thread work created late by an admitted handler before closing resources", async () => {
-    vi.useFakeTimers();
-    const fixture = createFixture({ deadlineMs: 250, mutationWaitMs: 20 });
-    const enterThreadLifecycle = deferred<void>();
-    const archive = deferred<void>();
-    const finalAudit = deferred<void>();
-    const recordAudit = fixture.auditStore.record;
-    fixture.discord.archiveThread = vi.fn(() => archive.promise);
-    fixture.auditStore.record = vi.fn<ThreadAuditStore["record"]>((audit) =>
-      finalAudit.promise.then(() => recordAudit(audit)),
-    );
-    const destroyDiscord = vi.fn();
-    const closeDatabase = vi.fn(() => Promise.resolve());
-    const drainThreadLifecycle = vi.fn(() => fixture.service.drain());
-    const startupStep = () => Promise.resolve();
-    const runtime = createApplicationRuntime({
-      startHealthListener: startupStep,
-      quiesceHealth: () => {},
-      drainHealth: startupStep,
-      verifyDatabaseConnection: startupStep,
-      startPgBoss: startupStep,
-      ensureScheduledThreadCloseQueue: startupStep,
-      ensureScheduledMessageQueue: startupStep,
-      ensureRecurringMessageQueue: startupStep,
-      recoverScheduledThreadCloseDeliveries: startupStep,
-      recoverScheduledMessageDeliveries: startupStep,
-      recoverRecurringMessageDeliveries: startupStep,
-      startDiscord: startupStep,
-      startScheduledThreadCloseWorkers: startupStep,
-      startScheduledMessageWorker: startupStep,
-      startRecurringMessageWorker: startupStep,
-      startScheduledThreadCloseRuntimeReconciliation: startupStep,
-      startScheduledMessageRuntimeReconciliation: startupStep,
-      startRecurringMessageRuntimeReconciliation: startupStep,
-      reconcileAutomaticCloseBaselines: startupStep,
-      startAutomaticCloseRuntime: startupStep,
-      startAuditRetentionRuntime: startupStep,
-      quiesce: [],
-      drainThreadLifecycle,
-      drainAuditNotifications: startupStep,
-      stopPgBoss: startupStep,
-      destroyDiscord,
-      closeDatabase,
-      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-      processControl: { setExitCode: vi.fn(), forceExit: vi.fn(), writeStderr: vi.fn() },
-    });
-    await runtime.start();
-    await fixture.service.drain();
+  it.each(["[CLOSED]", ""])(
+    "drains actual thread work with prefix %j created late by an admitted handler before closing resources",
+    async (prefix) => {
+      vi.useFakeTimers();
+      const fixture = createFixture({ prefix, deadlineMs: 250, mutationWaitMs: 20 });
+      const enterThreadLifecycle = deferred<void>();
+      const archive = deferred<void>();
+      const finalAudit = deferred<void>();
+      const recordAudit = fixture.auditStore.record;
+      fixture.discord.archiveThread = vi.fn(() => archive.promise);
+      fixture.auditStore.record = vi.fn<ThreadAuditStore["record"]>((audit) =>
+        finalAudit.promise.then(() => recordAudit(audit)),
+      );
+      const destroyDiscord = vi.fn();
+      const closeDatabase = vi.fn(() => Promise.resolve());
+      const drainThreadLifecycle = vi.fn(() => fixture.service.drain());
+      const startupStep = () => Promise.resolve();
+      const runtime = createApplicationRuntime({
+        startHealthListener: startupStep,
+        quiesceHealth: () => {},
+        drainHealth: startupStep,
+        verifyDatabaseConnection: startupStep,
+        startPgBoss: startupStep,
+        ensureScheduledThreadCloseQueue: startupStep,
+        ensureScheduledMessageQueue: startupStep,
+        ensureRecurringMessageQueue: startupStep,
+        recoverScheduledThreadCloseDeliveries: startupStep,
+        recoverScheduledMessageDeliveries: startupStep,
+        recoverRecurringMessageDeliveries: startupStep,
+        startDiscord: startupStep,
+        startScheduledThreadCloseWorkers: startupStep,
+        startScheduledMessageWorker: startupStep,
+        startRecurringMessageWorker: startupStep,
+        startScheduledThreadCloseRuntimeReconciliation: startupStep,
+        startScheduledMessageRuntimeReconciliation: startupStep,
+        startRecurringMessageRuntimeReconciliation: startupStep,
+        reconcileAutomaticCloseBaselines: startupStep,
+        startAutomaticCloseRuntime: startupStep,
+        startAuditRetentionRuntime: startupStep,
+        quiesce: [],
+        drainThreadLifecycle,
+        drainAuditNotifications: startupStep,
+        stopPgBoss: startupStep,
+        destroyDiscord,
+        closeDatabase,
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        processControl: { setExitCode: vi.fn(), forceExit: vi.fn(), writeStderr: vi.fn() },
+      });
+      await runtime.start();
+      await fixture.service.drain();
 
-    const handler = runtime.ingress.run(async () => {
-      await enterThreadLifecycle.promise;
-      return fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID);
-    });
-    expect(fixture.discord.archiveThread).not.toHaveBeenCalled();
+      const handler = runtime.ingress.run(async () => {
+        await enterThreadLifecycle.promise;
+        return fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID);
+      });
+      expect(fixture.discord.archiveThread).not.toHaveBeenCalled();
 
-    const shutdown = runtime.shutdown("SIGTERM");
-    await Promise.resolve();
-    expect(drainThreadLifecycle).not.toHaveBeenCalled();
-    expect(destroyDiscord).not.toHaveBeenCalled();
-    expect(closeDatabase).not.toHaveBeenCalled();
+      const shutdown = runtime.shutdown("SIGTERM");
+      await Promise.resolve();
+      expect(drainThreadLifecycle).not.toHaveBeenCalled();
+      expect(destroyDiscord).not.toHaveBeenCalled();
+      expect(closeDatabase).not.toHaveBeenCalled();
 
-    enterThreadLifecycle.resolve(undefined);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(20);
-    await expect(handler).resolves.toEqual({ ok: false, pending: true });
-    await vi.waitFor(() => expect(drainThreadLifecycle).toHaveBeenCalledOnce());
-    expect(fixture.auditStore.record).not.toHaveBeenCalled();
-    expect(destroyDiscord).not.toHaveBeenCalled();
-    expect(closeDatabase).not.toHaveBeenCalled();
+      enterThreadLifecycle.resolve(undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(20);
+      await expect(handler).resolves.toEqual({ ok: false, pending: true });
+      await vi.waitFor(() => expect(drainThreadLifecycle).toHaveBeenCalledOnce());
+      expect(fixture.auditStore.record).not.toHaveBeenCalled();
+      expect(destroyDiscord).not.toHaveBeenCalled();
+      expect(closeDatabase).not.toHaveBeenCalled();
 
-    archive.resolve(undefined);
-    for (let index = 0; index < 20; index += 1) await Promise.resolve();
-    expect(fixture.auditStore.record).toHaveBeenCalledOnce();
-    expect(destroyDiscord).not.toHaveBeenCalled();
-    expect(closeDatabase).not.toHaveBeenCalled();
+      archive.resolve(undefined);
+      for (let index = 0; index < 20; index += 1) await Promise.resolve();
+      expect(fixture.auditStore.record).toHaveBeenCalledOnce();
+      expect(destroyDiscord).not.toHaveBeenCalled();
+      expect(closeDatabase).not.toHaveBeenCalled();
 
-    finalAudit.resolve(undefined);
-    await shutdown;
-    expect(fixture.audits).toEqual([
-      expect.objectContaining({ action: "CLOSE", outcome: "SUCCESS" }),
-    ]);
-    expect(destroyDiscord).toHaveBeenCalledOnce();
-    expect(closeDatabase).toHaveBeenCalledOnce();
-  });
+      finalAudit.resolve(undefined);
+      await shutdown;
+      expect(fixture.audits).toEqual([
+        expect.objectContaining({ action: "CLOSE", outcome: "SUCCESS" }),
+      ]);
+      expect(destroyDiscord).toHaveBeenCalledOnce();
+      expect(closeDatabase).toHaveBeenCalledOnce();
+    },
+  );
 
   it("does not invent a retained-operation outcome when the process deadline wins", async () => {
     vi.useFakeTimers();
@@ -1125,37 +1139,42 @@ describe("thread lifecycle", () => {
     expect(closeDatabase).not.toHaveBeenCalled();
   });
 
-  it("reconciles a late close with the prefix selected before caller wait expires", async () => {
-    const fixture = createFixture({ deadlineMs: 250, mutationWaitMs: 20 });
-    let completeArchive: (() => void) | undefined;
-    fixture.settings.closedPrefix = "[OLD]";
-    fixture.discord.archiveThread = vi.fn<ThreadLifecycleDiscord["archiveThread"]>(
-      (_guildId, _threadId, name) =>
-        new Promise<void>((resolve) => {
-          completeArchive = () => {
-            fixture.thread.name = name;
-            fixture.thread.archived = true;
-            resolve();
-          };
-        }),
-    );
+  it.each(["[OLD]", ""])(
+    "reconciles a late close with captured prefix %j before caller wait expires",
+    async (prefix) => {
+      const fixture = createFixture({ prefix, deadlineMs: 250, mutationWaitMs: 20 });
+      let completeArchive: (() => void) | undefined;
+      fixture.discord.archiveThread = vi.fn<ThreadLifecycleDiscord["archiveThread"]>(
+        (_guildId, _threadId, name) =>
+          new Promise<void>((resolve) => {
+            completeArchive = () => {
+              fixture.thread.name = name;
+              fixture.thread.archived = true;
+              resolve();
+            };
+          }),
+      );
 
-    await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
-      ok: false,
-      pending: true,
-    });
-    fixture.settings.closedPrefix = "[NEW]";
-    completeArchive?.();
+      await expect(fixture.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).resolves.toEqual({
+        ok: false,
+        pending: true,
+      });
+      fixture.settings.closedPrefix = "[NEW]";
+      completeArchive?.();
 
-    await vi.waitFor(() =>
-      expect(fixture.audits).toEqual([
-        expect.objectContaining({ action: "CLOSE", outcome: "SUCCESS" }),
-      ]),
-    );
-    expect(fixture.thread).toMatchObject({ name: "[OLD] Topic", archived: true });
-    expect(fixture.state).toMatchObject({ lifecycleState: "CLOSED", appliedPrefix: "[OLD]" });
-    expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
-  });
+      await vi.waitFor(() =>
+        expect(fixture.audits).toEqual([
+          expect.objectContaining({ action: "CLOSE", outcome: "SUCCESS" }),
+        ]),
+      );
+      expect(fixture.thread).toMatchObject({
+        name: prefix === "" ? "Topic" : `${prefix} Topic`,
+        archived: true,
+      });
+      expect(fixture.state).toMatchObject({ lifecycleState: "CLOSED", appliedPrefix: prefix });
+      expect(fixture.discord.archiveThread).toHaveBeenCalledOnce();
+    },
+  );
 
   it("replays a pending autoOpen intent after close finalization and removes stale managed CLOSED state", async () => {
     const fixture = createFixture({ deadlineMs: 50, mutationWaitMs: 20 });
@@ -2548,6 +2567,7 @@ function createFixture({
     }),
     setTimezone: vi.fn(),
     setClosedPrefix: vi.fn(),
+    disableClosedPrefix: vi.fn(),
   } as unknown as GuildSettingsStore;
   const managedThreads: ManagedThreadStore = {
     find: vi.fn<ManagedThreadStore["find"]>(() => {
@@ -2764,75 +2784,84 @@ describe("bulk lifecycle admission and logical settlement", () => {
   });
 });
 
-it("a deselected candidate never enters manual close or causes cancellation, managed write, audit or PATCH", async () => {
-  const selected = createFixture();
-  const deselected = createFixture();
-  const excludedId = "200000000000000002";
-  deselected.thread.threadId = excludedId;
-  const cancel = vi.fn((input: { threadId: string }) => {
-    void input;
-    return Promise.resolve({ outcome: "NOT_SCHEDULED" } as const);
-  });
-  const wrapper = (fixture: ReturnType<typeof createFixture>) =>
-    createScheduledThreadCloseCommandService({
-      discord: fixture.discord,
-      threadLifecycle: fixture.service,
-      schedules: { cancel, createOrReplace: vi.fn() },
-      delivery: { enqueueScheduledThreadClose: vi.fn(), hasCreatedOrRetryDelivery: vi.fn() },
-      logger: { warn: vi.fn() },
+it.each(["[CLOSED]", ""])(
+  "with prefix %j a deselected candidate never enters manual close or causes cancellation, managed write, audit or PATCH",
+  async (prefix) => {
+    const selected = createFixture({ prefix });
+    const deselected = createFixture();
+    const excludedId = "200000000000000002";
+    deselected.thread.threadId = excludedId;
+    const cancel = vi.fn((input: { threadId: string }) => {
+      void input;
+      return Promise.resolve({ outcome: "NOT_SCHEDULED" } as const);
     });
-  const selectedManual = wrapper(selected);
-  const excludedManual = wrapper(deselected);
-  const closeManually = vi.fn<ScheduledThreadCloseCommandService["closeManually"]>(
-    (guild, id, actor, hooks) =>
-      (id === THREAD_ID ? selectedManual : excludedManual).closeManually(guild, id, actor, hooks),
-  );
-  const parent = {
-    id: "900000000000000001",
-    guildId: GUILD_ID,
-    type: ChannelType.GuildText,
-    name: "Parent",
-  };
-  const threads = [selected.thread, deselected.thread].map((thread) => ({
-    ...thread,
-    parentId: parent.id,
-    ownerId: ACTOR_ID,
-    createdTimestamp: null,
-  }));
-  const bulk = createBulkCloseService({
-    discord: {
-      discover: () => Promise.resolve({ parent, threads }),
-      observe: (_g, _p, _a, ids) =>
-        Promise.resolve({ parent, threads: threads.filter((t) => ids.includes(t.threadId)) }),
-    },
-    manualClose: { closeManually },
-    isReady: () => true,
-  });
-  const result = await bulk.preview(GUILD_ID, parent.id, ACTOR_ID, { nameContains: "Topic" });
-  if (!result.ok) throw new Error(result.reason);
-  bulk.bind(result.session, "100");
-  const identity = { guildId: GUILD_ID, actorId: ACTOR_ID, messageId: "100" };
-  expect(bulk.select(result.session.id, identity, 0, 0, [THREAD_ID])).toBeDefined();
-  await bulk.page(result.session.id, identity, 0);
-  expect(cancel).not.toHaveBeenCalled();
-  for (const fixture of [selected, deselected]) {
-    expect(fixture.managedThreads.saveClosed).not.toHaveBeenCalled();
-    expect(fixture.auditStore.record).not.toHaveBeenCalled();
-    expect(fixture.discord.archiveThread).not.toHaveBeenCalled();
-    expect(fixture.discord.renameThread).not.toHaveBeenCalled();
-  }
-  const confirmed = await bulk.confirm(result.session.id, identity);
-  expect(await confirmed!.result).toMatchObject({ selected: 1, attempted: 1, closed: 1 });
-  await Promise.all([selected.service.drain(), deselected.service.drain()]);
-  expect(closeManually).toHaveBeenCalledOnce();
-  expect(closeManually.mock.calls[0]?.[1]).toBe(THREAD_ID);
-  expect(cancel).toHaveBeenCalledOnce();
-  expect(cancel.mock.calls[0]?.[0]).toMatchObject({ threadId: THREAD_ID });
-  expect(deselected.managedThreads.saveClosed).not.toHaveBeenCalled();
-  expect(deselected.auditStore.record).not.toHaveBeenCalled();
-  expect(deselected.discord.archiveThread).not.toHaveBeenCalled();
-  expect(deselected.discord.renameThread).not.toHaveBeenCalled();
-});
+    const wrapper = (fixture: ReturnType<typeof createFixture>) =>
+      createScheduledThreadCloseCommandService({
+        discord: fixture.discord,
+        threadLifecycle: fixture.service,
+        schedules: { cancel, createOrReplace: vi.fn() },
+        delivery: { enqueueScheduledThreadClose: vi.fn(), hasCreatedOrRetryDelivery: vi.fn() },
+        logger: { warn: vi.fn() },
+      });
+    const selectedManual = wrapper(selected);
+    const excludedManual = wrapper(deselected);
+    const closeManually = vi.fn<ScheduledThreadCloseCommandService["closeManually"]>(
+      (guild, id, actor, hooks) =>
+        (id === THREAD_ID ? selectedManual : excludedManual).closeManually(guild, id, actor, hooks),
+    );
+    const parent = {
+      id: "900000000000000001",
+      guildId: GUILD_ID,
+      type: ChannelType.GuildText,
+      name: "Parent",
+    };
+    const threads = [selected.thread, deselected.thread].map((thread) => ({
+      ...thread,
+      parentId: parent.id,
+      ownerId: ACTOR_ID,
+      createdTimestamp: null,
+    }));
+    const bulk = createBulkCloseService({
+      discord: {
+        discover: () => Promise.resolve({ parent, threads }),
+        observe: (_g, _p, _a, ids) =>
+          Promise.resolve({ parent, threads: threads.filter((t) => ids.includes(t.threadId)) }),
+      },
+      manualClose: { closeManually },
+      isReady: () => true,
+    });
+    const result = await bulk.preview(GUILD_ID, parent.id, ACTOR_ID, { nameContains: "Topic" });
+    if (!result.ok) throw new Error(result.reason);
+    bulk.bind(result.session, "100");
+    const identity = { guildId: GUILD_ID, actorId: ACTOR_ID, messageId: "100" };
+    expect(bulk.select(result.session.id, identity, 0, 0, [THREAD_ID])).toBeDefined();
+    await bulk.page(result.session.id, identity, 0);
+    expect(cancel).not.toHaveBeenCalled();
+    for (const fixture of [selected, deselected]) {
+      expect(fixture.managedThreads.saveClosed).not.toHaveBeenCalled();
+      expect(fixture.auditStore.record).not.toHaveBeenCalled();
+      expect(fixture.discord.archiveThread).not.toHaveBeenCalled();
+      expect(fixture.discord.renameThread).not.toHaveBeenCalled();
+    }
+    const confirmed = await bulk.confirm(result.session.id, identity);
+    expect(await confirmed!.result).toMatchObject({ selected: 1, attempted: 1, closed: 1 });
+    await Promise.all([selected.service.drain(), deselected.service.drain()]);
+    expect(selected.thread).toMatchObject({
+      name: prefix === "" ? "Topic" : `${prefix} Topic`,
+      archived: true,
+      locked: false,
+    });
+    expect(selected.state).toMatchObject({ lifecycleState: "CLOSED", appliedPrefix: prefix });
+    expect(closeManually).toHaveBeenCalledOnce();
+    expect(closeManually.mock.calls[0]?.[1]).toBe(THREAD_ID);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(cancel.mock.calls[0]?.[0]).toMatchObject({ threadId: THREAD_ID });
+    expect(deselected.managedThreads.saveClosed).not.toHaveBeenCalled();
+    expect(deselected.auditStore.record).not.toHaveBeenCalled();
+    expect(deselected.discord.archiveThread).not.toHaveBeenCalled();
+    expect(deselected.discord.renameThread).not.toHaveBeenCalled();
+  },
+);
 
 describe("mutation-capable persistence timeout ownership", () => {
   it.each(["saveClosed", "getOrCreate", "markOpen"] as const)(
@@ -3084,4 +3113,248 @@ describe("mutation-capable persistence timeout ownership", () => {
       expect(f.discord.archiveThread).not.toHaveBeenCalled();
     });
   }
+});
+
+describe("prefix-free shared lifecycle", () => {
+  it("archives unchanged titles, persists CLOSED before mutation, and opens without a rename", async () => {
+    const f = createFixture({ prefix: "", threadName: "  [CLOSED] 😀" });
+    expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(f.thread).toMatchObject({ name: "  [CLOSED] 😀", archived: true, locked: false });
+    expect(f.state).toMatchObject({ appliedPrefix: "", lifecycleState: "CLOSED" });
+    expect(f.calls.indexOf("state-closed:")).toBeLessThan(f.calls.indexOf("archive"));
+    expect(f.discord.archiveThread).toHaveBeenCalledWith(GUILD_ID, THREAD_ID, "  [CLOSED] 😀");
+    expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+      ok: true,
+      changed: false,
+    });
+    expect(f.discord.archiveThread).toHaveBeenCalledOnce();
+    expect(await f.service.open(GUILD_ID, THREAD_ID, ACTOR_ID)).toMatchObject({
+      ok: false,
+      code: "THREAD_NOT_ACTIVE",
+    });
+    f.thread.archived = false;
+    expect(await f.service.open(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(await f.service.open(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+      ok: true,
+      changed: false,
+    });
+    expect(f.thread.name).toBe("  [CLOSED] 😀");
+    expect(f.state).toMatchObject({ appliedPrefix: "", lifecycleState: "OPEN" });
+    expect(f.discord.renameThread).not.toHaveBeenCalled();
+    expect(f.audits.map((a) => [a.action, a.outcome])).toEqual([
+      ["CLOSE", "SUCCESS"],
+      ["CLOSE", "SUCCESS"],
+      ["OPEN", "FAILURE"],
+      ["OPEN", "SUCCESS"],
+      ["OPEN", "SUCCESS"],
+    ]);
+    await f.service.drain();
+  });
+
+  it.each([
+    ["[CLOSED]", "", "Topic"],
+    ["", "[DONE]", "Topic"],
+    ["[OLD]", "[NEW]", "Topic"],
+  ])(
+    "retains saved prefix %j after setting %j, then uses current settings after open",
+    async (initial, next, title) => {
+      const f = createFixture({ prefix: initial, threadName: title });
+      expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+        ok: true,
+        changed: true,
+      });
+      f.settings.closedPrefix = next!;
+      // CLOSED metadata cannot prove Discord is still archived: repeat must archive a fresh active observation.
+      f.thread.archived = false;
+      expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+        ok: true,
+        changed: true,
+      });
+      expect(f.state?.appliedPrefix).toBe(initial);
+      expect(f.thread.name).toBe(initial === "" ? title : `${initial} ${title}`);
+      f.thread.archived = false;
+      expect(await f.service.open(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+        ok: true,
+        changed: true,
+      });
+      expect(f.thread.name).toBe(title);
+      expect(f.state?.lifecycleState).toBe("OPEN");
+      expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+        ok: true,
+        changed: true,
+      });
+      expect(f.state?.appliedPrefix).toBe(next);
+      expect(f.thread.name).toBe(next === "" ? title : `${next} ${title}`);
+      await f.service.drain();
+    },
+  );
+
+  it.each(["", "[OLD]"])("preserves manual edits outside saved marker %j", async (prefix) => {
+    const f = createFixture({ prefix });
+    await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID);
+    f.thread.archived = false;
+    f.thread.name = "  Edited [OTHER] title";
+    f.settings.closedPrefix = "[NEW]";
+    expect(await f.service.open(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(f.thread.name).toBe("  Edited [OTHER] title");
+    expect(f.discord.renameThread).not.toHaveBeenCalled();
+    expect(f.state?.lifecycleState).toBe("OPEN");
+  });
+
+  it("auto-opens without renaming and selects the current prefix on the next close", async () => {
+    const f = createFixture({ prefix: "" });
+    await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID);
+    f.settings.closedPrefix = "[DONE]";
+    f.thread.archived = false;
+    expect(await f.service.autoOpen(GUILD_ID, THREAD_ID)).toEqual({ ok: true, changed: true });
+    expect(f.discord.renameThread).not.toHaveBeenCalled();
+    expect(f.audits.at(-1)).toMatchObject({
+      action: "AUTO_OPEN",
+      actorType: "SYSTEM",
+      outcome: "SUCCESS",
+    });
+    expect(await f.service.autoOpen(GUILD_ID, THREAD_ID)).toEqual({ ok: true, changed: false });
+    expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(f.thread.name).toBe("[DONE] Topic");
+  });
+
+  it("reconciles response loss using captured empty prefix and retains drain until late settlement", async () => {
+    const f = createFixture({ prefix: "", threadName: "  Topic", mutationWaitMs: 5 });
+    const mutation = deferred<void>();
+    f.discord.archiveThread = vi.fn(() => mutation.promise);
+    expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+      ok: false,
+      pending: true,
+    });
+    let drained = false;
+    const drain = f.service.drain().then(() => {
+      drained = true;
+    });
+    f.settings.closedPrefix = "[DONE]";
+    expect(await f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+      ok: false,
+      pending: true,
+    });
+    expect(drained).toBe(false);
+    expect(f.audits).toEqual([]);
+    f.thread.archived = true;
+    mutation.reject(new Error("response lost"));
+    await drain;
+    expect(f.thread.name).toBe("  Topic");
+    expect(f.state).toMatchObject({ lifecycleState: "CLOSED", appliedPrefix: "" });
+    expect(f.audits).toEqual([expect.objectContaining({ action: "CLOSE", outcome: "SUCCESS" })]);
+    expect(f.discord.archiveThread).toHaveBeenCalledOnce();
+    expect(f.discord.fetchThread).toHaveBeenCalledTimes(4);
+    expect(f.discord.renameThread).not.toHaveBeenCalled();
+  });
+});
+
+describe("prefix-free execution owners with real shared lifecycle", () => {
+  it("automatic executor validates and retires an episode around a real AUTO_CLOSE", async () => {
+    const f = createFixture({ prefix: "" });
+    const persistence = {
+      isCandidateEpisodeEligible: vi.fn(() => Promise.resolve(true)),
+      retireActivityEpisode: vi.fn(() => Promise.resolve()),
+    };
+    const scheduledActions = { findCurrentThreadClose: vi.fn(() => Promise.resolve(undefined)) };
+    const candidate = {
+      guildId: GUILD_ID,
+      threadId: THREAD_ID,
+      parentChannelId: "parent",
+      lastActivityAt: new Date(0),
+    };
+    const executor = createAutomaticCloseExecutor({
+      discord: {
+        inspectThread: () =>
+          Promise.resolve({
+            outcome: "AVAILABLE",
+            parentChannelId: "parent",
+            archived: f.thread.archived,
+          }),
+      },
+      persistence,
+      scheduledActions,
+      threadLifecycle: f.service,
+      createAuditId: () => "auto-empty",
+    });
+    expect(await executor.execute(candidate)).toEqual({ outcome: "SUCCESS", changed: true });
+    expect(persistence.isCandidateEpisodeEligible).toHaveBeenCalledOnce();
+    expect(scheduledActions.findCurrentThreadClose).toHaveBeenCalledOnce();
+    expect(persistence.retireActivityEpisode).toHaveBeenCalledOnce();
+    expect(f.thread).toMatchObject({ name: "Topic", archived: true, locked: false });
+    expect(f.state).toMatchObject({ lifecycleState: "CLOSED", appliedPrefix: "" });
+    expect(f.audits).toEqual([
+      expect.objectContaining({
+        id: "auto-empty",
+        action: "AUTO_CLOSE",
+        actorType: "SYSTEM",
+        outcome: "SUCCESS",
+      }),
+    ]);
+    expect(f.discord.archiveThread).toHaveBeenCalledOnce();
+    await f.service.drain();
+  });
+
+  it("scheduled executor completes only after a real prefix-free system CLOSE", async () => {
+    const f = createFixture({ prefix: "" });
+    const action: ScheduledAction = {
+      id: "empty-schedule",
+      guildId: GUILD_ID,
+      targetId: THREAD_ID,
+      actionType: "CLOSE_THREAD",
+      status: "ACTIVE",
+      executeAt: new Date(0),
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+    };
+    const completed = { ...action, status: "COMPLETED" as const };
+    const completeExecution = vi.fn(() => {
+      expect(f.audits).toEqual([
+        expect.objectContaining({
+          id: "scheduled-empty-close",
+          action: "CLOSE",
+          outcome: "SUCCESS",
+        }),
+      ]);
+      return Promise.resolve({ outcome: "TRANSITIONED" as const, action: completed });
+    });
+    const executor = createScheduledThreadCloseExecutor({
+      scheduledActions: {
+        claimExecution: () =>
+          Promise.resolve({
+            transitioned: true,
+            current: { ...action, status: "EXECUTING" },
+          }),
+        findById: () => Promise.resolve(completed),
+      },
+      schedules: { completeExecution, failExecution: vi.fn(), releaseExecutionForRetry: vi.fn() },
+      threadLifecycle: f.service,
+    });
+    expect(
+      await executor.execute(action, {
+        attemptAuditId: "scheduled-empty-close",
+        executionAuditId: "scheduled-empty-execution",
+      }),
+    ).toEqual({ outcome: "SUCCESS", action: completed });
+    expect(completeExecution).toHaveBeenCalledExactlyOnceWith({
+      scheduledActionId: action.id,
+      auditId: "scheduled-empty-execution",
+    });
+    expect(f.state).toMatchObject({ lifecycleState: "CLOSED", appliedPrefix: "" });
+    expect(f.thread).toMatchObject({ name: "Topic", archived: true, locked: false });
+    expect(f.discord.archiveThread).toHaveBeenCalledOnce();
+    await f.service.drain();
+  });
 });

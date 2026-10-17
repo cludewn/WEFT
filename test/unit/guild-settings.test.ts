@@ -39,7 +39,7 @@ describe("guild settings validation", () => {
   });
 
   it("rejects empty, oversized, newline, and control-character prefixes", () => {
-    for (const value of ["   ", "x".repeat(21), "closed\n", "closed\u0000"]) {
+    for (const value of ["", "   ", "😀".repeat(21), "x".repeat(21), "closed\n", "closed\u0000"]) {
       expect(() => validateClosedPrefix(value)).toThrow(InvalidClosedPrefixError);
     }
   });

@@ -12,18 +12,23 @@ export function createGuildConfigurationService(
   failures: AdministrativeFailureRecorder,
 ): GuildSettingsStore {
   const change = async (
-    key: "setTimezone" | "setClosedPrefix",
+    key: "setTimezone" | "setClosedPrefix" | "disableClosedPrefix",
     guildId: string,
     value: string,
     context: Parameters<GuildSettingsStore["setTimezone"]>[2],
   ) => {
     const normalized =
-      key === "setTimezone" ? validateTimezone(value) : validateClosedPrefix(value);
+      key === "setTimezone"
+        ? validateTimezone(value)
+        : key === "setClosedPrefix"
+          ? validateClosedPrefix(value)
+          : "";
     const attempt: AdministrativeAttempt = { operationId: context.auditId };
-    const result = await store[key](guildId, normalized, {
-      ...context,
-      administrativeAttempt: attempt,
-    });
+    const audit = { ...context, administrativeAttempt: attempt };
+    const result =
+      key === "disableClosedPrefix"
+        ? await store.disableClosedPrefix(guildId, audit)
+        : await store[key](guildId, normalized, audit);
     const failure = confirmedAdministrativeDatabaseFailure(attempt);
     if (result.outcome === "UNCONFIRMED" && failure !== undefined)
       await failures
@@ -38,6 +43,7 @@ export function createGuildConfigurationService(
   };
   return {
     ...store,
+    disableClosedPrefix: (guildId, context) => change("disableClosedPrefix", guildId, "", context),
     setTimezone: (guildId, value, context) => change("setTimezone", guildId, value, context),
     setClosedPrefix: (guildId, value, context) =>
       change("setClosedPrefix", guildId, value, context),

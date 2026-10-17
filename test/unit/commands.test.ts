@@ -11,6 +11,7 @@ const dependencies = {
     getOrCreate: vi.fn(),
     setTimezone: vi.fn(),
     setClosedPrefix: vi.fn(),
+    disableClosedPrefix: vi.fn(),
   },
   scheduledThreadClose: {
     schedule: vi.fn(),
