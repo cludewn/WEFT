@@ -1,4 +1,4 @@
-import { InteractionContextType, MessageFlags, PermissionFlagsBits } from "discord.js";
+import { InteractionContextType, PermissionFlagsBits } from "discord.js";
 import { describe, expect, it, vi } from "vitest";
 
 import type { ChatInputCommandInteraction } from "discord.js";
@@ -29,15 +29,16 @@ const dependencies = {
 } as unknown as CommandDependencies;
 
 describe("Discord commands", () => {
-  it("shares the ping command definition", () => {
-    expect(commandDefinitions).toHaveLength(4);
-    expect(commandDefinitions[0]?.name).toBe("ping");
-    expect(commandDefinitions[0]?.description).toBe("Check whether WEFT is responding");
+  it("defines exactly config, thread, and message commands", () => {
+    expect(commandDefinitions.map((command) => command.name)).toEqual([
+      "config",
+      "thread",
+      "message",
+    ]);
   });
 
   it("restricts every command to guild context while preserving human permission defaults", () => {
     const defaults = new Map([
-      ["ping", undefined],
       ["config", PermissionFlagsBits.ManageGuild.toString()],
       ["thread", PermissionFlagsBits.ManageThreads.toString()],
       ["message", PermissionFlagsBits.ManageMessages.toString()],
@@ -63,19 +64,10 @@ describe("Discord commands", () => {
     expect(showModal).toHaveBeenCalledOnce();
   });
 
-  it("replies to ping ephemerally", async () => {
-    const reply = vi.fn(() => Promise.resolve());
-    const interaction = { commandName: "ping", reply } as unknown as ChatInputCommandInteraction;
-
-    await expect(handleCommand(interaction, dependencies)).resolves.toBe(true);
-
-    expect(reply).toHaveBeenCalledWith({ content: "Pong!", flags: MessageFlags.Ephemeral });
-  });
-
-  it("reports an unknown command as unhandled without replying", async () => {
+  it.each(["ping", "unknown"])("reports /%s as unhandled without replying", async (commandName) => {
     const reply = vi.fn(() => Promise.resolve());
     const interaction = {
-      commandName: "unknown",
+      commandName,
       reply,
     } as unknown as ChatInputCommandInteraction;
 

@@ -42,6 +42,7 @@ describe("command deployment", () => {
       guildId: "guild-id",
     });
 
+    expect(put).toHaveBeenCalledOnce();
     expect(put).toHaveBeenCalledWith(
       Routes.applicationGuildCommands("application-id", "guild-id"),
       {
@@ -55,6 +56,7 @@ describe("command deployment", () => {
 
     await registerCommands({ put }, "application-id", { scope: "global" });
 
+    expect(put).toHaveBeenCalledOnce();
     expect(put).toHaveBeenCalledWith(Routes.applicationCommands("application-id"), {
       body: commandDefinitions,
     });
