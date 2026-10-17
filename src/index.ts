@@ -1,3 +1,4 @@
+import { createScheduledMessageListNavigation } from "./messages/scheduled-message-list.js";
 import { createManagedMessageExecutionRecorder } from "./messages/managed-message-execution-audit.js";
 import { createAdministrativeFailureRecorder } from "./audit/administrative-operation-failure-audit.js";
 import { createGuildConfigurationService } from "./guild/guild-configuration.js";
@@ -414,6 +415,7 @@ async function main(): Promise<void> {
       guildSettings: createGuildConfigurationService(guildSettings, administrativeFailures),
       managedMessages,
       scheduledMessages,
+      scheduledMessageLists: createScheduledMessageListNavigation(scheduledMessages),
       scheduledThreadClose: scheduledThreadCloseCommand,
       threadLifecycle: discordRuntime.threadLifecycle,
       logger,

@@ -1940,6 +1940,59 @@ scheduled time only for pending work; executing and retry-pending rows show the 
 occurrence's original scheduled instant, while cancelled rows may show historical time. Phase 8D
 is complete; Phase 9 remains separate.
 
+#### Scheduled-message list button pagination (Issue #116)
+
+`src/messages/scheduled-message-list.ts` owns only list presentation and navigation. Runtime
+constructs one navigation instance and shares it between the slash handler and the dedicated
+`sml:` Button route in `discord.ts`. Other components keep their existing routes. The public
+`page` option is removed; the internal list service still accepts a validated positive safe page
+and rejects unsafe OFFSET multiplication. Both list stores return `FOUND`, ten metadata rows,
+and `hasNext`, using LIMIT 11 and OFFSET `(page - 1) * 10`. The combined query retains its
+current-occurrence LEFT JOIN and existing partial unique index; no COUNT, mutation, audit,
+schema, dependency, delivery, cancellation, or recovery change is involved.
+
+A bounded Map holds at most 128 dedicated sessions. A canonical random v4 UUID identifies each
+session; `sml:1:<uuid>:<revision>:previous|next` carries no page, payload, or authorization evidence.
+Canonical nonnegative safe revisions reject overflow, suffixes, and noncanonical forms. Each
+click checks Button type, original user/guild/channel/message, fixed five-minute creation TTL,
+current revision, boundary, and current interaction memberPermissions `ManageMessages`. This is
+a point-in-time check; it does not serialize permission changes against the database read.
+
+Session state is INITIALIZING, IDLE, BUSY, or RETIRED. A unique operation symbol preserves ownership
+through raw settlement. Busy admission is synchronous before the first await; later clicks are
+rejected, never queued. After confirmed `deferUpdate`, navigation freshly reads the service,
+rechecks operation/revision/expiry, and builds the next revision into outgoing controls. Confirmed
+`editReply` alone commits page/revision/hasNext. Even visible proposed controls cannot admit work
+while the raw edit is unsettled. There is no cross-page snapshot guarantee.
+
+The existing `withTimeout` helper bounds each ACK/read/edit/follow-up observation to 2.5 seconds.
+ACK budget subtracts the interaction's existing age. A monotonic post-settlement check also rejects
+results observed after their budget. ACK failure/loss permits neither read nor a second initial
+response. Read timeout/failure retires navigation and requests a fresh list; an initial failed read
+may replace its deferred response with a bounded failure and empty components before any initial
+edit attempt. After an initial Slash `editReply` attempt, failure or timeout retires the session
+without another edit or follow-up. Discord's first-follow-up compatibility behavior after
+`DEFERRED_CHANNEL_MESSAGE_WITH_SOURCE` can edit the original response, so recovery guidance is
+not guaranteed in this case. The raw edit remains owned and occupies capacity until settlement;
+late resolve/reject never revives the session or starts another write. Button navigation after
+`deferUpdate` retains its separate best-effort ephemeral follow-up after an uncertain edit.
+All raw promises, including error responses, stay in the admitted handler's local ownership until
+settlement. Session records never retain interaction objects, tokens, payloads, or rows. Retirement
+and TTL do not release a record with an owning operation. Lazy cleanup on access/creation/settlement
+removes expired idle and settled retired records; no timer, live eviction, or lifetime extension is
+used. Full capacity rejects creation. ApplicationIngress retains the handler during source drain
+under the unchanged shared shutdown deadline. A restarted process has no old sessions.
+
+All response edits explicitly include content, components and suppressed mentions. Empty page 1,
+read failure, and unsafe complete UTF-16 rendering clear controls. Empty later pages retain only
+usable Previous. The existing #98/#114 full IDs, creator fallback, kinds, bold uppercase statuses,
+and timestamp meanings remain intact. Focused fake-clock/controlled-promise tests cover ownership,
+capacity, ambiguous transport, late settlement, and response order. Real PostgreSQL integration
+tests cover 10/11/20/21 boundaries, equal-time ID ordering, mixed kinds, current-occurrence
+cardinality, terminal history, series without current work, scoping, filtering and read-only
+behavior. Maintainers run external integration and Live command deployment/Discord verification
+separately; unit checks do not establish those results.
+
 ### Phase 9: MVP hardening
 
 - Review Discord permissions.

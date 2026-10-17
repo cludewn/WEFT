@@ -101,7 +101,7 @@ describe("combined scheduled-message administration", () => {
       await administration.findRecurringStatus("admin-recurring", "wrong-guild", channelId),
     ).toBeNull();
     const list = await administration.listCombined(guildId, channelId, 0);
-    expect(list.map((item) => item.kind)).toEqual(["RECURRING", "ONE_TIME"]);
+    expect(list.schedules.map((item) => item.kind)).toEqual(["RECURRING", "ONE_TIME"]);
     expect(JSON.stringify(list)).not.toContain("secret");
   });
 
@@ -132,9 +132,11 @@ describe("combined scheduled-message administration", () => {
     });
     const first = await administration.listCombined(guildId, channelId, 0);
     const second = await administration.listCombined(guildId, channelId, 10);
-    expect(first).toHaveLength(10);
-    expect(second).toHaveLength(3);
-    expect(first.map((row) => row.scheduledActionId)).toEqual([
+    expect(first.hasNext).toBe(true);
+    expect(second.hasNext).toBe(false);
+    expect(first.schedules).toHaveLength(10);
+    expect(second.schedules).toHaveLength(3);
+    expect(first.schedules.map((row) => row.scheduledActionId)).toEqual([
       "admin-page-00",
       "admin-page-01",
       "admin-page-02",
@@ -146,10 +148,176 @@ describe("combined scheduled-message administration", () => {
       "admin-page-07",
       "admin-page-08",
     ]);
-    expect(second.map((row) => row.scheduledActionId)).toEqual([
+    expect(second.schedules.map((row) => row.scheduledActionId)).toEqual([
       "admin-page-09",
       "admin-page-10",
       "admin-page-11",
+    ]);
+  });
+
+  it.each([0, 1, 10, 11, 20, 21])(
+    "looks ahead across %i combined rows with stable equal-time ID ordering",
+    async (count) => {
+      const expected = Array.from(
+        { length: count },
+        (_, i) => `admin-boundary-${i.toString().padStart(2, "0")}`,
+      );
+      for (let index = count - 1; index >= 0; index--) {
+        const id = expected[index]!;
+        if (index % 2 === 0) {
+          await oneTime.create({
+            scheduledActionId: id,
+            auditId: `${id}-audit`,
+            guildId,
+            channelId,
+            actorId: "actor",
+            executeAt: new Date("2030-01-01T09:00:00Z"),
+            occurredAt: establishedAt,
+            payload: { content: "private", embed: null },
+          });
+        } else {
+          await recurring.create({
+            scheduledActionId: id,
+            occurrenceId: `${id}-occurrence`,
+            auditId: `${id}-audit`,
+            gapAuditIds: [],
+            guildId,
+            channelId,
+            actorId: "actor",
+            payload: { content: "private", embed: null },
+            recurrence: {
+              frequency: "DAILY",
+              weekdayMask: 127,
+              localTime: "09:00",
+              timezone: "UTC",
+            },
+            effectiveAt: establishedAt,
+          });
+        }
+      }
+      const before = await administrationSnapshot();
+      for (let page = 1; page <= 4; page++) {
+        const result = await administration.listCombined(guildId, channelId, (page - 1) * 10);
+        expect(result.hasNext).toBe(count > page * 10);
+        expect(result.schedules.map((row) => row.scheduledActionId)).toEqual(
+          expected.slice((page - 1) * 10, page * 10),
+        );
+        expect(result.schedules.every((row) => !("payload" in row) && !("content" in row))).toBe(
+          true,
+        );
+      }
+      expect(await administration.listCombined("wrong-guild", channelId, 0)).toEqual({
+        outcome: "FOUND",
+        schedules: [],
+        hasNext: false,
+      });
+      expect(await administration.listCombined(guildId, "wrong-channel", 0)).toEqual({
+        outcome: "FOUND",
+        schedules: [],
+        hasNext: false,
+      });
+      expect(await administrationSnapshot()).toEqual(before);
+    },
+  );
+
+  it("keeps one row per active series with terminal history and with no current occurrence", async () => {
+    for (const id of ["admin-history-current", "admin-history-none"]) {
+      await recurring.create({
+        scheduledActionId: id,
+        occurrenceId: `${id}-current`,
+        auditId: `${id}-audit`,
+        gapAuditIds: [],
+        guildId,
+        channelId,
+        actorId: "actor",
+        payload: { content: "private", embed: null },
+        recurrence: { frequency: "DAILY", weekdayMask: 127, localTime: "09:00", timezone: "UTC" },
+        effectiveAt: establishedAt,
+      });
+      for (const day of [28, 29, 30]) {
+        await database.client.insert(recurringMessageOccurrences).values({
+          id: `${id}-history-${day}`,
+          scheduledActionId: id,
+          materializedDefinitionRevision: 0,
+          intendedLocalDate: `2029-12-${day}`,
+          intendedLocalTime: "09:00",
+          scheduledFor: new Date(`2029-12-${day}T09:00:00Z`),
+          status: "SKIPPED",
+          skipReason: "MISSED_GRACE_EXCEEDED",
+          terminalAt: establishedAt,
+        });
+      }
+    }
+    await database.client
+      .update(recurringMessageOccurrences)
+      .set({ status: "SKIPPED", skipReason: "MISSED_GRACE_EXCEEDED", terminalAt: establishedAt })
+      .where(eq(recurringMessageOccurrences.id, "admin-history-none-current"));
+    const before = await administrationSnapshot();
+    const result = await administration.listCombined(guildId, channelId, 0);
+    expect(result.hasNext).toBe(false);
+    expect(result.schedules).toHaveLength(2);
+    expect(result.schedules).toMatchObject([
+      { scheduledActionId: "admin-history-current", currentOccurrenceStatus: "PENDING" },
+      { scheduledActionId: "admin-history-none", currentOccurrenceStatus: null },
+    ]);
+    expect(await administrationSnapshot()).toEqual(before);
+  });
+
+  it("preserves one-time and recurring eligibility filters", async () => {
+    for (const status of ["ACTIVE", "EXECUTING", "CANCELLED", "COMPLETED", "FAILED"] as const) {
+      const one = `admin-filter-one-${status}`;
+      await oneTime.create({
+        scheduledActionId: one,
+        auditId: `${one}-audit`,
+        guildId,
+        channelId,
+        actorId: "actor",
+        executeAt: establishedAt,
+        occurredAt: establishedAt,
+        payload: { content: "private", embed: null },
+      });
+      await database.client
+        .update(scheduledActions)
+        .set({ status })
+        .where(eq(scheduledActions.id, one));
+      const series = `admin-filter-recurring-${status}`;
+      await recurring.create({
+        scheduledActionId: series,
+        occurrenceId: `${series}-current`,
+        auditId: `${series}-audit`,
+        gapAuditIds: [],
+        guildId,
+        channelId,
+        actorId: "actor",
+        payload: { content: "private", embed: null },
+        recurrence: { frequency: "DAILY", weekdayMask: 127, localTime: "09:00", timezone: "UTC" },
+        effectiveAt: establishedAt,
+      });
+      await database.client
+        .update(scheduledActions)
+        .set({ status })
+        .where(eq(scheduledActions.id, series));
+    }
+    await database.client.insert(scheduledActions).values({
+      id: "admin-filter-thread",
+      guildId,
+      targetId: channelId,
+      actionType: "CLOSE_THREAD",
+      status: "ACTIVE",
+      executeAt: establishedAt,
+    });
+    const result = await administration.listCombined(guildId, channelId, 0);
+    expect(result.schedules.map((row) => row.scheduledActionId)).toEqual([
+      "admin-filter-one-ACTIVE",
+      "admin-filter-one-EXECUTING",
+      "admin-filter-recurring-ACTIVE",
+    ]);
+    const fallback = await oneTime.listNonterminal(guildId, channelId, 0);
+    if (fallback.outcome !== "FOUND") throw new Error("Expected fallback list");
+    expect(fallback.hasNext).toBe(false);
+    expect(fallback.schedules.map((row) => row.scheduledActionId)).toEqual([
+      "admin-filter-one-ACTIVE",
+      "admin-filter-one-EXECUTING",
     ]);
   });
 
@@ -320,6 +488,26 @@ async function recurringDbState(scheduledActionId: string) {
     .where(eq(recurringMessageAudits.scheduledActionId, scheduledActionId))
     .orderBy(asc(recurringMessageAudits.id));
   return { action, state, definition, occurrences, audits };
+}
+
+async function administrationSnapshot() {
+  return {
+    actions: await database.client
+      .select()
+      .from(scheduledActions)
+      .where(eq(scheduledActions.guildId, guildId))
+      .orderBy(asc(scheduledActions.id)),
+    messageAudits: await database.client
+      .select()
+      .from(scheduledMessageAudits)
+      .where(eq(scheduledMessageAudits.guildId, guildId))
+      .orderBy(asc(scheduledMessageAudits.id)),
+    recurringAudits: await database.client
+      .select()
+      .from(recurringMessageAudits)
+      .where(eq(recurringMessageAudits.guildId, guildId))
+      .orderBy(asc(recurringMessageAudits.id)),
+  };
 }
 
 async function cleanup(): Promise<void> {

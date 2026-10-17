@@ -62,7 +62,7 @@ export type ScheduledMessageAdministrationStore = {
     guildId: string,
     channelId: string,
     offset: number,
-  ) => Promise<CombinedScheduleListItem[]>;
+  ) => Promise<{ outcome: "FOUND"; schedules: CombinedScheduleListItem[]; hasNext: boolean }>;
 };
 
 const currentOccurrence = inArray(recurringMessageOccurrences.status, [
@@ -190,30 +190,34 @@ export function createScheduledMessageAdministrationStore(
           ),
         )
         .orderBy(asc(scheduledActions.executeAt), asc(scheduledActions.id))
-        .limit(10)
+        .limit(11)
         .offset(offset);
-      return rows.map((row): CombinedScheduleListItem =>
-        row.frequency === null
-          ? {
-              kind: "ONE_TIME",
-              scheduledActionId: row.scheduledActionId,
-              status: row.status as "ACTIVE" | "EXECUTING",
-              executeAt: row.executeAt,
-              creatorUserId: row.creatorUserId,
-            }
-          : {
-              kind: "RECURRING",
-              scheduledActionId: row.scheduledActionId,
-              status: "ACTIVE",
-              executeAt: row.executeAt,
-              creatorUserId: row.creatorUserId,
-              frequency: row.frequency,
-              weekdayMask: row.weekdayMask!,
-              localTime: row.localTime!,
-              timezone: row.timezone!,
-              currentOccurrenceStatus: row.currentOccurrenceStatus,
-            },
-      );
+      return {
+        outcome: "FOUND",
+        hasNext: rows.length > 10,
+        schedules: rows.slice(0, 10).map((row): CombinedScheduleListItem =>
+          row.frequency === null
+            ? {
+                kind: "ONE_TIME",
+                scheduledActionId: row.scheduledActionId,
+                status: row.status as "ACTIVE" | "EXECUTING",
+                executeAt: row.executeAt,
+                creatorUserId: row.creatorUserId,
+              }
+            : {
+                kind: "RECURRING",
+                scheduledActionId: row.scheduledActionId,
+                status: "ACTIVE",
+                executeAt: row.executeAt,
+                creatorUserId: row.creatorUserId,
+                frequency: row.frequency,
+                weekdayMask: row.weekdayMask!,
+                localTime: row.localTime!,
+                timezone: row.timezone!,
+                currentOccurrenceStatus: row.currentOccurrenceStatus,
+              },
+        ),
+      };
     },
   };
 }

@@ -1,3 +1,7 @@
+import {
+  createScheduledMessageListNavigation,
+  scheduledMessageListMessage,
+} from "../../src/messages/scheduled-message-list.js";
 import { ChannelType, MessageFlags, ModalBuilder, PermissionFlagsBits } from "discord.js";
 import type {
   ChatInputCommandInteraction,
@@ -104,7 +108,7 @@ function services(
     cancel,
     status: vi.fn<ScheduledMessageCommandService["status"]>(() => Promise.resolve(statusResult)),
     list: vi.fn<ScheduledMessageCommandService["list"]>(() =>
-      Promise.resolve({ outcome: "FOUND", schedules: [] }),
+      Promise.resolve({ outcome: "FOUND", hasNext: false, schedules: [] }),
     ),
     findEditable: vi.fn<ScheduledMessageCommandService["findEditable"]>(() =>
       Promise.resolve({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" }),
@@ -135,6 +139,18 @@ function services(
   return { managed, scheduled, create, cancel };
 }
 
+function handleListCommand(
+  interaction: ChatInputCommandInteraction,
+  s: ReturnType<typeof services>,
+) {
+  return handleMessageCommand(
+    interaction,
+    s.managed,
+    s.scheduled,
+    createScheduledMessageListNavigation(s.scheduled),
+  );
+}
+
 function commandInteraction(input: {
   subcommand:
     | "create"
@@ -158,8 +174,8 @@ function commandInteraction(input: {
   });
   const reply = vi.fn(() => Promise.resolve());
   const deferReply = vi.fn(() => Promise.resolve());
-  const editReply = vi.fn<(options: InteractionEditReplyOptions) => Promise<void>>(() =>
-    Promise.resolve(),
+  const editReply = vi.fn<(options: InteractionEditReplyOptions) => Promise<{ id: string }>>(() =>
+    Promise.resolve({ id: "original-response" }),
   );
   const channel = {
     type: input.archived ? ChannelType.PublicThread : ChannelType.GuildText,
@@ -368,6 +384,7 @@ describe("scheduled message command handler", () => {
     const f = commandInteraction({ subcommand: "list", value: "", archived: true });
     s.scheduled.list.mockResolvedValueOnce({
       outcome: "FOUND",
+      hasNext: false,
       schedules: [
         {
           scheduledActionId: "one-time-id",
@@ -390,10 +407,10 @@ describe("scheduled message command handler", () => {
         },
       ],
     });
-    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    await handleListCommand(f.interaction, s);
     const response = f.editReply.mock.calls[0]![0].content!;
     expect(response).toContain("One-time · **ACTIVE**");
-    expect(response).toContain("Recurring daily · **ACTIVE** / **EXECUTING**");
+    expect(response).toContain("Recurring daily\nSeries: **ACTIVE** · Occurrence: **EXECUTING**");
     expect(response).toContain("Current: <t:1893553445:F>");
     expect(response).not.toContain("Next:");
     expect(response).not.toContain("sensitive scheduled content");
@@ -636,6 +653,7 @@ describe("scheduled message command handler", () => {
     const s = services();
     s.scheduled.list.mockResolvedValue({
       outcome: "FOUND",
+      hasNext: false,
       schedules: [
         {
           scheduledActionId: "full-schedule-id",
@@ -645,7 +663,7 @@ describe("scheduled message command handler", () => {
         },
       ],
     });
-    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    await handleListCommand(f.interaction, s);
     const response = f.editReply.mock.calls[0]![0].content!;
     expect(response).toContain("full-schedule-id");
     expect(response).toContain("**ACTIVE**");
@@ -734,11 +752,14 @@ describe("scheduled message list responses", () => {
   async function render(schedules: CombinedScheduleListItem[], page: number | null = null) {
     const f = commandInteraction({ subcommand: "list", value: "", page });
     const s = services();
-    s.scheduled.list.mockResolvedValue({ outcome: "FOUND", schedules });
-    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    s.scheduled.list.mockResolvedValue({ outcome: "FOUND", hasNext: false, schedules });
+    await handleListCommand(f.interaction, s);
     expect(f.editReply).toHaveBeenCalledTimes(1);
     const options = f.editReply.mock.calls[0]![0];
-    const content = options.content;
+    const content =
+      page === null
+        ? options.content
+        : scheduledMessageListMessage({ outcome: "FOUND", hasNext: false, schedules }, page);
     if (typeof content !== "string") throw new Error("Expected list response content");
     expect(content.length).toBeLessThanOrEqual(2000);
     expect(options.allowedMentions).toEqual({ parse: [] });
@@ -749,7 +770,7 @@ describe("scheduled message list responses", () => {
     expect(s.scheduled.list).toHaveBeenCalledWith({
       guildId: "guild-id",
       channelId: "channel-id",
-      page: page ?? 1,
+      page: 1,
     });
     expect(f.reply).not.toHaveBeenCalled();
     return { content, ...f, ...s };
@@ -757,13 +778,13 @@ describe("scheduled message list responses", () => {
 
   function expectCompleteRows(content: string, schedules: CombinedScheduleListItem[]) {
     const rows = content.split("\n").filter((line) => line.startsWith("- "));
-    const details = content.split("\n").filter((line) => line.startsWith("  "));
+    const details = content.split("\n").filter((line) => / · By[: ]/.test(line));
     expect(rows).toHaveLength(schedules.length);
     expect(details).toHaveLength(schedules.length);
     for (const [index, schedule] of schedules.entries()) {
       expect(rows[index]).toContain(`\`${schedule.scheduledActionId}\``);
       expect(details[index]).toContain(
-        `<@${schedule.creatorUserId}> (\`${schedule.creatorUserId}\`)`,
+        `<@${schedule.creatorUserId}> \`${schedule.creatorUserId}\``,
       );
       expect(details[index]).toContain(`<t:${Math.floor(schedule.executeAt.getTime() / 1000)}:F>`);
     }
@@ -778,7 +799,9 @@ describe("scheduled message list responses", () => {
       }));
       const { content } = await render(schedules);
       expectCompleteRows(content, schedules);
-      expect(content.split(`**ACTIVE** / **${currentOccurrenceStatus}**`)).toHaveLength(11);
+      expect(
+        content.split(`Series: **ACTIVE** · Occurrence: **${currentOccurrenceStatus}**`),
+      ).toHaveLength(11);
       expect(content).toContain("/message schedule status id:<schedule-id>");
     },
   );
@@ -805,16 +828,22 @@ describe("scheduled message list responses", () => {
       });
       const { content } = await render(schedules);
       expectCompleteRows(content, schedules);
+      expect(content.split("\n")[0]).toBe("Scheduled messages — page 1");
+      expect(content).not.toContain("(series / occurrence)");
+      const entries = content.split("\n- ").slice(1);
       const rows = content.split("\n").filter((line) => line.startsWith("- "));
       for (const [index, schedule] of schedules.entries()) {
         const row = rows[index]!;
         if (schedule.kind === "ONE_TIME") {
           expect(row).toContain(`One-time · **${schedule.status}**`);
           expect(content).not.toContain(":R>");
+          expect(entries[index]).not.toContain("Series:");
+          expect(entries[index]).not.toContain("Occurrence:");
         } else {
-          expect(row).toContain(
-            `Recurring ${schedule.frequency.toLowerCase()} · **ACTIVE** / **PENDING**`,
+          expect(row).toBe(
+            `- \`${schedule.scheduledActionId}\` Recurring ${schedule.frequency.toLowerCase()}`,
           );
+          expect(entries[index]).toContain("\nSeries: **ACTIVE** · Occurrence: **PENDING**\nNext:");
         }
       }
     },
@@ -835,7 +864,7 @@ describe("scheduled message list responses", () => {
     };
     const { content } = await render([schedule]);
     const state = status === null ? "none" : `**${status}**`;
-    expect(content).toContain(`**ACTIVE** / ${state}`);
+    expect(content).toContain(`Series: **ACTIVE** · Occurrence: ${state}`);
     expect(content).toContain(`${label}: <t:1893553445:F>`);
     expect(content.match(/<t:[^>]+>/g)).toEqual(["<t:1893553445:F>"]);
     for (const other of ["Next", "Current", "Last materialized"].filter(
@@ -860,10 +889,10 @@ describe("scheduled message list responses", () => {
       "mon,tue,wed,thu,fri,sat,sun",
     ])
       expect(content).not.toContain(omitted);
-    expect(content.split("\n").at(-1)).toBe("Details: /message schedule status id:<schedule-id>.");
+    expect(content.split("\n").at(-1)).toBe("/message schedule status id:<schedule-id>");
   });
 
-  it.each([null, 2])("renders an empty page with page option %s", async (page) => {
+  it.each([null, 2])("renders an empty page %s", async (page) => {
     const { content } = await render([], page);
     expect(content).toBe(
       `No active or executing scheduled messages were found on page ${page ?? 1}.`,
@@ -873,22 +902,49 @@ describe("scheduled message list responses", () => {
   it("renders page 2 without changing the supplied order", async () => {
     const schedules = [recurring(2), oneTime(1)];
     const { content } = await render(schedules, 2);
-    expect(content.startsWith("Scheduled messages — page 2 (series / occurrence)\n")).toBe(true);
+    expect(content.startsWith("Scheduled messages — page 2\n")).toBe(true);
     expectCompleteRows(content, schedules);
   });
 
-  it("bounds the full response for the widest Date and valid page representations", async () => {
-    const schedules = Array.from({ length: 10 }, (_, index) => ({
-      ...recurring(index),
-      currentOccurrenceStatus: "RETRY_PENDING" as const,
-      executeAt: new Date(-8_640_000_000_000_000),
-    }));
-    // This page still has a safe integer offset in the application service.
-    const { content } = await render(schedules, 900_719_925_474_100);
-    expectCompleteRows(content, schedules);
-    expect(content.length).toBe(1895);
-    expect(content.split("**ACTIVE** / **RETRY_PENDING**")).toHaveLength(11);
-  });
+  it.each([
+    ["one-time", null],
+    ["daily", "RETRY_PENDING"],
+    ["weekly", "PENDING"],
+    ["weekly", "EXECUTING"],
+    ["weekly", "RETRY_PENDING"],
+    ["weekly", null],
+    ["mixed", "RETRY_PENDING"],
+  ] as const)(
+    "bounds ten %s/%s rows with the widest Date, IDs and valid page",
+    async (kind, currentOccurrenceStatus) => {
+      const schedules = Array.from({ length: 10 }, (_, index): CombinedScheduleListItem => {
+        const executeAt = new Date(-8_640_000_000_000_000);
+        if (kind === "one-time" || (kind === "mixed" && index % 2 === 0))
+          return { ...oneTime(index), executeAt };
+        return {
+          ...recurring(index),
+          executeAt,
+          frequency: kind === "daily" ? "DAILY" : "WEEKLY",
+          currentOccurrenceStatus,
+        };
+      });
+      // This page still has a safe integer offset in the application service.
+      const { content } = await render(schedules, 900_719_925_474_100);
+      expectCompleteRows(content, schedules);
+      expect(content.startsWith("Scheduled messages — page 900719925474100\n")).toBe(true);
+      if (kind === "weekly" && currentOccurrenceStatus === "RETRY_PENDING") {
+        expect(content.length).toBe(1993);
+        expect(content.split("Series: **ACTIVE** · Occurrence: **RETRY_PENDING**")).toHaveLength(
+          11,
+        );
+      }
+      if (kind === "weekly" && currentOccurrenceStatus === null) {
+        expect(content.length).toBe(1963);
+        expect(content.split("Series: **ACTIVE** · Occurrence: none")).toHaveLength(11);
+        expect(content.split("Last materialized:")).toHaveLength(11);
+      }
+    },
+  );
 
   it("counts bold Markdown in a complete 2000-code-unit page and rejects 2001 or more without dropping rows", async () => {
     const schedules = Array.from({ length: 10 }, (_, index) => recurring(index));
@@ -905,6 +961,7 @@ describe("scheduled message list responses", () => {
       expect(overflow.content).toBe(
         "WEFT could not display the complete scheduled-message page safely. No schedules were displayed.",
       );
+      expect(overflow.editReply.mock.calls[0]![0].components).toEqual([]);
       for (const schedule of schedules)
         expect(overflow.content).not.toContain(schedule.scheduledActionId);
     }
@@ -938,7 +995,7 @@ describe("scheduled message list responses", () => {
     const f = commandInteraction({ subcommand: "list", value: "", page });
     const s = services();
     s.scheduled.list.mockResolvedValue({ outcome });
-    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    await handleListCommand(f.interaction, s);
     const options = f.editReply.mock.calls[0]![0];
     expect(options.content).toBe(expected);
     expect(options.content!.length).toBeLessThanOrEqual(2000);
@@ -947,14 +1004,14 @@ describe("scheduled message list responses", () => {
     expect(s.scheduled.list).toHaveBeenCalledWith({
       guildId: "guild-id",
       channelId: "channel-id",
-      page,
+      page: 1,
     });
   });
 
   it("requires ManageMessages before loading or deferring a list", async () => {
     const f = commandInteraction({ subcommand: "list", value: "", authorized: false });
     const s = services();
-    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    await handleListCommand(f.interaction, s);
     expect(f.reply).toHaveBeenCalledWith({
       content: "You need the Manage Messages permission to manage messages.",
       flags: MessageFlags.Ephemeral,

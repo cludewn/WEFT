@@ -121,7 +121,7 @@ describe("message command", () => {
         },
         { name: "cancel", options: [{ name: "id", required: true }] },
         { name: "status", options: [{ name: "id", required: true }] },
-        { name: "list", options: [{ name: "page", required: false, min_value: 1 }] },
+        { name: "list", options: [] },
         { name: "edit", options: [{ name: "id", required: true }] },
         {
           name: "reschedule",

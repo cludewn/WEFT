@@ -104,7 +104,7 @@ function fixture() {
   );
   const oneTimeReschedule = vi.fn();
   const listCombined = vi.fn<ScheduledMessageAdministrationStore["listCombined"]>(() =>
-    Promise.resolve([]),
+    Promise.resolve({ outcome: "FOUND", schedules: [], hasNext: false }),
   );
   let nextId = 0;
   const service = createScheduledMessageCommandService({
@@ -345,6 +345,29 @@ describe("recurring scheduled-message administration service", () => {
     expect(f.cancel).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 0 }));
   });
 
+  it.each([1, 2, 3])("preserves combined hasNext and safe offset on page %i", async (page) => {
+    const f = fixture();
+    f.listCombined.mockResolvedValueOnce({ outcome: "FOUND", schedules: [], hasNext: true });
+    await expect(f.service.list({ guildId: "guild", channelId: "channel", page })).resolves.toEqual(
+      {
+        outcome: "FOUND",
+        schedules: [],
+        hasNext: true,
+      },
+    );
+    expect(f.listCombined).toHaveBeenCalledExactlyOnceWith("guild", "channel", (page - 1) * 10);
+    expect(f.cancel).not.toHaveBeenCalled();
+    expect(f.editPayload).not.toHaveBeenCalled();
+  });
+
+  it("preserves UNAVAILABLE on a rejected combined read", async () => {
+    const f = fixture();
+    f.listCombined.mockRejectedValueOnce(new Error("private DB failure"));
+    await expect(
+      f.service.list({ guildId: "guild", channelId: "channel", page: 1 }),
+    ).resolves.toEqual({ outcome: "UNAVAILABLE" });
+  });
+
   it("uses focused recurring status and combined list reads", async () => {
     const f = fixture();
     await expect(
@@ -356,7 +379,7 @@ describe("recurring scheduled-message administration service", () => {
     expect(f.findRecurringStatus).toHaveBeenCalledTimes(1);
     await expect(
       f.service.list({ guildId: "guild", channelId: "channel", page: 2 }),
-    ).resolves.toEqual({ outcome: "FOUND", schedules: [] });
+    ).resolves.toEqual({ outcome: "FOUND", schedules: [], hasNext: false });
     expect(f.listCombined).toHaveBeenCalledWith("guild", "channel", 10);
   });
 });
