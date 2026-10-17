@@ -75,12 +75,23 @@ export const configCommandDefinition = new SlashCommandBuilder()
           .setRequired(true),
       ),
   )
-  .addSubcommand((subcommand) =>
-    subcommand
+  .addSubcommandGroup((group) =>
+    group
       .setName("closed-prefix")
-      .setDescription("Set the prefix used for closed thread titles")
-      .addStringOption((option) =>
-        option.setName("value").setDescription("Prefix from 1 to 20 characters").setRequired(true),
+      .setDescription("Configure closed thread title prefixing")
+      .addSubcommand((subcommand) =>
+        subcommand
+          .setName("set")
+          .setDescription("Set the prefix used for closed thread titles")
+          .addStringOption((option) =>
+            option
+              .setName("value")
+              .setDescription("Prefix from 1 to 20 characters")
+              .setRequired(true),
+          ),
+      )
+      .addSubcommand((subcommand) =>
+        subcommand.setName("disable").setDescription("Close threads without changing their titles"),
       ),
   )
   .addSubcommandGroup((group) =>
@@ -268,7 +279,8 @@ export async function handleConfigCommand(
   }
 
   const subcommand = interaction.options.getSubcommand();
-  if (interaction.options.getSubcommandGroup(false) === "link-preview") {
+  const group = interaction.options.getSubcommandGroup(false);
+  if (group === "link-preview") {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     let response: string;
     try {
@@ -291,17 +303,24 @@ export async function handleConfigCommand(
     return;
   }
 
-  if (interaction.options.getSubcommandGroup(false) === "audit-log") {
+  if (group === "audit-log") {
     await handleAuditLogSubcommand(interaction, auditLogDestination, subcommand);
     return;
   }
 
-  if (interaction.options.getSubcommandGroup(false) === "auto-close") {
+  if (group === "auto-close") {
     await handleAutomaticCloseSubcommand(interaction, automaticClose, subcommand);
     return;
   }
 
-  if (subcommand === "show") {
+  if (group !== null && group !== "closed-prefix") {
+    throw new Error(`Unsupported config subcommand group: ${group}`);
+  }
+  if (group === "closed-prefix" && subcommand !== "set" && subcommand !== "disable") {
+    throw new Error(`Unsupported config closed-prefix subcommand: ${subcommand}`);
+  }
+
+  if (group === null && subcommand === "show") {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const reads = [
       Promise.resolve().then(() => store.getOrCreate(interaction.guildId)),
@@ -324,20 +343,24 @@ export async function handleConfigCommand(
     }
     await interaction.editReply(
       editReply(
-        `Timezone: ${configurationText(settings.timezone)}\nClosed prefix: ${configurationText(settings.closedPrefix)}\n${formatAuditLogDestination(settings.auditLogChannelId)}\n${formatAutomaticCloseSummary(view)}\nLink preview mode: ${isLinkPreviewMode(settings.linkPreviewMode) ? LINK_PREVIEW_LABELS[settings.linkPreviewMode] : "Unknown"}`,
+        `Timezone: ${configurationText(settings.timezone)}\nClosed prefix: ${settings.closedPrefix === "" ? "Disabled" : configurationText(settings.closedPrefix)}\n${formatAuditLogDestination(settings.auditLogChannelId)}\n${formatAutomaticCloseSummary(view)}\nLink preview mode: ${isLinkPreviewMode(settings.linkPreviewMode) ? LINK_PREVIEW_LABELS[settings.linkPreviewMode] : "Unknown"}`,
       ),
     );
     return;
   }
 
-  if (subcommand !== "timezone" && subcommand !== "closed-prefix") {
+  if (group === null && subcommand !== "timezone") {
     throw new Error(`Unsupported config subcommand: ${subcommand}`);
   }
-  const value = interaction.options.getString("value", true);
+  const disabling = group === "closed-prefix" && subcommand === "disable";
 
   let normalized: string;
   try {
-    normalized = subcommand === "timezone" ? validateTimezone(value) : validateClosedPrefix(value);
+    normalized = disabling
+      ? ""
+      : subcommand === "timezone"
+        ? validateTimezone(interaction.options.getString("value", true))
+        : validateClosedPrefix(interaction.options.getString("value", true));
   } catch (error) {
     if (error instanceof InvalidTimezoneError || error instanceof InvalidClosedPrefixError) {
       await interaction.reply(ephemeralReply(error.message));
@@ -349,14 +372,19 @@ export async function handleConfigCommand(
   let response: string;
   try {
     const audit = createConfigurationAuditContext(interaction.user.id);
-    const result =
-      subcommand === "timezone"
+    const result = disabling
+      ? await store.disableClosedPrefix(interaction.guildId, audit)
+      : subcommand === "timezone"
         ? await store.setTimezone(interaction.guildId, normalized, audit)
         : await store.setClosedPrefix(interaction.guildId, normalized, audit);
     response =
       result.outcome === "UNCONFIRMED"
         ? CONFIGURATION_UNCONFIRMED
-        : `${subcommand === "timezone" ? "Timezone" : "Closed prefix"} set to ${subcommand === "timezone" ? configurationText(result.settings.timezone) : configurationText(result.settings.closedPrefix)}.${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+        : disabling
+          ? result.outcome === "NO_CHANGE"
+            ? "Closed prefix already disabled (unchanged)."
+            : "Closed prefix disabled."
+          : `${subcommand === "timezone" ? "Timezone" : "Closed prefix"} set to ${subcommand === "timezone" ? configurationText(result.settings.timezone) : configurationText(result.settings.closedPrefix)}.${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
   } catch {
     response = CONFIGURATION_UNCONFIRMED;
   }

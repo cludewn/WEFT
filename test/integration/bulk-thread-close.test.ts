@@ -135,59 +135,79 @@ function fixture() {
 
 // This suite is executed only by the maintainer's dedicated PostgreSQL integration runner.
 describe("bulk close through existing PostgreSQL manual lifecycle", () => {
-  it("manages previously unmanaged targets and persists distinct user cancellation/close audits with stable IDs", async () => {
-    await schedules.createOrReplace({
-      scheduledActionId: "bulk-action",
-      auditId: "bulk-create",
-      guildId,
-      threadId: "1",
-      actorId,
-      executeAt: new Date("2099-01-01T00:00:00Z"),
-    });
-    const f = fixture();
-    expect(await managed.find(guildId, "1")).toBeUndefined();
-    expect(await f.confirm()).toMatchObject({ selected: 2, attempted: 2, closed: 2 });
-    for (const id of ["1", "2"])
-      expect(await managed.find(guildId, id)).toMatchObject({ lifecycleState: "CLOSED" });
-    expect(await actions.findById("bulk-action")).toMatchObject({ status: "CANCELLED" });
-    const rows = await database.client
-      .select()
-      .from(threadAudits)
-      .where(eq(threadAudits.guildId, guildId));
-    expect(rows).toHaveLength(2);
-    for (const row of rows) {
-      expect(row).toMatchObject({
-        action: "CLOSE",
-        actorType: "USER",
-        actorId,
-        outcome: "SUCCESS",
-      });
-      await audits.record({
-        id: row.id,
+  it.each(["[CLOSED]", ""])(
+    "manages unmanaged targets with prefix %j and distinct cancellation/close audits",
+    async (prefix) => {
+      await database.client.insert(guildSettings).values({ guildId, closedPrefix: prefix });
+      await schedules.createOrReplace({
+        scheduledActionId: "bulk-action",
+        auditId: "bulk-create",
         guildId,
-        threadId: row.threadId,
-        action: "CLOSE",
-        actorType: "USER",
+        threadId: "1",
         actorId,
-        outcome: "SUCCESS",
+        executeAt: new Date("2099-01-01T00:00:00Z"),
       });
-    }
-    expect(
-      await database.client.select().from(threadAudits).where(eq(threadAudits.guildId, guildId)),
-    ).toHaveLength(2);
-    const cancellation = await database.client
-      .select()
-      .from(scheduledThreadCloseAudits)
-      .where(
-        and(
-          eq(scheduledThreadCloseAudits.guildId, guildId),
-          eq(scheduledThreadCloseAudits.event, "CANCELLED"),
-        ),
+      const f = fixture();
+      expect(await managed.find(guildId, "1")).toBeUndefined();
+      expect(await f.confirm()).toMatchObject({ selected: 2, attempted: 2, closed: 2 });
+      for (const id of ["1", "2"])
+        expect(await managed.find(guildId, id)).toMatchObject({
+          lifecycleState: "CLOSED",
+          appliedPrefix: prefix,
+        });
+      expect(
+        f.threads.map((thread) => ({
+          name: thread.name,
+          archived: thread.archived,
+          locked: thread.locked,
+        })),
+      ).toEqual(
+        Array(2).fill({
+          name: prefix === "" ? "Topic" : `${prefix} Topic`,
+          archived: true,
+          locked: false,
+        }),
       );
-    expect(cancellation).toMatchObject([{ actorId, actorType: "USER", outcome: "SUCCESS" }]);
-    expect(rows.map((row) => row.id)).not.toContain(cancellation[0]!.id);
-    expect(f.discord.archiveThread).toHaveBeenCalledTimes(2);
-  });
+      expect(await actions.findById("bulk-action")).toMatchObject({ status: "CANCELLED" });
+      const rows = await database.client
+        .select()
+        .from(threadAudits)
+        .where(eq(threadAudits.guildId, guildId));
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row).toMatchObject({
+          action: "CLOSE",
+          actorType: "USER",
+          actorId,
+          outcome: "SUCCESS",
+        });
+        await audits.record({
+          id: row.id,
+          guildId,
+          threadId: row.threadId,
+          action: "CLOSE",
+          actorType: "USER",
+          actorId,
+          outcome: "SUCCESS",
+        });
+      }
+      expect(
+        await database.client.select().from(threadAudits).where(eq(threadAudits.guildId, guildId)),
+      ).toHaveLength(2);
+      const cancellation = await database.client
+        .select()
+        .from(scheduledThreadCloseAudits)
+        .where(
+          and(
+            eq(scheduledThreadCloseAudits.guildId, guildId),
+            eq(scheduledThreadCloseAudits.event, "CANCELLED"),
+          ),
+        );
+      expect(cancellation).toMatchObject([{ actorId, actorType: "USER", outcome: "SUCCESS" }]);
+      expect(rows.map((row) => row.id)).not.toContain(cancellation[0]!.id);
+      expect(f.discord.archiveThread).toHaveBeenCalledTimes(2);
+    },
+  );
   it("retains committed cancellation and records attempted failure when selection changes before managed persistence", async () => {
     await schedules.createOrReplace({
       scheduledActionId: "bulk-action",

@@ -124,7 +124,11 @@ describe("config command", () => {
       subcommand: "timezone",
       value: "Asia/Tokyo",
     });
-    const prefixInteraction = createInteraction({ subcommand: "closed-prefix", value: "[DONE]" });
+    const prefixInteraction = createInteraction({
+      group: "closed-prefix",
+      subcommand: "set",
+      value: "[DONE]",
+    });
 
     await handleConfigCommand(
       timezoneInteraction.interaction,
@@ -236,7 +240,11 @@ describe("config command", () => {
       setClosedPrefix: vi.fn(() => Promise.reject(new InvalidClosedPrefixError())),
     });
     const timezoneInteraction = createInteraction({ subcommand: "timezone", value: "invalid" });
-    const prefixInteraction = createInteraction({ subcommand: "closed-prefix", value: "" });
+    const prefixInteraction = createInteraction({
+      group: "closed-prefix",
+      subcommand: "set",
+      value: "",
+    });
 
     await handleConfigCommand(
       timezoneInteraction.interaction,
@@ -782,6 +790,9 @@ function createStore(overrides: Partial<GuildSettingsStore> = {}): GuildSettings
         settings: { ...defaultSettings, closedPrefix },
       }),
     ),
+    disableClosedPrefix: vi.fn<GuildSettingsStore["disableClosedPrefix"]>(() =>
+      Promise.resolve({ outcome: "CHANGED", settings: { ...defaultSettings, closedPrefix: "" } }),
+    ),
     setAutoCloseInactivitySeconds: vi.fn<GuildSettingsStore["setAutoCloseInactivitySeconds"]>(
       (_guildId, autoCloseInactivitySeconds) =>
         Promise.resolve({
@@ -834,7 +845,7 @@ function createInteraction({
     options: {
       getSubcommandGroup: () => group,
       getSubcommand: () => subcommand,
-      getString: () => value,
+      getString: vi.fn(() => value),
       getBoolean: () => booleanValue,
       getChannel: () => channel,
     },
@@ -985,7 +996,8 @@ describe("link preview configuration commands", () => {
 describe("configuration acknowledgement and unknown results", () => {
   it.each([
     [null, "timezone", "Asia/Tokyo", "setTimezone"],
-    [null, "closed-prefix", "[DONE]", "setClosedPrefix"],
+    ["closed-prefix", "set", "[DONE]", "setClosedPrefix"],
+    ["closed-prefix", "disable", "", "disableClosedPrefix"],
     ["auto-close", "inactivity", "12h", "setInactivitySeconds"],
     ["auto-close", "bot-messages", "", "setBotMessagesCountAsActivity"],
     ["auto-close", "add-parent", "", "addParentChannel"],
@@ -996,7 +1008,7 @@ describe("configuration acknowledgement and unknown results", () => {
       const store = createStore();
       const automatic = createAutomaticClose();
       const target =
-        method === "setTimezone" || method === "setClosedPrefix"
+        method === "setTimezone" || method === "setClosedPrefix" || method === "disableClosedPrefix"
           ? store[method]
           : automatic[method];
       vi.mocked(target).mockResolvedValueOnce({ outcome: "UNCONFIRMED" });
@@ -1034,7 +1046,8 @@ describe("configuration acknowledgement and unknown results", () => {
         subcommand === "timezone" ? store.setTimezone : store.setClosedPrefix,
       ).mockResolvedValueOnce({ outcome: "NO_CHANGE", settings: defaultSettings });
       const f = createInteraction({
-        subcommand,
+        group: subcommand === "timezone" ? null : "closed-prefix",
+        subcommand: subcommand === "timezone" ? "timezone" : "set",
         value: subcommand === "timezone" ? " utc " : " [CLOSED] ",
       });
       await handleConfigCommand(
@@ -1052,7 +1065,8 @@ describe("configuration acknowledgement and unknown results", () => {
   );
   it.each([
     [null, "timezone", "Asia/Tokyo", "setTimezone"],
-    [null, "closed-prefix", "[DONE]", "setClosedPrefix"],
+    ["closed-prefix", "set", "[DONE]", "setClosedPrefix"],
+    ["closed-prefix", "disable", "", "disableClosedPrefix"],
     ["auto-close", "inactivity", "12h", "setInactivitySeconds"],
     ["auto-close", "bot-messages", "", "setBotMessagesCountAsActivity"],
     ["auto-close", "add-parent", "", "addParentChannel"],
@@ -1079,7 +1093,7 @@ describe("configuration acknowledgement and unknown results", () => {
         ),
       ).rejects.toThrow("Discord response lost");
       const target =
-        method === "setTimezone" || method === "setClosedPrefix"
+        method === "setTimezone" || method === "setClosedPrefix" || method === "disableClosedPrefix"
           ? store[method]
           : automatic[method];
       expect(target).toHaveBeenCalledOnce();
@@ -1258,4 +1272,134 @@ it("escapes untrusted configuration metadata without changing persisted values",
   expect(response.content).not.toContain(prefix);
   expect(response.allowedMentions).toEqual({ parse: [] });
   expect(store.setClosedPrefix).not.toHaveBeenCalled();
+});
+
+describe("explicit closed-prefix commands", () => {
+  it("defines exactly set with required string value and option-free disable", () => {
+    const options = configCommandDefinition.toJSON().options!;
+    const prefix = options.filter((option) => option.name === "closed-prefix");
+    expect(prefix).toHaveLength(1);
+    expect(prefix[0]).toMatchObject({ type: 2 });
+    const group = prefix[0] as { options: { name: string; type: number; options?: unknown[] }[] };
+    expect(group.options.map((sub) => [sub.name, sub.type])).toEqual([
+      ["set", 1],
+      ["disable", 1],
+    ]);
+    expect(group.options[0]!.options).toEqual([
+      expect.objectContaining({ type: 3, name: "value", required: true }),
+    ]);
+    expect(group.options[1]!.options ?? []).toEqual([]);
+  });
+
+  it.each(["CHANGED", "NO_CHANGE"] as const)(
+    "disables explicitly with %s and never reads value",
+    async (outcome) => {
+      const store = createStore({
+        disableClosedPrefix: vi.fn(() =>
+          Promise.resolve({
+            outcome,
+            settings: { ...defaultSettings, closedPrefix: "" },
+          }),
+        ),
+      });
+      const f = createInteraction({ group: "closed-prefix", subcommand: "disable" });
+      await handleConfigCommand(
+        f.interaction,
+        store,
+        createAutomaticClose(),
+        createAuditDestination(),
+        createPreviewConfig(),
+      );
+      expect(store.disableClosedPrefix).toHaveBeenCalledWith(
+        defaultSettings.guildId,
+        expect.objectContaining({ actorUserId: "actor" }),
+      );
+      expect(f.interaction.options.getString).not.toHaveBeenCalled();
+      expect(store.setClosedPrefix).not.toHaveBeenCalled();
+      expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
+      expect(f.editReply).toHaveBeenCalledWith(
+        edited(
+          outcome === "CHANGED"
+            ? "Closed prefix disabled."
+            : "Closed prefix already disabled (unchanged).",
+        ),
+      );
+    },
+  );
+
+  it("shows Disabled explicitly", async () => {
+    const f = createInteraction();
+    await handleConfigCommand(
+      f.interaction,
+      createStore({
+        getOrCreate: vi.fn(() => Promise.resolve({ ...defaultSettings, closedPrefix: "" })),
+      }),
+      createAutomaticClose(),
+      createAuditDestination(),
+      createPreviewConfig(),
+    );
+    expect(f.editReply).toHaveBeenCalledWith(
+      edited(expect.stringContaining("Closed prefix: Disabled") as string),
+    );
+  });
+
+  it.each(["set", "disable"])(
+    "rejects unauthorized %s before any store call",
+    async (subcommand) => {
+      const store = createStore();
+      const f = createInteraction({ group: "closed-prefix", subcommand, hasManageGuild: false });
+      await handleConfigCommand(
+        f.interaction,
+        store,
+        createAutomaticClose(),
+        createAuditDestination(),
+        createPreviewConfig(),
+      );
+      for (const method of Object.values(store)) expect(method).not.toHaveBeenCalled();
+      expect(f.reply).toHaveBeenCalledWith(
+        ephemeral("You need the Manage Server permission to use this command."),
+      );
+    },
+  );
+
+  it.each([
+    ["closed-prefix", "unknown"],
+    [null, "closed-prefix"],
+    ["unknown", "disable"],
+  ])("rejects invalid routing %s/%s without disabling", async (group, subcommand) => {
+    const store = createStore();
+    const f = createInteraction({ group, subcommand });
+    await expect(
+      handleConfigCommand(
+        f.interaction,
+        store,
+        createAutomaticClose(),
+        createAuditDestination(),
+        createPreviewConfig(),
+      ),
+    ).rejects.toThrow("Unsupported config");
+    expect(store.disableClosedPrefix).not.toHaveBeenCalled();
+    expect(store.setClosedPrefix).not.toHaveBeenCalled();
+    expect(f.interaction.options.getString).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "   ", "\n[DONE]", "x".repeat(21)])(
+    "rejects invalid set input without disabling: %j",
+    async (value) => {
+      const store = createStore();
+      const f = createInteraction({ group: "closed-prefix", subcommand: "set", value });
+      await handleConfigCommand(
+        f.interaction,
+        store,
+        createAutomaticClose(),
+        createAuditDestination(),
+        createPreviewConfig(),
+      );
+      expect(store.setClosedPrefix).not.toHaveBeenCalled();
+      expect(store.disableClosedPrefix).not.toHaveBeenCalled();
+      expect(f.reply).toHaveBeenCalledWith(
+        ephemeral("Closed prefix must be 1 to 20 characters and contain no control characters"),
+      );
+    },
+  );
 });

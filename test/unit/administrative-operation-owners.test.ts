@@ -68,6 +68,12 @@ function fixture(
   const settings = {
     setTimezone: scalar,
     setClosedPrefix: scalar,
+    disableClosedPrefix: vi.fn(
+      (_guild: string, input: { administrativeAttempt?: AdministrativeAttempt }) => {
+        rollback(input);
+        return Promise.resolve({ outcome: "UNCONFIRMED" });
+      },
+    ),
     setAutoCloseInactivitySeconds: scalar,
     setAutoCloseBotMessagesCountAsActivity: scalar,
     getOrCreate: () => Promise.resolve({ timezone: "UTC" }),
@@ -574,6 +580,49 @@ describe("scheduled-close authorized bot evidence", () => {
       return Promise.resolve({ outcome: "CHANGED" });
     });
     expect(await f.calls.GUILD_TIMEZONE_SET()).toEqual({ outcome: "CHANGED" });
+    expect(f.record).not.toHaveBeenCalled();
+  });
+});
+
+describe("disabled prefix failure audit ownership", () => {
+  it.each(["ROLLED_BACK", "UNCONFIRMED"] as const)(
+    "handles %s without a new operation code",
+    async (disposition) => {
+      const f = fixture(
+        disposition === "ROLLED_BACK"
+          ? { disposition, callbackEntered: true, commitAttempted: false }
+          : { disposition, callbackEntered: true, commitAttempted: true },
+      );
+      const service = createGuildConfigurationService(f.settings, f.failures);
+      const context = createConfigurationAuditContext(actorUserId);
+      await expect(service.disableClosedPrefix(guildId, context)).resolves.toEqual({
+        outcome: "UNCONFIRMED",
+      });
+      expect(f.settings.disableClosedPrefix).toHaveBeenCalledOnce();
+      expect(f.scalar).not.toHaveBeenCalled();
+      if (disposition === "ROLLED_BACK") {
+        expect(f.record).toHaveBeenCalledOnce();
+        expect(f.record).toHaveBeenCalledWith(
+          expect.objectContaining({ operationId: context.auditId }),
+          guildId,
+          actorUserId,
+          expect.objectContaining({ operationCode: "GUILD_CLOSED_PREFIX_SET" }),
+        );
+      } else expect(f.record).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects empty set input before persistence or failure auditing", async () => {
+    const f = fixture();
+    await expect(
+      createGuildConfigurationService(f.settings, f.failures).setClosedPrefix(
+        guildId,
+        "",
+        createConfigurationAuditContext(actorUserId),
+      ),
+    ).rejects.toThrow();
+    expect(f.scalar).not.toHaveBeenCalled();
+    expect(f.settings.disableClosedPrefix).not.toHaveBeenCalled();
     expect(f.record).not.toHaveBeenCalled();
   });
 });

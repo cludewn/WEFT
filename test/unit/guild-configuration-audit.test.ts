@@ -31,6 +31,7 @@ const initial: GuildSettings = {
 // constraints, rollback and lock behavior are covered by the PostgreSQL integration suite.
 function fixture(
   options: {
+    closedPrefix?: string;
     loss?: boolean;
     auditFailure?: boolean;
     readFailure?: boolean;
@@ -45,7 +46,7 @@ function fixture(
   const updates: object[] = [];
   const inserted: GuildConfigurationAudit[] = [];
   const publish = vi.fn();
-  let settings = { ...initial };
+  let settings = { ...initial, closedPrefix: options.closedPrefix ?? initial.closedPrefix };
   const select = vi.fn((projection?: object) => {
     let table = "";
     const read = () => {
@@ -570,3 +571,71 @@ it.each([
     expect(publish).not.toHaveBeenCalled();
   },
 );
+
+describe("disabled prefix uses the shared audited change", () => {
+  it.each([false, true])(
+    "confirms exact empty-string audit with response loss=%s",
+    async (loss) => {
+      const f = fixture({ loss });
+      const result = await createGuildSettingsStore(f.database, {
+        publish: f.publish,
+      }).disableClosedPrefix("guild-1", context);
+      expect(result).toMatchObject({
+        outcome: "CHANGED",
+        settings: { closedPrefix: "", updatedAt: at },
+      });
+      expect(f.updates).toEqual([{ closedPrefix: "", updatedAt: at }]);
+      expect(f.inserted).toEqual([
+        configurationAudit(context, "guild-1", {
+          action: "SET",
+          settingType: "CLOSED_PREFIX",
+          targetType: "GUILD",
+          targetId: "guild-1",
+          previousText: "[CLOSED]",
+          newText: "",
+        }),
+      ]);
+      expect(f.transaction).toHaveBeenCalledOnce();
+      expect(f.publish).toHaveBeenCalledExactlyOnceWith({
+        source: "GUILD_CONFIGURATION",
+        auditId: context.auditId,
+      });
+      expect(f.events.indexOf("insert:guild_configuration_audits")).toBeLessThan(
+        f.events.indexOf("commit"),
+      );
+    },
+  );
+
+  it("keeps already disabled settings and timestamps unchanged without audit or publication", async () => {
+    const f = fixture({ closedPrefix: "" });
+    expect(
+      await createGuildSettingsStore(f.database, { publish: f.publish }).disableClosedPrefix(
+        "guild-1",
+        context,
+      ),
+    ).toEqual({ outcome: "NO_CHANGE", settings: { ...initial, closedPrefix: "" } });
+    expect(f.updates).toEqual([]);
+    expect(f.inserted).toEqual([]);
+    expect(f.publish).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "mismatch", "unreadable", "no-op"])(
+    "leaves %s commit evidence unconfirmed without replay",
+    async (kind) => {
+      const f = fixture({
+        loss: true,
+        ...(kind === "no-op" ? { closedPrefix: "" } : {}),
+        readFailure: kind === "unreadable",
+        evidence: (audit) => (kind === "missing" ? undefined : { ...audit, newText: "[OTHER]" }),
+      });
+      expect(
+        await createGuildSettingsStore(f.database, { publish: f.publish }).disableClosedPrefix(
+          "guild-1",
+          context,
+        ),
+      ).toEqual({ outcome: "UNCONFIRMED" });
+      expect(f.transaction).toHaveBeenCalledOnce();
+      expect(f.publish).not.toHaveBeenCalled();
+    },
+  );
+});

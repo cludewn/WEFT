@@ -72,6 +72,10 @@ export type GuildSettingsStore = {
     prefix: string,
     audit: GuildConfigurationAuditContext,
   ) => Promise<GuildSettingsChangeResult>;
+  disableClosedPrefix: (
+    guildId: string,
+    audit: GuildConfigurationAuditContext,
+  ) => Promise<GuildSettingsChangeResult>;
   setAutoCloseInactivitySeconds: (
     guildId: string,
     seconds: number,
@@ -301,6 +305,8 @@ export function createGuildSettingsStore(
       change(guildId, "timezone", validateTimezone(value), "TIMEZONE", audit),
     setClosedPrefix: async (guildId, value, audit) =>
       change(guildId, "closedPrefix", validateClosedPrefix(value), "CLOSED_PREFIX", audit),
+    disableClosedPrefix: async (guildId, audit) =>
+      change(guildId, "closedPrefix", "", "CLOSED_PREFIX", audit),
     setAutoCloseInactivitySeconds: async (guildId, value, audit) =>
       change(
         guildId,

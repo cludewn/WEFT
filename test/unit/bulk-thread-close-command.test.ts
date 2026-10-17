@@ -313,7 +313,7 @@ describe("bulk interaction surface and safe payloads", () => {
       const warning = embed.fields!.find((field) => field.name === "Before confirming")!.value;
       expect(warning.split("\n")).toHaveLength(4);
       for (const required of [
-        "configured closed prefix",
+        "closed prefix when enabled",
         "archives without locking",
         "cancellation is not reversed if closing fails",
         "skips or failures",

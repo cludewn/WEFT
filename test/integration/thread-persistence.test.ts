@@ -29,23 +29,26 @@ afterAll(async () => {
 });
 
 describe("thread lifecycle persistence", () => {
-  it("upserts closed state with its applied prefix and marks it open", async () => {
-    await managedStore.saveClosed(guildId, threadIds[0], "[OLD]");
-    await managedStore.saveClosed(guildId, threadIds[0], "[CLOSED]");
+  it.each(["[CLOSED]", ""])(
+    "upserts closed state with applied prefix %j and marks it open",
+    async (prefix) => {
+      await managedStore.saveClosed(guildId, threadIds[0], "[OLD]");
+      await managedStore.saveClosed(guildId, threadIds[0], prefix);
 
-    await expect(managedStore.find(guildId, threadIds[0])).resolves.toMatchObject({
-      guildId,
-      threadId: threadIds[0],
-      appliedPrefix: "[CLOSED]",
-      lifecycleState: "CLOSED",
-    });
+      await expect(managedStore.find(guildId, threadIds[0])).resolves.toMatchObject({
+        guildId,
+        threadId: threadIds[0],
+        appliedPrefix: prefix,
+        lifecycleState: "CLOSED",
+      });
 
-    await managedStore.markOpen(guildId, threadIds[0]);
-    await expect(managedStore.find(guildId, threadIds[0])).resolves.toMatchObject({
-      lifecycleState: "OPEN",
-      appliedPrefix: "[CLOSED]",
-    });
-  });
+      await managedStore.markOpen(guildId, threadIds[0]);
+      await expect(managedStore.find(guildId, threadIds[0])).resolves.toMatchObject({
+        lifecycleState: "OPEN",
+        appliedPrefix: prefix,
+      });
+    },
+  );
 
   it("stores success and classified failure audits with valid actors", async () => {
     const successAudit = {
@@ -127,6 +130,14 @@ describe("thread lifecycle persistence", () => {
         failureCode: "DISCORD_ARCHIVE_FAILED",
       }),
     ).rejects.toBeInstanceOf(ThreadAuditConflictError);
+  });
+
+  it("rejects NULL applied prefixes", async () => {
+    await expect(
+      database.client.execute(
+        sql`insert into managed_threads (guild_id, thread_id, applied_prefix, lifecycle_state) values (${guildId}, 'null-prefix', null, 'CLOSED')`,
+      ),
+    ).rejects.toThrow();
   });
 
   it("enforces lifecycle and audit consistency constraints", async () => {

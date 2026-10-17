@@ -162,6 +162,13 @@
       "when": 1792029543403,
       "tag": "0022_sparkling_spectrum",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1792226094376,
+      "tag": "0023_little_thunderbolt",
+      "breakpoints": true
     }
   ]
 }

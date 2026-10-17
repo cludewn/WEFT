@@ -1221,7 +1221,7 @@ First vertical slice:
 - Validate the supported thread context.
 - Require `ManageThreads`.
 - Validate WEFT's own permissions.
-- Normalize and add the closed prefix.
+- Add the applicable closed prefix when enabled; preserve titles exactly when disabled.
 - Archive the thread without changing its locked state.
 - Reject already locked threads instead of modifying them.
 - Persist managed state.
@@ -1232,7 +1232,7 @@ Second vertical slice:
 
 - Implement `/thread open`.
 - Reconcile the thread after Discord unarchives it without changing its locked state.
-- Remove one managed leading prefix.
+- Remove one saved managed leading prefix when nonempty; preserve titles for an empty prefix.
 - Persist managed state.
 - Record audit data.
 - Test idempotency, authorization, and partial failures.
@@ -2136,6 +2136,77 @@ creation. Neither PostgreSQL nor live Discord verification is implied by passing
 Discord reference contracts: [permissions](https://docs.discord.com/developers/topics/permissions),
 [channel/thread resources](https://docs.discord.com/developers/resources/channel), and
 [message creation](https://docs.discord.com/developers/resources/message).
+
+## Prefix-free thread closing (Issue #120)
+
+`/config closed-prefix` is a subcommand group containing `set value:<prefix>` and option-free
+`disable`. `set` preserves outer trim, 1–20 Unicode code points, and control-character rejection;
+empty and whitespace-only input remain invalid. `disableClosedPrefix(guildId, audit)` is explicit
+at the settings Store/service boundary and passes the internal empty string through the existing
+transactional change helper. It never relaxes `validateClosedPrefix` or `setClosedPrefix`.
+The default stays `[CLOSED]`. Show renders empty as `Disabled`; change, no-op, and UNCONFIRMED
+responses remain separate. Unknown routing cannot fall through to disable or the old flat command.
+
+Changed settings and exact SUCCESS audit commit together; empty-to-empty leaves timestamps,
+success history, and publication unchanged. Commit response loss uses the exact historical audit,
+including empty before/after values and explicit NULL shape, without replaying writes. The service
+shares its existing confirmed database-failure owner and `GUILD_CLOSED_PREFIX_SET` code. Reply
+failure never repeats or reverses a change. Notification projection still excludes all values.
+
+`addClosedPrefix` and `removeClosedPrefix` return the original title immediately for `prefix === ""`,
+before marker creation or length validation. No title trimming, whitespace removal, or truncation
+is added. The existing shared close still freshly reads Discord, checks permissions, persists
+CLOSED/appliedPrefix before mutation, and PATCHes the same name with archived true when required.
+No separate rename/archive implementation exists. Open/AUTO_OPEN operate only on threads already
+active on Discord and save OPEN without renaming when the saved prefix is empty.
+
+CLOSED rows prefer their saved prefix even when it is empty; other rows use current guild settings.
+Consequently an old nonempty marker remains removable after disable, a prefix-free thread retains
+its title after enabling another prefix, and repeated closes preserve the captured prefix. After
+OPEN/AUTO_OPEN the next close uses current settings. CLOSED metadata never proves archive success.
+Captured intent remains stable during pending mutations and reconciliation. Per-thread FIFO,
+raw mutation ownership, response-loss classification, exact terminal audit retry, ingress, and
+shutdown drain remain owned by the existing lifecycle. Automatic inactivity eligibility, scheduled
+cancellation/EXECUTING races, bulk filtering/partial completion, and slot ownership are unchanged.
+Bulk selects the prefix for each close rather than capturing a common prefix at preview time.
+
+Migration 0023 is generated with `corepack pnpm db:generate` from the approved Drizzle schema and
+0022 snapshot. It drops `managed_threads_applied_prefix_check` while keeping NOT NULL and all
+other constraints. It replaces `guild_configuration_audits_transition_check` only to allow
+CLOSED_PREFIX previous/new text lengths 0–20. The outer IS TRUE, NULL shape, before/after inequality,
+control rejection, and TIMEZONE/integer/boolean/parent/thread-policy branches stay intact. Existing
+0000–0022 SQL, snapshots, and journal entries are unchanged. The new snapshot links to 0022 and
+the journal appends 0023. No records or historical audits are rewritten and no backfill occurs.
+
+Maintainer verification and release order:
+
+1. Run the dedicated PostgreSQL integration suite in the established external workflow. The new
+   `prefix-free-migration-0023.test.ts` covers 0022 upgrade and 0000–0023 clean install, retained rows
+   and history, default/NOT NULL/PK/lifecycle constraints, empty audit transitions, and repeated
+   migration no-op. Configuration persistence tests cover exact audits, rollback, silent no-ops,
+   and historical confirmation. Real shared-lifecycle cases cover automatic, scheduled, and bulk
+   execution, including consistent managed and execution/cancellation audits. Unit checks alone
+   cannot establish PostgreSQL correctness.
+2. With WEFT stopped, apply all pending committed migrations through 0023 using the explicit
+   production migration runner above. Require successful exit before starting the new runtime;
+   normal startup does not apply migrations. Keep the release coupled to its SQL and journal.
+3. Redeploy application commands with `corepack pnpm commands:deploy` for the configured Guild
+   scope and `corepack pnpm commands:deploy -- --global` for Global if previously used. Bulk
+   overwrite updates only the selected scope. Confirm exactly set/disable and removal of the old
+   flat syntax. Registration infrastructure and scope selection remain unchanged.
+4. In the designated development guild, check Manage Server rejection, disable success, repeated
+   disable unchanged, and `Closed prefix: Disabled` in show. Close a test thread and observe an
+   unchanged title, archived true, unlocked state, and the expected managed/audit records. Unarchive
+   through Discord and check manual open and automatic reopening without rename.
+5. Set `[CLOSED]` and verify normal close/open. Test old-prefixed -> disable -> open, prefix-free ->
+   enable `[DONE]` -> open, repeated close after settings changes, and later close after OPEN using
+   current settings. Check manual title edits, leading whitespace, and Unicode titles.
+6. Exercise representative inactivity, scheduled, and bulk closes, schedule cancellation, locked
+   rejection, partial completion, and audit notifications without prefix values. Check readiness
+   and shutdown drain, then obtain an independent read-only final review before commit.
+
+These external database and Live Discord checks are maintainer operations; implementation-only
+work must not connect to databases, deploy commands, or access live Discord to run them.
 
 ## Confirmed interactive bulk thread closing (Issue #89)
 

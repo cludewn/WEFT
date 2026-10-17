@@ -205,7 +205,7 @@ export function renderBulkClosePage(
           {
             name: "Before confirming",
             value: [
-              "• Soft-close adds the configured closed prefix and archives without locking.",
+              "• Soft-close adds a closed prefix when enabled and archives without locking.",
               "• Active scheduled closes may be cancelled; cancellation is not reversed if closing fails.",
               "• State, filters or permission changes can cause skips or failures. Results may be partial; pending work may finish later.",
               "• The candidate snapshot is fixed. New matching threads are never added.",

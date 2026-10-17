@@ -69,8 +69,8 @@ export const guildConfigurationAudits = pgTable(
             and (
               (${t.settingType} = 'TIMEZONE' and ${t.previousText} <> '' and ${t.newText} <> '')
               or (${t.settingType} = 'CLOSED_PREFIX'
-                and char_length(${t.previousText}) between 1 and 20
-                and char_length(${t.newText}) between 1 and 20
+                and char_length(${t.previousText}) between 0 and 20
+                and char_length(${t.newText}) between 0 and 20
                 and ${t.previousText} !~ U&'[\\0001-\\001F\\007F-\\009F]'
                 and ${t.newText} !~ U&'[\\0001-\\001F\\007F-\\009F]')
             )

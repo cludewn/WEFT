@@ -34,7 +34,6 @@ export const managedThreads = pgTable(
       "managed_threads_lifecycle_state_check",
       sql`${table.lifecycleState} in ('OPEN', 'CLOSED')`,
     ),
-    check("managed_threads_applied_prefix_check", sql`length(${table.appliedPrefix}) > 0`),
   ],
 );
 

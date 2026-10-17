@@ -103,6 +103,7 @@ export class InvalidThreadNameError extends Error {
 }
 
 export function addClosedPrefix(title: string, prefix: string): string {
+  if (prefix === "") return title;
   const marker = `${prefix} `;
   if (title.startsWith(marker)) {
     return title;
@@ -122,6 +123,7 @@ export function addClosedPrefix(title: string, prefix: string): string {
 }
 
 export function removeClosedPrefix(title: string, prefix: string): string {
+  if (prefix === "") return title;
   const marker = `${prefix} `;
   if (!title.startsWith(marker)) {
     return title;

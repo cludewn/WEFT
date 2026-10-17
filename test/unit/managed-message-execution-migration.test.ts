@@ -52,7 +52,8 @@ describe("managed execution append-only migration artifacts", () => {
     const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8")) as {
       entries: { idx: number; tag: string; when: number }[];
     };
-    expect(journal.entries).toHaveLength(23);
+    expect(journal.entries).toHaveLength(24);
+    expect(journal.entries[23]).toMatchObject({ idx: 23, tag: "0023_little_thunderbolt" });
     expect(journal.entries[21]).toMatchObject({
       idx: 21,
       tag: "0021_parallel_revanche",

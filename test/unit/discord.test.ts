@@ -53,6 +53,7 @@ const discordDependencies = {
     getOrCreate: vi.fn(),
     setTimezone: vi.fn(),
     setClosedPrefix: vi.fn(),
+    disableClosedPrefix: vi.fn(),
   },
   managedThreads: {
     find: vi.fn(),

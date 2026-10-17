@@ -199,6 +199,20 @@ The default closed prefix is:
 [CLOSED]
 ```
 
+`/config closed-prefix` is a subcommand group with exactly these operations:
+
+- `/config closed-prefix set value:<prefix>` requires a string of 1–20 Unicode code points after
+  the existing outer trim; empty/whitespace-only input and control characters are rejected.
+- `/config closed-prefix disable` takes no options and persists an empty string to disable title
+  prefixing. `/config show` displays `Closed prefix: Disabled` explicitly.
+
+Both operations require guild context and the invoking user's `ManageGuild` permission. Omitted,
+invalid, or unknown input never disables prefixing. The previous flat command is removed without
+compatibility support. Changed, already disabled/unchanged, and unconfirmed results remain distinct,
+ephemeral, and mention-suppressed. Disabling uses the existing `GUILD_CLOSED_PREFIX_SET` failure
+audit operation and `CLOSED_PREFIX` success transition; no new operation code or notification value
+projection is added. Configuration changes never rename existing threads.
+
 The default guild timezone is:
 
 ```text
@@ -238,7 +252,7 @@ notification tasks under the existing shared deadline before Discord and Postgre
 
 The following committed actual changes produce one persistent `guild_configuration_audits` record:
 
-- `/config timezone` and `/config closed-prefix`,
+- `/config timezone`, `/config closed-prefix set`, and `/config closed-prefix disable`,
 - `/config auto-close inactivity` and `/config auto-close bot-messages`,
 - `/config auto-close add-parent` and `/config auto-close remove-parent`,
 - `/thread track` and `/thread untrack` exclusion-policy transitions.
@@ -427,7 +441,7 @@ These commands may be implemented incrementally.
 
 Closing a thread means:
 
-1. adding the configured closed prefix to the beginning of the thread title,
+1. adding the applicable closed prefix to the beginning of the thread title when enabled,
 2. archiving the thread without locking it.
 
 Requirements:
@@ -442,6 +456,18 @@ Requirements:
 - WEFT-managed state must be persisted.
 - An active scheduled close for the same thread must be cancelled.
 - The operation and its outcome must be audited.
+
+An empty applied prefix leaves the exact title unchanged, including leading whitespace and long
+Unicode titles, without separators, trimming, normalization, or truncation. This remains a normal
+close: fresh observation and permission checks, pre-mutation CLOSED/appliedPrefix persistence,
+archiving when required, audit, and finalization all apply. An unchanged title alone does not make
+close a no-op. Manual, automatic, scheduled, and bulk close use the same lifecycle and mutation path.
+
+A managed CLOSED record retains its saved applied prefix, including an empty string, for repeated
+or reconciled closes. Otherwise close selects the current guild prefix. This metadata does not
+prove Discord archive success: each attempt must observe fresh Discord state. Captured mutation
+intent and prefix remain fixed through PENDING, late settlement, response loss, and reconciliation,
+even if guild settings change. Bulk does not snapshot a shared prefix.
 
 The title prefix is a user-visible indicator. It is not the authoritative source of state.
 
@@ -569,7 +595,7 @@ drain. Lifecycle drain owns started logical operations under the existing proces
 Opening a thread means:
 
 1. reconciling an active thread as open after Discord has unarchived it,
-2. removing one WEFT-managed closed prefix from the beginning of the title.
+2. removing one saved WEFT-managed closed prefix from the beginning of the title when nonempty.
 
 Requirements:
 
@@ -586,6 +612,22 @@ Requirements:
 Discord may unarchive an unlocked thread when a user creates an interaction in it. WEFT must
 reconcile an unlocked archived-to-active transition with its managed state. This reconciliation
 must be serialized with explicit thread lifecycle commands for the same thread.
+
+An empty saved applied prefix makes opening a title no-op while preserving OPEN persistence and
+normal OPEN/AUTO_OPEN audit rules. WEFT does not itself unarchive threads. Existing nonempty saved
+prefixes remain compatible: closing with `[CLOSED]`, disabling the guild prefix, then opening removes
+only that saved leading marker. Closing with no prefix, enabling `[DONE]`, then opening leaves the
+title unchanged. Once managed state becomes OPEN (including through AUTO_OPEN), the next close uses
+the current guild prefix. Manual title edits outside the saved marker remain intact.
+
+Append-only migration 0023 follows 0022 and removes only
+`managed_threads_applied_prefix_check`, retaining `applied_prefix NOT NULL`, the primary key, and
+lifecycle CHECK. It also replaces `guild_configuration_audits_transition_check` with the same
+expression except that CLOSED_PREFIX `previous_text` and `new_text` each allow 0–20 code points.
+The outer IS TRUE, NULL shape, differing before/after, control-character rejection, and all other
+setting branches remain. The `[CLOSED]` guild default, existing records, and audit history are
+unchanged; no backfill occurs. Apply migrations before the new runtime and redeploy the updated
+command definition independently to each previously used Guild/Global scope.
 
 ### Supported thread resources
 

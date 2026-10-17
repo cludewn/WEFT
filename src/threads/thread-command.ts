@@ -102,7 +102,7 @@ function failureMessage(code: ThreadFailureCode): string {
     return "A locked thread cannot be soft-closed. Unlock it manually before retrying.";
   }
   if (code === "INVALID_THREAD_NAME") {
-    return "The configured closed prefix cannot form a valid thread name.";
+    return "The applied closed prefix cannot form a valid thread name.";
   }
   return "WEFT could not complete this thread operation. Check the current thread state before retrying.";
 }
