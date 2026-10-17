@@ -339,6 +339,7 @@ describe("recurring scheduled-message administration service", () => {
     );
     await expect(f.service.cancel({ ...input, scheduledActionId: "series-id" })).resolves.toEqual({
       outcome: "CANCELLED",
+      kind: "RECURRING",
       deliveryCleanupPending: false,
     });
     expect(f.cancel).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 0 }));
@@ -358,4 +359,44 @@ describe("recurring scheduled-message administration service", () => {
     ).resolves.toEqual({ outcome: "FOUND", schedules: [] });
     expect(f.listCombined).toHaveBeenCalledWith("guild", "channel", 10);
   });
+});
+
+it.each(["COMMITTED", "UNCHANGED"] as const)(
+  "carries recurring kind and ID for %s payload without additional reads",
+  async (outcome) => {
+    const f = fixture();
+    f.editPayload.mockResolvedValue({ outcome, series: f.series });
+    await expect(
+      f.service.edit({
+        ...input,
+        scheduledActionId: "series-id",
+        expectedRevision: 0,
+        payload: { content: "new", embed: null },
+      }),
+    ).resolves.toEqual({
+      outcome: outcome === "COMMITTED" ? "EDITED" : "UNCHANGED",
+      kind: "RECURRING",
+      definition: f.series,
+    });
+    expect(f.findKind).toHaveBeenCalledExactlyOnceWith("series-id", "guild", "channel");
+    expect(f.find).toHaveBeenCalledExactlyOnceWith("series-id");
+    expect(f.findRecurringStatus).not.toHaveBeenCalled();
+    expect(f.editPayload).toHaveBeenCalledOnce();
+    expect(f.project).not.toHaveBeenCalled();
+  },
+);
+
+it("carries recurring kind for an already-cancelled series without mutation", async () => {
+  const f = fixture();
+  f.series.action.status = "CANCELLED";
+  await expect(f.service.cancel({ ...input, scheduledActionId: "series-id" })).resolves.toEqual({
+    outcome: "ALREADY_CANCELLED",
+    kind: "RECURRING",
+    deliveryCleanupPending: false,
+  });
+  expect(f.findKind).toHaveBeenCalledOnce();
+  expect(f.find).toHaveBeenCalledOnce();
+  expect(f.cancel).not.toHaveBeenCalled();
+  expect(f.findRecurringStatus).not.toHaveBeenCalled();
+  expect(f.project).not.toHaveBeenCalled();
 });

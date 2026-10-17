@@ -223,7 +223,11 @@ describe("scheduled message pg-boss delivery", () => {
         channelId: "channel-id",
         actorUserId: "cancelling-user",
       }),
-    ).resolves.toEqual({ outcome: "CANCELLED", deliveryCleanupPending: false });
+    ).resolves.toEqual({
+      outcome: "CANCELLED",
+      kind: "ONE_TIME",
+      deliveryCleanupPending: false,
+    });
     await expect(messages.find("command-created-action")).resolves.toMatchObject({
       action: { status: "CANCELLED" },
     });
@@ -768,7 +772,11 @@ describe("scheduled message pg-boss delivery", () => {
         channelId: "channel-id",
         actorUserId: "cancelling-user",
       }),
-    ).resolves.toEqual({ outcome: "CANCELLED", deliveryCleanupPending: true });
+    ).resolves.toEqual({
+      outcome: "CANCELLED",
+      kind: "ONE_TIME",
+      deliveryCleanupPending: true,
+    });
     expect(cancel).toHaveBeenCalledOnce();
     await expect(findJob(scheduledActionId)).resolves.toMatchObject({ state: "created" });
     const cancelledDefinition = await messages.find(scheduledActionId);

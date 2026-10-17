@@ -302,7 +302,7 @@ describe("managed execution owner uses production Discord evidence", () => {
     await f.service.edit({ ...editInput, expectedRevision: 2 });
     expect(
       await f.service.edit({ ...editInput, payload: { content: "old", embed: null } }),
-    ).toEqual({ outcome: "UNCHANGED" });
+    ).toEqual({ outcome: "UNCHANGED", messageId: editInput.messageId });
     expect(f.fetchMessage).toHaveBeenCalledOnce();
     expect(f.patch).not.toHaveBeenCalled();
     expect(f.record).not.toHaveBeenCalled();

@@ -69,7 +69,7 @@ function services(
     }),
   );
   const cancel = vi.fn<ScheduledMessageCommandService["cancel"]>(() =>
-    Promise.resolve({ outcome: "CANCELLED", deliveryCleanupPending: false }),
+    Promise.resolve({ outcome: "CANCELLED", kind: "ONE_TIME", deliveryCleanupPending: false }),
   );
   const statusResult =
     status === "COMPLETED"
@@ -209,7 +209,9 @@ function modalInteraction(
 ) {
   const reply = vi.fn(() => Promise.resolve());
   const deferReply = vi.fn(() => Promise.resolve());
-  const editReply = vi.fn(() => Promise.resolve());
+  const editReply = vi.fn<(options: InteractionEditReplyOptions) => Promise<void>>(() =>
+    Promise.resolve(),
+  );
   const values: Record<string, string> = {
     [MANAGED_MESSAGE_CONTENT_INPUT_ID]: options.content ?? "sensitive scheduled content",
     [MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID]: "",
@@ -329,7 +331,7 @@ describe("scheduled message command handler", () => {
     expect(response).toContain("Current occurrence scheduled time");
     expect(response).not.toContain("Next scheduled occurrence");
     expect(response).not.toContain("sensitive scheduled content");
-    expect(response).toContain("mon,wed");
+    expect(response).toContain("Weekdays: mon, wed");
   });
 
   it("shows no retry count when recurring status has no current occurrence", async () => {
@@ -390,10 +392,10 @@ describe("scheduled message command handler", () => {
     });
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
     const response = f.editReply.mock.calls[0]![0].content!;
-    expect(response).toContain("one-time — **ACTIVE**");
-    expect(response).toContain("recurring DAILY");
-    expect(response).toContain("current: <t:1893553445:F>");
-    expect(response).not.toContain("next:");
+    expect(response).toContain("One-time · **ACTIVE**");
+    expect(response).toContain("Recurring daily · **ACTIVE** / **EXECUTING**");
+    expect(response).toContain("Current: <t:1893553445:F>");
+    expect(response).not.toContain("Next:");
     expect(response).not.toContain("sensitive scheduled content");
   });
   it("round-trips only a validated relative delay in the modal custom ID", () => {
@@ -440,7 +442,7 @@ describe("scheduled message command handler", () => {
     const response = JSON.stringify(f.editReply.mock.calls);
     expect(response).toContain("schedule-id");
     expect(response).toContain("Target: <#channel-id>");
-    expect(response).toContain("Runs: <t:1893553445:F> (<t:1893553445:R>)");
+    expect(response).toContain("Scheduled for: <t:1893553445:F> (<t:1893553445:R>)");
     expect(response).not.toContain("sensitive scheduled content");
     expect(response).not.toContain("sensitive embed title");
     expect(response).not.toContain("sensitive embed description");
@@ -459,7 +461,7 @@ describe("scheduled message command handler", () => {
     const response = JSON.stringify(f.editReply.mock.calls);
     expect(response).toContain("schedule-id");
     expect(response).toContain("Target: <#channel-id>");
-    expect(response).toContain("Runs: <t:1893553445:F> (<t:1893553445:R>)");
+    expect(response).toContain("Scheduled for: <t:1893553445:F> (<t:1893553445:R>)");
     expect(response).toContain("Delivery is pending reconciliation");
     expect(response).not.toContain("sensitive scheduled content");
     expect(response).not.toContain("sensitive embed title");
@@ -596,6 +598,7 @@ describe("scheduled message command handler", () => {
     const s = services();
     s.scheduled.edit.mockResolvedValue({
       outcome: "EDITED",
+      kind: "ONE_TIME",
       definition: {
         action: {
           id: scheduleId,
@@ -645,7 +648,7 @@ describe("scheduled message command handler", () => {
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
     const response = f.editReply.mock.calls[0]![0].content!;
     expect(response).toContain("full-schedule-id");
-    expect(response).toContain("ACTIVE");
+    expect(response).toContain("**ACTIVE**");
     expect(response).toContain("creator-id");
     expect(response).not.toContain("sensitive scheduled content");
   });
@@ -688,9 +691,9 @@ describe("scheduled message command handler", () => {
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
     const response = JSON.stringify(f.editReply.mock.calls);
     expect(response).toContain("schedule-id");
-    expect(response).toContain("COMPLETED");
+    expect(response).toContain("**COMPLETED**");
     expect(response).toContain("Target: <#channel-id>");
-    expect(response).toContain("Runs: <t:1893553445:F> (<t:1893553445:R>)");
+    expect(response).toContain("Originally scheduled for: <t:1893553445:F> (<t:1893553445:R>)");
     expect(response).toContain("actor-id");
     expect(response).toContain("Retry count: 1");
     expect(response).toContain("https://discord.com/channels/guild-id/channel-id/message-id");
@@ -754,15 +757,19 @@ describe("scheduled message list responses", () => {
 
   function expectCompleteRows(content: string, schedules: CombinedScheduleListItem[]) {
     const rows = content.split("\n").filter((line) => line.startsWith("- "));
+    const details = content.split("\n").filter((line) => line.startsWith("  "));
     expect(rows).toHaveLength(schedules.length);
+    expect(details).toHaveLength(schedules.length);
     for (const [index, schedule] of schedules.entries()) {
       expect(rows[index]).toContain(`\`${schedule.scheduledActionId}\``);
-      expect(rows[index]).toContain(`creator \`${schedule.creatorUserId}\``);
-      expect(rows[index]).toContain(`<t:${Math.floor(schedule.executeAt.getTime() / 1000)}:F>`);
+      expect(details[index]).toContain(
+        `<@${schedule.creatorUserId}> (\`${schedule.creatorUserId}\`)`,
+      );
+      expect(details[index]).toContain(`<t:${Math.floor(schedule.executeAt.getTime() / 1000)}:F>`);
     }
   }
 
-  it.each(["PENDING", "RETRY_PENDING"] as const)(
+  it.each(["PENDING", "EXECUTING", "RETRY_PENDING"] as const)(
     "keeps all ten weekly %s rows within Discord limits (overflow regression)",
     async (currentOccurrenceStatus) => {
       const schedules = Array.from({ length: 10 }, (_, index) => ({
@@ -771,9 +778,7 @@ describe("scheduled message list responses", () => {
       }));
       const { content } = await render(schedules);
       expectCompleteRows(content, schedules);
-      expect(content.match(new RegExp(`\\*\\*${currentOccurrenceStatus}\\*\\*`, "g"))).toHaveLength(
-        10,
-      );
+      expect(content.split(`**ACTIVE** / **${currentOccurrenceStatus}**`)).toHaveLength(11);
       expect(content).toContain("/message schedule status id:<schedule-id>");
     },
   );
@@ -804,20 +809,22 @@ describe("scheduled message list responses", () => {
       for (const [index, schedule] of schedules.entries()) {
         const row = rows[index]!;
         if (schedule.kind === "ONE_TIME") {
-          expect(row).toContain(`one-time — **${schedule.status}** — runs:`);
-          expect(row).not.toContain(":R>");
+          expect(row).toContain(`One-time · **${schedule.status}**`);
+          expect(content).not.toContain(":R>");
         } else {
-          expect(row).toContain(`recurring ${schedule.frequency} — **PENDING** — next:`);
+          expect(row).toContain(
+            `Recurring ${schedule.frequency.toLowerCase()} · **ACTIVE** / **PENDING**`,
+          );
         }
       }
     },
   );
 
   it.each([
-    ["PENDING", "next"],
-    ["EXECUTING", "current"],
-    ["RETRY_PENDING", "current"],
-    [null, "last"],
+    ["PENDING", "Next"],
+    ["EXECUTING", "Current"],
+    ["RETRY_PENDING", "Current"],
+    [null, "Last materialized"],
   ] as const)("labels %s using the authoritative instant as %s", async (status, label) => {
     const schedule = {
       ...recurring(),
@@ -827,9 +834,13 @@ describe("scheduled message list responses", () => {
       currentOccurrenceStatus: status,
     };
     const { content } = await render([schedule]);
-    expect(content).toContain(`**${status ?? "ACTIVE"}** — ${label}: <t:1893553445:F>`);
+    const state = status === null ? "none" : `**${status}**`;
+    expect(content).toContain(`**ACTIVE** / ${state}`);
+    expect(content).toContain(`${label}: <t:1893553445:F>`);
     expect(content.match(/<t:[^>]+>/g)).toEqual(["<t:1893553445:F>"]);
-    for (const other of ["next", "current", "last"].filter((meaning) => meaning !== label))
+    for (const other of ["Next", "Current", "Last materialized"].filter(
+      (meaning) => meaning !== label,
+    ))
       expect(content).not.toContain(`${other}:`);
   });
 
@@ -862,7 +873,7 @@ describe("scheduled message list responses", () => {
   it("renders page 2 without changing the supplied order", async () => {
     const schedules = [recurring(2), oneTime(1)];
     const { content } = await render(schedules, 2);
-    expect(content.startsWith("Scheduled messages — page 2\n")).toBe(true);
+    expect(content.startsWith("Scheduled messages — page 2 (series / occurrence)\n")).toBe(true);
     expectCompleteRows(content, schedules);
   });
 
@@ -875,10 +886,11 @@ describe("scheduled message list responses", () => {
     // This page still has a safe integer offset in the application service.
     const { content } = await render(schedules, 900_719_925_474_100);
     expectCompleteRows(content, schedules);
-    expect(content.length).toBe(1543);
+    expect(content.length).toBe(1895);
+    expect(content.split("**ACTIVE** / **RETRY_PENDING**")).toHaveLength(11);
   });
 
-  it("accepts a complete 2000-code-unit page and rejects 2001 without dropping rows", async () => {
+  it("counts bold Markdown in a complete 2000-code-unit page and rejects 2001 or more without dropping rows", async () => {
     const schedules = Array.from({ length: 10 }, (_, index) => recurring(index));
     const initial = await render(schedules);
     const row = schedules[9]!;
@@ -887,13 +899,15 @@ describe("scheduled message list responses", () => {
     expect(boundary.content.length).toBe(2000);
     expectCompleteRows(boundary.content, schedules);
 
-    row.scheduledActionId += "x";
-    const overflow = await render(schedules);
-    expect(overflow.content).toBe(
-      "WEFT could not display the complete scheduled-message page safely. No schedules were displayed.",
-    );
-    for (const schedule of schedules)
-      expect(overflow.content).not.toContain(schedule.scheduledActionId);
+    for (const extra of [1, 100]) {
+      row.scheduledActionId += "x".repeat(extra);
+      const overflow = await render(schedules);
+      expect(overflow.content).toBe(
+        "WEFT could not display the complete scheduled-message page safely. No schedules were displayed.",
+      );
+      for (const schedule of schedules)
+        expect(overflow.content).not.toContain(schedule.scheduledActionId);
+    }
   });
 
   it.each(["schedule ID", "creator ID", "UTF-16 creator ID", "invalid date"])(
@@ -1359,22 +1373,30 @@ describe("recurring-create Modal failure classification", () => {
   }
 
   it.each([
-    { frequency: "invalid" },
-    { time: "9:30" },
-    { weekdays: "mon" },
-    { timezone: "invalid/timezone" },
-  ])("reports grounded recurrence validation failure for %j", async (options) => {
-    const f = fixture(options);
-    await handleMessageCommand(f.interaction, f.managed, f.scheduled);
-    expect(f.reply).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({
-        content:
-          "Enter daily without weekdays, or weekly with unique comma-separated weekdays, strict HH:MM, and a named IANA timezone.",
-      }),
-    );
-    expect(f.showModal).not.toHaveBeenCalled();
-    expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
-  });
+    [{ frequency: "invalid" }, "Choose daily or weekly for frequency."],
+    [{ time: "9:30" }, "Enter time as HH:MM on a 24-hour clock, e.g. 09:30."],
+    [
+      { weekdays: "mon" },
+      "For daily, omit weekdays. For weekly, enter unique comma-separated mon,tue,wed,thu,fri,sat,sun tokens, e.g. mon,wed,fri.",
+    ],
+    [
+      { timezone: "invalid/timezone" },
+      "Enter a named IANA timezone, e.g. Asia/Tokyo, or UTC. Numeric offsets are not supported.",
+    ],
+  ] as const)(
+    "reports grounded recurrence validation failure for %j",
+    async (options, guidance) => {
+      const f = fixture(options);
+      await handleMessageCommand(f.interaction, f.managed, f.scheduled);
+      expect(f.reply).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          content: guidance,
+        }),
+      );
+      expect(f.showModal).not.toHaveBeenCalled();
+      expect(f.scheduled.createRecurring).not.toHaveBeenCalled();
+    },
+  );
 
   it("reports timezone length only for the known encoded identity limit", async () => {
     const f = fixture();
@@ -1499,4 +1521,257 @@ it("does not start a late scheduled edit authorization response", async () => {
   expect(f.showModal).not.toHaveBeenCalled();
   expect(s.scheduled.findEditable).not.toHaveBeenCalled();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+describe("scheduled-message response contract", () => {
+  it.each(["ONE_TIME", "RECURRING"] as const)(
+    "identifies confirmed %s cancellation and no-op without hiding cleanup uncertainty",
+    async (kind) => {
+      for (const outcome of ["CANCELLED", "ALREADY_CANCELLED"] as const) {
+        const s = services();
+        s.cancel.mockResolvedValue({ outcome, kind, deliveryCleanupPending: true });
+        const f = commandInteraction({ subcommand: "cancel", value: editableScheduleId });
+        await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+        const response = f.editReply.mock.calls[0]![0];
+        expect(response.allowedMentions).toEqual({ parse: [] });
+        expect(response.content).toContain(`\`${editableScheduleId}\``);
+        expect(response.content).toContain(
+          kind === "RECURRING" ? "Recurring schedule" : "One-time schedule",
+        );
+        expect(response.content).toContain(
+          outcome === "CANCELLED" ? "cancelled." : "already cancelled.",
+        );
+        expect(response.content).toContain(
+          "Delivery cleanup could not be confirmed, but the schedule remains cancelled.",
+        );
+        if (kind === "RECURRING") {
+          expect(response.content).toContain("Future occurrences will not be scheduled.");
+          expect(response.content).toContain("An occurrence already executing may still finish.");
+        } else expect(response.content).not.toContain("occurrence");
+      }
+    },
+  );
+
+  it.each(["ONE_TIME", "RECURRING"] as const)(
+    "identifies confirmed %s payload edits and unchanged payloads from returned definitions",
+    async (kind) => {
+      const loaded = editableSchedule();
+      if (loaded.outcome !== "ACTIVE") throw new Error("Expected editable fixture");
+      for (const outcome of ["EDITED", "UNCHANGED"] as const) {
+        const s = services();
+        s.scheduled.edit.mockResolvedValue({ outcome, kind, definition: loaded.definition });
+        const f = modalInteraction(createScheduledMessageEditModalId(editableScheduleId, 4));
+        await handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled);
+        const response = f.editReply.mock.calls[0]![0];
+        expect(response.content).toContain(`\`${editableScheduleId}\``);
+        expect(response.content).toContain(
+          outcome === "EDITED" ? "payload updated." : "payload unchanged.",
+        );
+        expect(response.content).toContain(
+          kind === "RECURRING" ? "Recurring schedule" : "One-time schedule",
+        );
+        if (kind === "RECURRING")
+          expect(response.content).toContain(
+            "An occurrence already claimed or executing keeps its existing payload.",
+          );
+        else expect(response.content).not.toContain("occurrence");
+        expect(response.allowedMentions).toEqual({ parse: [] });
+        expect(s.managed.send).not.toHaveBeenCalled();
+        expect(s.managed.edit).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("identifies reschedule and recurrence edits while preserving pending and in-flight facts", async () => {
+    const loaded = editableSchedule();
+    if (loaded.outcome !== "ACTIVE") throw new Error("Expected editable fixture");
+    const s = services();
+    s.scheduled.reschedule.mockResolvedValue({
+      outcome: "RESCHEDULED",
+      definition: loaded.definition,
+      deliveryPendingReconciliation: true,
+    });
+    const reschedule = commandInteraction({
+      subcommand: "reschedule",
+      value: "input-id",
+      after: "1h",
+    });
+    await handleMessageCommand(reschedule.interaction, s.managed, s.scheduled);
+    expect(reschedule.editReply.mock.calls[0]![0].content).toContain(
+      `One-time schedule \`${editableScheduleId}\` rescheduled`,
+    );
+    expect(reschedule.editReply.mock.calls[0]![0].content).toContain(
+      "Delivery is pending reconciliation.",
+    );
+    for (const outcome of ["COMMITTED", "UNCHANGED"] as const) {
+      s.scheduled.editRecurrence.mockResolvedValue(
+        outcome === "UNCHANGED"
+          ? { outcome }
+          : {
+              outcome,
+              effect: {
+                committedRevision: 5,
+                deferredMaterialization: true,
+                replacementOccurrenceId: null,
+                replacementScheduledFor: null,
+              },
+              deliveryPendingReconciliation: true,
+            },
+      );
+      const f = commandInteraction({ subcommand: "recurrence-edit", value: editableScheduleId });
+      await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+      const response = f.editReply.mock.calls[0]![0];
+      expect(response.content).toContain(
+        `Recurring schedule \`${editableScheduleId}\` recurrence ${outcome === "COMMITTED" ? "updated" : "unchanged"}.`,
+      );
+      if (outcome === "COMMITTED") {
+        expect(response.content).toContain(
+          "An occurrence already claimed or executing keeps its existing recurrence",
+        );
+        expect(response.content).toContain("Delivery is pending reconciliation.");
+      }
+      expect(response.allowedMentions).toEqual({ parse: [] });
+    }
+  });
+
+  it.each(["cancel", "recurrence-edit", "reschedule"] as const)(
+    "does not echo unvalidated IDs for %s failure or unconfirmed modification",
+    async (subcommand) => {
+      const s = services();
+      const invalidId = "@everyone `private-id`\n[private](https://private.invalid)";
+      for (const outcome of [
+        "NOT_FOUND_OR_WRONG_CONTEXT",
+        "PERSISTENCE_UNCONFIRMED",
+        "CONFLICT",
+      ] as const) {
+        const method =
+          subcommand === "recurrence-edit"
+            ? s.scheduled.editRecurrence
+            : subcommand === "cancel"
+              ? s.cancel
+              : s.scheduled.reschedule;
+        method.mockResolvedValue({ outcome });
+        const f = commandInteraction({ subcommand, value: invalidId, after: "1h" });
+        await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+        const response = f.editReply.mock.calls[0]![0];
+        expect(response.content).not.toContain(invalidId);
+        expect(response.content).not.toContain("private");
+        expect(response.content).not.toMatch(/updated\.|cancelled\.|rescheduled for/);
+        if (outcome === "PERSISTENCE_UNCONFIRMED") {
+          expect(response.content).toContain("could not confirm");
+          expect(response.content).toMatch(/Inspect .*schedule before retrying/);
+        }
+        expect(response.allowedMentions).toEqual({ parse: [] });
+      }
+    },
+  );
+
+  it.each(["ACTIVE", "EXECUTING", "CANCELLED", "COMPLETED", "FAILED"] as const)(
+    "labels the one-time %s timestamp as scheduled or historical, with creator fallback",
+    async (status) => {
+      const s = services();
+      s.scheduled.status.mockResolvedValue({
+        outcome: "FOUND",
+        schedule: {
+          scheduledActionId: editableScheduleId,
+          status,
+          guildId: "1",
+          channelId: "2",
+          executeAt,
+          creatorUserId: "18446744073709551615",
+          retryCount: 3,
+          resultMessageId: null,
+        },
+      });
+      const f = commandInteraction({ subcommand: "status", value: editableScheduleId });
+      await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+      const response = f.editReply.mock.calls[0]![0];
+      expect(response.content).toContain(
+        "Creator: <@18446744073709551615> (`18446744073709551615`)",
+      );
+      expect(response.content).toContain(
+        status === "ACTIVE"
+          ? "Scheduled for:"
+          : status === "EXECUTING"
+            ? "Current execution scheduled for:"
+            : "Originally scheduled for:",
+      );
+      expect(response.content).toContain(`Status: **${status}**`);
+      expect(response.content).toContain("Retry count: 3");
+      expect(response.allowedMentions).toEqual({ parse: [] });
+    },
+  );
+});
+
+it.each([
+  ["ACTIVE", "PENDING", "Next scheduled occurrence", "**PENDING**"],
+  ["ACTIVE", "EXECUTING", "Current occurrence scheduled time", "**EXECUTING**"],
+  ["ACTIVE", "RETRY_PENDING", "Current occurrence scheduled time", "**RETRY_PENDING**"],
+  ["ACTIVE", null, "Last materialized scheduled time", "none"],
+  ["CANCELLED", "EXECUTING", "Historical scheduled time", "**EXECUTING**"],
+] as const)(
+  "groups recurring %s/%s status independently and escapes scheduling metadata",
+  async (status, currentOccurrenceStatus, timeLabel, occurrenceLabel) => {
+    const s = services();
+    s.scheduled.status.mockResolvedValue({
+      outcome: "FOUND",
+      schedule: {
+        kind: "RECURRING",
+        scheduledActionId: editableScheduleId,
+        status,
+        guildId: "1",
+        channelId: "2",
+        executeAt,
+        creatorUserId: "18446744073709551615",
+        revision: 2147483647,
+        frequency: "WEEKLY",
+        weekdayMask: 127,
+        localTime: "23:59",
+        timezone: "**zone**\n[bad](url)",
+        currentOccurrenceId:
+          currentOccurrenceStatus === null ? null : "22222222-2222-4222-8222-222222222222",
+        currentOccurrenceStatus,
+        retryCount: 3,
+      },
+    });
+    const f = commandInteraction({ subcommand: "status", value: editableScheduleId });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    const response = f.editReply.mock.calls[0]![0];
+    expect(response.content).toContain(`Series status: **${status}**`);
+    expect(response.content).toContain(`Occurrence status: ${occurrenceLabel}`);
+    expect(response.content).toContain(`${timeLabel}: <t:1893553445:F>`);
+    expect(response.content).toContain("Creator: <@18446744073709551615> (`18446744073709551615`)");
+    expect(response.content).toContain("Revision: 2147483647");
+    expect(response.content).toContain("Scheduling timezone: \\*\\*zone\\*\\* \\[bad](url)");
+    expect(response.content).toContain("Discord timestamps display in your local timezone.");
+    expect(response.content).not.toContain("**zone**");
+    expect(response.allowedMentions).toEqual({ parse: [] });
+    expect(response.content!.length).toBeLessThanOrEqual(2000);
+    if (status === "CANCELLED")
+      expect(response.content).not.toContain("Next scheduled occurrence:");
+  },
+);
+
+it.each([
+  createScheduledMessageCreateModalId({ kind: "AFTER", durationMs: 60_000 }),
+  createRecurringMessageCreateModalId({ frequency: "daily", time: "09:30" }),
+  createScheduledMessageEditModalId(editableScheduleId, 4),
+])("rejects an empty optional-input Modal on submit without service work: %s", async (customId) => {
+  const s = services();
+  const f = modalInteraction(customId, { content: "" });
+  await expect(
+    handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled),
+  ).resolves.toBe(true);
+  expect(f.reply).toHaveBeenCalledExactlyOnceWith({
+    content:
+      "Enter message content or a visible embed; non-empty content cannot be whitespace-only.",
+    flags: MessageFlags.Ephemeral,
+    allowedMentions: { parse: [] },
+  });
+  expect(f.deferReply).not.toHaveBeenCalled();
+  expect(s.scheduled.create).not.toHaveBeenCalled();
+  expect(s.scheduled.createRecurring).not.toHaveBeenCalled();
+  expect(s.scheduled.edit).not.toHaveBeenCalled();
+  expect(s.managed.send).not.toHaveBeenCalled();
+  expect(s.managed.edit).not.toHaveBeenCalled();
 });

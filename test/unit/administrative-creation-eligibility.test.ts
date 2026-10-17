@@ -284,7 +284,7 @@ describe("recurring creation audit eligibility preserves authorization response 
         ...input,
         recurrence: { frequency: "daily", time: "25:00", timezone: "UTC" },
       }),
-    ).resolves.toEqual({ outcome: "INVALID_RECURRENCE" });
+    ).resolves.toEqual({ outcome: "INVALID_RECURRENCE", field: "time" });
     expect(f.authorizeCreation).not.toHaveBeenCalled();
     expect(f.now).not.toHaveBeenCalled();
     expect(f.generateId).not.toHaveBeenCalled();
