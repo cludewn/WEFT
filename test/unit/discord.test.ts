@@ -111,14 +111,18 @@ describe("Discord client", () => {
       recordThreadReentryBaseline: vi.fn(),
     } as unknown as AutomaticCloseActivityService;
     registerAutomaticCloseActivityHandlers(runtime.client, { activity, logger }, closedIngress);
-    const reply = vi.fn();
+    const reply = vi.fn(() => Promise.resolve());
+    const inGuild = vi.fn(() => true);
 
-    runtime.client.emit(Events.InteractionCreate, {
-      commandName: "ping",
+    const command = {
+      commandName: "config",
       isChatInputCommand: () => true,
       isModalSubmit: () => false,
+      inGuild,
+      memberPermissions: { has: () => false },
       reply,
-    } as unknown as ChatInputCommandInteraction);
+    } as unknown as ChatInputCommandInteraction;
+    runtime.client.emit(Events.InteractionCreate, command);
     runtime.client.emit(Events.InteractionCreate, createModal("managed-message:send").interaction);
     runtime.client.emit(Events.MessageCreate, createMessage() as never);
     runtime.client.emit(
@@ -128,9 +132,24 @@ describe("Discord client", () => {
     );
 
     expect(reply).not.toHaveBeenCalled();
+    expect(inGuild).not.toHaveBeenCalled();
     expect(managedMessages.send).not.toHaveBeenCalled();
     expect(activity.recordMessageActivity).not.toHaveBeenCalled();
     expect(autoOpen).not.toHaveBeenCalled();
+
+    vi.mocked(closedIngress.run).mockImplementation((operation) =>
+      Promise.resolve().then(operation),
+    );
+    runtime.client.emit(Events.InteractionCreate, command);
+    await vi.waitFor(() => {
+      expect(reply).toHaveBeenCalledExactlyOnceWith({
+        content: "You need the Manage Server permission to use this command.",
+        flags: MessageFlags.Ephemeral,
+        allowedMentions: { parse: [] },
+      });
+    });
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(logger.warn).not.toHaveBeenCalled();
     await runtime.client.destroy();
   });
 
@@ -240,31 +259,34 @@ describe("Discord client", () => {
     await client.destroy();
   });
 
-  it("logs only the event and command name for an unknown command", async () => {
-    const warn = vi.fn();
-    const error = vi.fn();
-    const logger = { debug: vi.fn(), warn, error } as unknown as Logger;
-    const client = createDiscordClient(logger, discordDependencies);
-    registerTestCommandHandler(client, logger);
-    const reply = vi.fn();
-    const interaction = {
-      commandName: "unknown",
-      isChatInputCommand: () => true,
-      reply,
-    } as unknown as ChatInputCommandInteraction;
+  it.each(["ping", "unknown"])(
+    "logs only the event and command name for /%s",
+    async (commandName) => {
+      const warn = vi.fn();
+      const error = vi.fn();
+      const logger = { debug: vi.fn(), warn, error } as unknown as Logger;
+      const client = createDiscordClient(logger, discordDependencies);
+      registerTestCommandHandler(client, logger);
+      const reply = vi.fn();
+      const interaction = {
+        commandName,
+        isChatInputCommand: () => true,
+        reply,
+      } as unknown as ChatInputCommandInteraction;
 
-    client.emit(Events.InteractionCreate, interaction);
+      client.emit(Events.InteractionCreate, interaction);
 
-    await vi.waitFor(() => {
-      expect(warn).toHaveBeenCalledWith(
-        { event: "unknown_command", commandName: "unknown" },
-        "Unknown Discord command received",
-      );
-    });
-    expect(error).not.toHaveBeenCalled();
-    expect(reply).not.toHaveBeenCalled();
-    await client.destroy();
-  });
+      await vi.waitFor(() => {
+        expect(warn).toHaveBeenCalledWith(
+          { event: "unknown_command", commandName },
+          "Unknown Discord command received",
+        );
+      });
+      expect(error).not.toHaveBeenCalled();
+      expect(reply).not.toHaveBeenCalled();
+      await client.destroy();
+    },
+  );
 
   it("handles reply failures without logging interaction content", async () => {
     const warn = vi.fn();
@@ -274,8 +296,10 @@ describe("Discord client", () => {
     registerTestCommandHandler(client, logger);
     const reply = vi.fn(() => Promise.reject(new Error("reply failed")));
     const interaction = {
-      commandName: "ping",
+      commandName: "config",
       isChatInputCommand: () => true,
+      inGuild: () => true,
+      memberPermissions: { has: () => false },
       reply,
     } as unknown as ChatInputCommandInteraction;
 
@@ -283,10 +307,16 @@ describe("Discord client", () => {
 
     await vi.waitFor(() => {
       expect(error).toHaveBeenCalledWith(
-        { event: "command_failed", commandName: "ping", errorName: "Error" },
+        { event: "command_failed", commandName: "config", errorName: "Error" },
         "Discord command failed",
       );
     });
+    expect(reply).toHaveBeenCalledExactlyOnceWith({
+      content: "You need the Manage Server permission to use this command.",
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    expect(JSON.stringify(error.mock.calls)).not.toContain("reply failed");
     expect(warn).not.toHaveBeenCalled();
     await client.destroy();
   });

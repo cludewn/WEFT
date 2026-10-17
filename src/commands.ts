@@ -1,5 +1,3 @@
-import { InteractionContextType, MessageFlags, SlashCommandBuilder } from "discord.js";
-
 import type { LinkPreviewConfiguration } from "./link-previews/link-preview-configuration.js";
 import type { ChatInputCommandInteraction } from "discord.js";
 import type { Logger } from "pino";
@@ -20,10 +18,6 @@ import { handleThreadCommand, threadCommandDefinition } from "./threads/thread-c
 import type { ThreadLifecycleService } from "./threads/thread-lifecycle.js";
 
 export const commandDefinitions = [
-  new SlashCommandBuilder()
-    .setName("ping")
-    .setDescription("Check whether WEFT is responding")
-    .setContexts(InteractionContextType.Guild),
   configCommandDefinition,
   threadCommandDefinition,
   messageCommandDefinition,
@@ -48,11 +42,6 @@ export async function handleCommand(
   interaction: ChatInputCommandInteraction,
   dependencies: CommandDependencies,
 ): Promise<boolean> {
-  if (interaction.commandName === "ping") {
-    await interaction.reply({ content: "Pong!", flags: MessageFlags.Ephemeral });
-    return true;
-  }
-
   if (interaction.commandName === "config") {
     await handleConfigCommand(
       interaction,

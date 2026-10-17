@@ -39,7 +39,9 @@ corepack pnpm install --frozen-lockfile
    thread does not automatically unarchive it.
 5. Configure WEFT from `.env.example`, prepare PostgreSQL, and run the explicit production migration
    described below before startup. Deploy application commands separately as described below.
-6. Start WEFT, verify `GET /health/ready`, then run `/ping` in the guild.
+6. Start WEFT and verify `GET /health/live` and `GET /health/ready`. To verify Discord command
+   interactions, run the read-only `/config audit-log show` in the guild as a member with
+   **Manage Server** (`ManageGuild`) permission.
 
 Copy `.env.example` to `.env` for local Docker Compose use, then replace the example passwords and Discord placeholders. Normal application startup requires the bot token and Discord Application ID. `DISCORD_GUILD_ID` selects only the default guild command deployment target; it does not restrict runtime to one guild and is unnecessary for global command deployment or normal startup. Do not commit `.env` files.
 
@@ -76,6 +78,11 @@ Global deployment must be selected explicitly:
 ```sh
 corepack pnpm commands:deploy -- --global
 ```
+
+After updating WEFT, deploy the updated definitions to each scope where its commands were registered.
+Deployment bulk overwrites only the selected scope, removing obsolete commands such as `/ping`.
+Guild and global registrations are independent: the default targets `DISCORD_GUILD_ID`, while
+`--global` targets global commands. Updating one does not update the other.
 
 PostgreSQL integration tests use a separate set of required variables and never fall back to the application database settings:
 

@@ -144,7 +144,7 @@ The installation permission set is an upper bound, not authorization for every c
 channel and thread overwrites determine the bot's effective permissions; WEFT checks those at the
 Discord boundary. Human command defaults may be overridden by server administrators, so runtime
 authorization still checks `ManageGuild` for `/config`, `ManageThreads` for `/thread`, and
-`ManageMessages` for `/message` slash and modal actions. `/ping` remains unrestricted within a guild.
+`ManageMessages` for `/message` slash and modal actions.
 
 Thread lifecycle checks force-fetch the actor and bot members. discord.js 14.27.0 calculates a
 thread's effective permissions through its cached parent channel, so checks refresh the parent
@@ -1196,6 +1196,8 @@ The initial code structure must include only what this phase requires.
 - Select and implement the command-registration strategy.
 - Implement a minimal `/ping` command.
 - Add tests that do not require a live Discord connection.
+
+The minimal `/ping` command was an initial bootstrap step and was removed in Issue #118.
 
 Reassess the code organization after this phase. Do not assume that the initial foundation structure is final.
 
