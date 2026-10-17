@@ -1290,6 +1290,7 @@ describe("recurring message persistence", () => {
     await expect(oneTime.listNonterminal(input.guildId, input.channelId, 0)).resolves.toEqual({
       outcome: "FOUND",
       schedules: [],
+      hasNext: false,
     });
     await expect(
       oneTime.findEditable(input.scheduledActionId, input.guildId, input.channelId),

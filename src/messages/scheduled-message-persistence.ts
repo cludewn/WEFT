@@ -258,7 +258,8 @@ export type ScheduledMessageListItem = {
   creatorUserId: string;
 };
 export type ScheduledMessageListResult =
-  { outcome: "FOUND"; schedules: ScheduledMessageListItem[] } | { outcome: "UNAVAILABLE" };
+  | { outcome: "FOUND"; schedules: ScheduledMessageListItem[]; hasNext: boolean }
+  | { outcome: "UNAVAILABLE" };
 export type ScheduledMessageEditableLoadResult =
   | { outcome: "ACTIVE"; definition: ScheduledMessageDefinition }
   | { outcome: "EXECUTING" | "CANCELLED" | "COMPLETED" | "FAILED" }
@@ -1315,11 +1316,12 @@ export function createScheduledMessageStore(database: DatabaseClient): Scheduled
             ),
           )
           .orderBy(asc(scheduledActions.executeAt), asc(scheduledActions.id))
-          .limit(10)
+          .limit(11)
           .offset(offset);
         return {
           outcome: "FOUND",
-          schedules: rows.map((row) => ({
+          hasNext: rows.length > 10,
+          schedules: rows.slice(0, 10).map((row) => ({
             ...row,
             status: row.status as ScheduledMessageListItem["status"],
           })),

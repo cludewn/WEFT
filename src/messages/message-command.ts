@@ -51,6 +51,12 @@ import {
   type RecurringInputField,
 } from "./recurring-message.js";
 
+import {
+  scheduleStateLabel,
+  recurringTimeLabel,
+  type ScheduledMessageListNavigation,
+} from "./scheduled-message-list.js";
+
 export const MANAGED_MESSAGE_SEND_MODAL_ID = "managed-message:send";
 export const MANAGED_MESSAGE_EDIT_MODAL_PREFIX = "managed-message:edit:";
 export const SCHEDULED_MESSAGE_CREATE_MODAL_PREFIX = "scheduled-message:schedule-create:";
@@ -332,12 +338,7 @@ export const messageCommandDefinition = new SlashCommandBuilder()
           ),
       )
       .addSubcommand((subcommand) =>
-        subcommand
-          .setName("list")
-          .setDescription("List active scheduled messages in this channel")
-          .addIntegerOption((option) =>
-            option.setName("page").setDescription("Page number").setMinValue(1),
-          ),
+        subcommand.setName("list").setDescription("List active scheduled messages in this channel"),
       )
       .addSubcommand((subcommand) =>
         subcommand
@@ -647,6 +648,7 @@ export async function handleMessageCommand(
   interaction: ChatInputCommandInteraction,
   service: ManagedMessageService,
   scheduledMessages?: ScheduledMessageCommandService,
+  scheduledMessageLists?: ScheduledMessageListNavigation,
 ): Promise<void> {
   const startedAt = performance.now();
   const initialAge = Math.max(0, Date.now() - interaction.createdTimestamp);
@@ -775,6 +777,12 @@ export async function handleMessageCommand(
       rescheduleInput = selector.schedule;
     }
 
+    if (subcommand === "list") {
+      if (scheduledMessageLists === undefined)
+        throw new Error("Scheduled message list navigation is unavailable");
+      await scheduledMessageLists.start(interaction);
+      return;
+    }
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     if (subcommand === "recurrence-edit") {
       if (scheduledMessages.editRecurrence === undefined)
@@ -801,16 +809,6 @@ export async function handleMessageCommand(
       await interaction.editReply(
         editReply(cancelScheduledMessageResultMessage(result, scheduledActionId!)),
       );
-      return;
-    }
-    if (subcommand === "list") {
-      const page = interaction.options.getInteger("page") ?? 1;
-      const result = await scheduledMessages.list({
-        guildId: interaction.guildId,
-        channelId: interaction.channelId,
-        page,
-      });
-      await interaction.editReply(editReply(scheduledMessageListMessage(result, page)));
       return;
     }
     if (subcommand === "reschedule") {
@@ -884,30 +882,6 @@ function safeScheduleMetadata(value: string): string {
   })
     .replaceAll("<", "\\<")
     .replaceAll(">", "\\>");
-}
-
-function scheduleStateLabel(state: string): string {
-  switch (state) {
-    case "ACTIVE":
-    case "PENDING":
-    case "EXECUTING":
-    case "RETRY_PENDING":
-    case "CANCELLED":
-    case "COMPLETED":
-    case "FAILED":
-    case "SKIPPED":
-      return `**${state}**`;
-    default:
-      return "**UNKNOWN**";
-  }
-}
-
-function recurringTimeLabel(status: string, occurrence: string | null, compact = false): string {
-  if (status === "CANCELLED") return compact ? "Historical" : "Historical scheduled time";
-  if (occurrence === "PENDING") return compact ? "Next" : "Next scheduled occurrence";
-  if (occurrence === null)
-    return compact ? "Last materialized" : "Last materialized scheduled time";
-  return compact ? "Current" : "Current occurrence scheduled time";
 }
 
 function recurrenceInputGuidance(field?: RecurringInputField): string {
@@ -1131,43 +1105,6 @@ function scheduledMessageEditableLoadMessage(
     case "UNAVAILABLE":
       return "WEFT could not load the scheduled message. Please try again later.";
   }
-}
-
-function scheduledMessageListMessage(
-  result: Awaited<ReturnType<ScheduledMessageCommandService["list"]>>,
-  page: number,
-): string {
-  if (result.outcome === "INVALID_PAGE") return "Page must be a positive integer.";
-  if (result.outcome === "UNAVAILABLE") {
-    return "WEFT could not load scheduled messages. Please try again later.";
-  }
-  if (result.schedules.length === 0) {
-    return `No active or executing scheduled messages were found on page ${page}.`;
-  }
-  const displayError =
-    "WEFT could not display the complete scheduled-message page safely. No schedules were displayed.";
-  if (result.schedules.some((schedule) => !Number.isFinite(schedule.executeAt.getTime()))) {
-    return displayError;
-  }
-  const rows = result.schedules.map((schedule) => {
-    const when = Math.floor(schedule.executeAt.getTime() / 1_000);
-    const creator = `<@${schedule.creatorUserId}> (\`${schedule.creatorUserId}\`)`;
-    if ("kind" in schedule && schedule.kind === "RECURRING") {
-      const label = recurringTimeLabel(schedule.status, schedule.currentOccurrenceStatus, true);
-      const occurrence =
-        schedule.currentOccurrenceStatus === null
-          ? "none"
-          : scheduleStateLabel(schedule.currentOccurrenceStatus);
-      return `- \`${schedule.scheduledActionId}\` Recurring ${schedule.frequency === "DAILY" ? "daily" : "weekly"} · ${scheduleStateLabel(schedule.status)} / ${occurrence}\n  ${label}: <t:${when}:F> · By: ${creator}`;
-    }
-    return `- \`${schedule.scheduledActionId}\` One-time · ${scheduleStateLabel(schedule.status)}\n  Scheduled: <t:${when}:F> · By: ${creator}`;
-  });
-  const content = [
-    `Scheduled messages — page ${page} (series / occurrence)`,
-    ...rows,
-    "Details: /message schedule status id:<schedule-id>.",
-  ].join("\n");
-  return content.length <= 2000 ? content : displayError;
 }
 
 function scheduledMessageEditResultMessage(

@@ -1,3 +1,7 @@
+import {
+  createScheduledMessageListNavigation,
+  type ScheduledMessageListNavigation,
+} from "../../src/messages/scheduled-message-list.js";
 import type { CommandDependencies } from "../../src/commands.js";
 import {
   ChannelType,
@@ -1093,6 +1097,7 @@ function registerTestCommandHandler(
     autoOpen: vi.fn(),
   } as unknown as ThreadLifecycleService,
   ingress?: ApplicationIngress,
+  scheduledMessageLists: ScheduledMessageListNavigation = { start: vi.fn(), navigate: vi.fn() },
 ): void {
   registerDiscordCommandHandler(
     client,
@@ -1129,6 +1134,7 @@ function registerTestCommandHandler(
         edit: vi.fn(),
         reschedule: vi.fn(),
       },
+      scheduledMessageLists,
       scheduledThreadClose: { schedule: vi.fn(), cancel: vi.fn(), closeManually: vi.fn() },
       threadLifecycle: lifecycle,
       logger,
@@ -1533,3 +1539,210 @@ it.each(["success", "rejected", "ambiguous"])(
     await f.client.destroy();
   },
 );
+
+describe("scheduled-list dispatcher ownership", () => {
+  function listFixture(ingress?: ApplicationIngress) {
+    const client = createDiscordClient(createLogger(), discordDependencies);
+    const list = vi.fn<ScheduledMessageCommandService["list"]>().mockResolvedValue({
+      outcome: "FOUND",
+      hasNext: true,
+      schedules: [
+        {
+          scheduledActionId: "schedule",
+          status: "ACTIVE",
+          creatorUserId: "actor",
+          executeAt: new Date("2030-01-01"),
+        },
+      ],
+    });
+    const lists = createScheduledMessageListNavigation({ list });
+    registerTestCommandHandler(client, createLogger(), undefined, ingress, lists);
+    function interaction() {
+      return {
+        createdTimestamp: Date.now(),
+        commandName: "message",
+        customId: "",
+        isChatInputCommand: () => true,
+        isButton: () => false,
+        isModalSubmit: () => false,
+        isStringSelectMenu: () => false,
+        inGuild: () => true,
+        options: {
+          getSubcommand: () => "list",
+          getSubcommandGroup: () => "schedule",
+          getString: vi.fn(),
+          getInteger: vi.fn(() => 99),
+        },
+        guildId: "guild",
+        channelId: "channel",
+        channel: { type: ChannelType.GuildText },
+        memberPermissions: { has: () => true },
+        user: { id: "actor" },
+        message: { id: "message" },
+        reply: vi.fn().mockResolvedValue(undefined),
+        followUp: vi.fn().mockResolvedValue(undefined),
+        deferReply: vi.fn().mockResolvedValue(undefined),
+        deferUpdate: vi.fn().mockResolvedValue(undefined),
+        editReply: vi.fn().mockResolvedValue({ id: "message" }),
+      };
+    }
+    return { client, list, lists, interaction };
+  }
+  it("routes slash page 1 and only scheduled-list Buttons through ingress", async () => {
+    vi.useFakeTimers();
+    const ingress: ApplicationIngress = {
+      run: <T>(operation: () => T | Promise<T>) => Promise.resolve(operation()),
+    };
+    vi.spyOn(ingress, "run");
+    const f = listFixture(ingress);
+    try {
+      const slash = f.interaction();
+      f.client.emit(Events.InteractionCreate, slash as unknown as ChatInputCommandInteraction);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.list).toHaveBeenCalledExactlyOnceWith({
+        guildId: "guild",
+        channelId: "channel",
+        page: 1,
+      });
+      expect(slash.options.getInteger).not.toHaveBeenCalled();
+      const ids = JSON.parse(JSON.stringify(slash.editReply.mock.calls[0]![0])) as {
+        components: { components: { custom_id: string }[] }[];
+      };
+      const button = {
+        ...f.interaction(),
+        customId: ids.components[0]!.components[1]!.custom_id,
+        isChatInputCommand: () => false,
+        isButton: () => true,
+      };
+      f.client.emit(Events.InteractionCreate, button as unknown as ButtonInteraction);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(f.list).toHaveBeenLastCalledWith({ guildId: "guild", channelId: "channel", page: 2 });
+      expect(ingress.run).toHaveBeenCalledTimes(2);
+      for (const customId of ["unrelated:button", "lp:unrelated", "btc:unrelated"]) {
+        f.client.emit(Events.InteractionCreate, {
+          ...button,
+          customId,
+        } as unknown as ButtonInteraction);
+      }
+      f.client.emit(Events.InteractionCreate, {
+        ...button,
+        isButton: () => false,
+        isModalSubmit: () => true,
+      } as unknown as ModalSubmitInteraction);
+      // The btc namespace has its own admitted route. Other namespaces and sml Modals are untouched.
+      expect(ingress.run).toHaveBeenCalledTimes(3);
+      expect(f.list).toHaveBeenCalledTimes(2);
+    } finally {
+      await f.client.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["resolve", "reject"] as const)(
+    "drains a timed-out initial Slash edit through late %s without a recovery write",
+    async (ending) => {
+      vi.useFakeTimers();
+      const owner = createModalApplicationRuntime();
+      const f = listFixture(owner.runtime.ingress);
+      try {
+        await owner.runtime.start();
+        const slash = f.interaction();
+        const edit = Promise.withResolvers<{ id: string }>();
+        slash.editReply.mockReturnValueOnce(edit.promise);
+        f.client.emit(Events.InteractionCreate, slash as unknown as ChatInputCommandInteraction);
+        await vi.advanceTimersByTimeAsync(2501);
+        expect(slash.deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+        expect(f.list).toHaveBeenCalledOnce();
+        expect(slash.editReply).toHaveBeenCalledOnce();
+        expect(slash.followUp).not.toHaveBeenCalled();
+        expect(slash.reply).not.toHaveBeenCalled();
+        const shutdown = owner.runtime.shutdown("SIGTERM");
+        await vi.advanceTimersByTimeAsync(0);
+        const refused = f.interaction();
+        f.client.emit(Events.InteractionCreate, refused as unknown as ChatInputCommandInteraction);
+        expect(refused.deferReply).not.toHaveBeenCalled();
+        expect(refused.editReply).not.toHaveBeenCalled();
+        expect(owner.stopPgBoss).not.toHaveBeenCalled();
+        expect(owner.destroyDiscord).not.toHaveBeenCalled();
+        expect(owner.closeDatabase).not.toHaveBeenCalled();
+        if (ending === "resolve") edit.resolve({ id: "message" });
+        else edit.reject(new Error("late initial edit response loss"));
+        await shutdown;
+        expect(owner.runtime.getState()).toBe("STOPPED");
+        expect(owner.stopPgBoss).toHaveBeenCalledOnce();
+        expect(owner.destroyDiscord).toHaveBeenCalledOnce();
+        expect(owner.closeDatabase).toHaveBeenCalledOnce();
+        expect(slash.editReply).toHaveBeenCalledOnce();
+        expect(slash.followUp).not.toHaveBeenCalled();
+        expect(slash.reply).not.toHaveBeenCalled();
+        expect(slash.deferReply).toHaveBeenCalledOnce();
+      } finally {
+        await f.client.destroy();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["ack", "read", "edit", "follow-up"] as const)(
+    "drains timed-out scheduled navigation raw %s before closing shared resources",
+    async (stage) => {
+      vi.useFakeTimers();
+      const owner = createModalApplicationRuntime();
+      const f = listFixture(owner.runtime.ingress);
+      try {
+        const beforeReady = f.interaction();
+        f.client.emit(
+          Events.InteractionCreate,
+          beforeReady as unknown as ChatInputCommandInteraction,
+        );
+        expect(beforeReady.deferReply).not.toHaveBeenCalled();
+        await owner.runtime.start();
+        const slash = f.interaction();
+        f.client.emit(Events.InteractionCreate, slash as unknown as ChatInputCommandInteraction);
+        await vi.advanceTimersByTimeAsync(0);
+        const ids = JSON.parse(JSON.stringify(slash.editReply.mock.calls[0]![0])) as {
+          components: { components: { custom_id: string }[] }[];
+        };
+        const button = {
+          ...f.interaction(),
+          customId: ids.components[0]!.components[1]!.custom_id,
+          isChatInputCommand: () => false,
+          isButton: () => true,
+        };
+        const pending = Promise.withResolvers<never>();
+        if (stage === "ack") button.deferUpdate.mockReturnValueOnce(pending.promise);
+        if (stage === "read") f.list.mockReturnValueOnce(pending.promise);
+        if (stage === "edit") button.editReply.mockReturnValueOnce(pending.promise);
+        if (stage === "follow-up") {
+          f.list.mockResolvedValueOnce({ outcome: "UNAVAILABLE" });
+          button.followUp.mockReturnValueOnce(pending.promise);
+        }
+        f.client.emit(Events.InteractionCreate, button as unknown as ButtonInteraction);
+        await vi.advanceTimersByTimeAsync(2501);
+        const shutdown = owner.runtime.shutdown("SIGTERM");
+        const refused = {
+          ...f.interaction(),
+          customId: button.customId,
+          isChatInputCommand: () => false,
+          isButton: () => true,
+        };
+        f.client.emit(Events.InteractionCreate, refused as unknown as ButtonInteraction);
+        expect(refused.deferUpdate).not.toHaveBeenCalled();
+        expect(refused.reply).not.toHaveBeenCalled();
+        expect(owner.stopPgBoss).not.toHaveBeenCalled();
+        expect(owner.destroyDiscord).not.toHaveBeenCalled();
+        expect(owner.closeDatabase).not.toHaveBeenCalled();
+        pending.reject(new Error("private late transport failure"));
+        await shutdown;
+        expect(owner.stopPgBoss).toHaveBeenCalledOnce();
+        expect(owner.destroyDiscord).toHaveBeenCalledOnce();
+        expect(owner.closeDatabase).toHaveBeenCalledOnce();
+        expect(owner.runtime.getState()).toBe("STOPPED");
+        expect(button.editReply).toHaveBeenCalledTimes(stage === "edit" ? 1 : 0);
+      } finally {
+        await f.client.destroy();
+        vi.useRealTimers();
+      }
+    },
+  );
+});

@@ -1120,7 +1120,7 @@ Scheduled messages expose these commands:
 /message schedule recurring-create frequency:<daily|weekly> time:<HH:MM> [weekdays:<weekday-list>] [timezone:<IANA>]
 /message schedule cancel id:<schedule-id>
 /message schedule status id:<schedule-id>
-/message schedule list [page:<positive-integer>]
+/message schedule list
 /message schedule edit id:<schedule-id>
 /message schedule reschedule id:<schedule-id> [after:<duration>] [at:<local-datetime>]
 /message schedule recurrence-edit id:<schedule-id> frequency:<daily|weekly> time:<HH:MM> [weekdays:<weekday-list>] [timezone:<IANA>]
@@ -1230,7 +1230,54 @@ Completed status includes a canonical Discord message link when the result messa
 For one-time messages, list includes `ACTIVE` and `EXECUTING` rows. The combined list uses the
 same current-guild/channel scope, execution-time and schedule-ID ordering, and fixed ten-row pages.
 Each row contains the full schedule ID, status, execution time, and creator ID. It never returns
-scheduled content and performs no Discord, pg-boss, repair, or database mutation work.
+scheduled content. The metadata read performs no Discord, pg-boss, repair, or database mutation work.
+
+The public list command always starts at page 1, with ephemeral Previous/Next buttons in a normal
+Action Row and an explicit page number. Previous is disabled on page 1; Next is disabled without a
+following page. An empty first page has no controls; an empty later page permits only Previous.
+The query reads at most eleven rows at OFFSET `(page - 1) * 10`, reports `hasNext` from the eleventh,
+and displays the first ten. It preserves the current-occurrence LEFT JOIN and its partial unique
+index cardinality, metadata projection, state filters, and deterministic ordering. Navigation
+always reads fresh PostgreSQL state. Concurrent changes can move or duplicate entries between
+pages; pages are not a persistent snapshot. Pagination creates no schedule mutation or audit.
+
+List navigation uses dedicated process-local sessions, limited to 128 records with a fixed
+five-minute lifetime from creation and lazy cleanup without a timer. Sessions contain only random
+UUID identity, invoking user, guild, channel, original response message ID, page, revision,
+`hasNext`, expiry, state, and operation ownership. They contain no schedule rows, message payload,
+Discord tokens, or retained interaction objects. Unsettled raw work continues to occupy capacity
+even after timeout or expiration. Capacity exhaustion safely rejects a new list. Restart invalidates
+all old controls.
+
+Each button validates its type, exact namespace/version, canonical UUID and nonnegative integer
+revision, action, length, session identity, user, guild, channel, original response message,
+expiry, revision, and page boundary. It rechecks current interaction `ManageMessages`; this is a
+point-in-time permission check, not an atomic guarantee against changes during a database read.
+Page numbers come from session state rather than user-controlled custom-ID values. Single-flight
+ownership is acquired synchronously before the first await. Busy clicks are rejected without a
+queue or another read/edit. Only confirmed ACK permits a fresh read, and only confirmed Discord
+edit commits page/revision/`hasNext`. Controls carrying a proposed revision remain unusable until
+the edit settles. Every original response edit explicitly supplies content, components, and
+`allowedMentions: { parse: [] }`; responses removing controls supply `components: []`.
+
+ACK response loss never triggers a second initial response or a read. Read failure is never an
+empty page. Timeout revokes late publication authority but does not cancel or release ownership
+of physical work. An unconfirmed edit retires the session and causes no competing recovery write
+of the original message. Once an initial Slash response edit has been attempted, neither another
+edit nor a follow-up may be sent: Discord can treat the first follow-up after `deferReply` as an
+original-response edit. Recovery guidance may therefore be unavailable. Before any initial edit
+attempt, a failed initial read may still produce one bounded error edit with empty components.
+Button navigation after confirmed `deferUpdate` retains one best-effort ephemeral follow-up asking
+for a new list. Late settlement never revives a retired session or starts another recovery write.
+Every raw ACK, read, edit, and follow-up remains owned by the admitted handler until settlement under
+ApplicationIngress and the existing shared shutdown deadline. Shutdown closes new admission; no
+new shutdown coordinator or cleanup timer is introduced.
+
+List rendering preserves complete schedule/creator IDs, creator mentions with mention suppression,
+one-time/recurring kinds, bold uppercase series/occurrence states, and accurate timestamp labels.
+The complete content, including page header and guidance, must fit 2,000 UTF-16 code units. Unsafe
+rendering uses a bounded fallback with no controls; it never truncates essential IDs or silently
+omits entries. Custom IDs are at most 100 characters and components stay within Discord limits.
 
 Edit is available only while a one-time schedule remains `ACTIVE`. It loads the current canonical
 managed-message payload into the existing five-field modal and binds the form to the persisted

@@ -141,7 +141,7 @@ export type EditScheduledMessageCommandResult =
 export type CombinedScheduledMessageStatusResult =
   ScheduledMessageStatusResult | { outcome: "FOUND"; schedule: RecurringAdministrationView };
 export type CombinedScheduledMessageListResult =
-  | { outcome: "FOUND"; schedules: CombinedScheduleListItem[] }
+  | { outcome: "FOUND"; schedules: CombinedScheduleListItem[]; hasNext: boolean }
   | { outcome: "UNAVAILABLE" }
   | { outcome: "INVALID_PAGE" };
 
@@ -820,10 +820,7 @@ export function createScheduledMessageCommandService({
       if (!Number.isSafeInteger(offset)) return { outcome: "INVALID_PAGE" };
       try {
         if (administration !== undefined)
-          return {
-            outcome: "FOUND",
-            schedules: await administration.listCombined(input.guildId, input.channelId, offset),
-          };
+          return await administration.listCombined(input.guildId, input.channelId, offset);
         return await store.listNonterminal(input.guildId, input.channelId, offset);
       } catch {
         return { outcome: "UNAVAILABLE" };

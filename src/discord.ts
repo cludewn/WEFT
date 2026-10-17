@@ -1,3 +1,4 @@
+import { SCHEDULED_LIST_PREFIX } from "./messages/scheduled-message-list.js";
 import { Client, Events, GatewayDispatchEvents, GatewayIntentBits, RESTEvents } from "discord.js";
 
 import {
@@ -208,6 +209,18 @@ export function registerDiscordCommandHandler(
   ingress: ApplicationIngress = openIngress,
 ): void {
   client.on(Events.InteractionCreate, (interaction) => {
+    if (interaction.isButton?.() && interaction.customId.startsWith(SCHEDULED_LIST_PREFIX)) {
+      const invocation = ingress.run(() =>
+        dependencies.scheduledMessageLists.navigate(interaction),
+      );
+      void invocation?.catch(() =>
+        dependencies.logger.error(
+          { event: "scheduled_list_component_failed" },
+          "Scheduled list component handling failed",
+        ),
+      );
+      return;
+    }
     if (
       !interaction.isChatInputCommand() &&
       (interaction.isButton?.() ||

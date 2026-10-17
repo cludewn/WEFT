@@ -73,7 +73,7 @@ function fixture() {
   const now = vi.fn(() => establishedAt);
   const logger = { warn: vi.fn() };
   const listNonterminal = vi.fn<ScheduledMessageStore["listNonterminal"]>(() =>
-    Promise.resolve({ outcome: "FOUND", schedules: [] }),
+    Promise.resolve({ outcome: "FOUND", hasNext: false, schedules: [] }),
   );
   const findEditable = vi.fn<ScheduledMessageStore["findEditable"]>(() =>
     Promise.resolve({ outcome: "NOT_FOUND_OR_WRONG_CONTEXT" }),
@@ -129,6 +129,7 @@ function fixture() {
     create,
     cancel,
     findStatus,
+    listNonterminal,
     definition,
     findEditable,
     edit,
@@ -249,6 +250,39 @@ describe("scheduled message command service", () => {
       f.service.list({ guildId: "guild-id", channelId: "channel-id", page: 0 }),
     ).resolves.toEqual({ outcome: "INVALID_PAGE" });
   });
+
+  it.each([1, 2, 3])(
+    "preserves fallback hasNext with a ten-row offset on page %i",
+    async (page) => {
+      const f = fixture();
+      f.listNonterminal.mockResolvedValueOnce({ outcome: "FOUND", schedules: [], hasNext: true });
+      await expect(
+        f.service.list({ guildId: "guild", channelId: "channel", page }),
+      ).resolves.toEqual({
+        outcome: "FOUND",
+        schedules: [],
+        hasNext: true,
+      });
+      expect(f.listNonterminal).toHaveBeenCalledExactlyOnceWith(
+        "guild",
+        "channel",
+        (page - 1) * 10,
+      );
+      expect(f.create).not.toHaveBeenCalled();
+      expect(f.cancel).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER, 900_719_925_474_101])(
+    "rejects invalid or overflowed page %s before the fallback query",
+    async (page) => {
+      const f = fixture();
+      await expect(
+        f.service.list({ guildId: "guild", channelId: "channel", page }),
+      ).resolves.toEqual({ outcome: "INVALID_PAGE" });
+      expect(f.listNonterminal).not.toHaveBeenCalled();
+    },
+  );
 
   it("reschedules relative to one establishment time and repairs the authoritative projection", async () => {
     const f = fixture();

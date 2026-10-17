@@ -76,8 +76,8 @@ describe("scheduled message administration persistence", () => {
 
     const first = await store.listNonterminal(guildId, channelId, 0);
     const second = await store.listNonterminal(guildId, channelId, 10);
-    expect(first).toMatchObject({ outcome: "FOUND" });
-    expect(second).toMatchObject({ outcome: "FOUND" });
+    expect(first).toMatchObject({ outcome: "FOUND", hasNext: true });
+    expect(second).toMatchObject({ outcome: "FOUND", hasNext: false });
     if (first.outcome !== "FOUND" || second.outcome !== "FOUND") throw new Error("list failed");
     expect(first.schedules).toHaveLength(10);
     expect(second.schedules).toHaveLength(1);
@@ -97,6 +97,60 @@ describe("scheduled message administration persistence", () => {
       "status",
     ]);
   });
+
+  it.each([0, 1, 10, 11, 20, 21])(
+    "uses eleven-row lookahead for %i one-time records without writes",
+    async (count) => {
+      for (let index = count - 1; index >= 0; index--) {
+        await store.create(
+          creation(`boundary-${index.toString().padStart(2, "0")}`, baseTime, "private"),
+        );
+      }
+      const auditsBefore = await database.client
+        .select()
+        .from(scheduledMessageAudits)
+        .where(eq(scheduledMessageAudits.guildId, guildId))
+        .orderBy(asc(scheduledMessageAudits.id));
+      const actionsBefore = await database.client
+        .select()
+        .from(scheduledActions)
+        .where(eq(scheduledActions.guildId, guildId));
+      for (let page = 1; page <= 4; page++) {
+        const result = await store.listNonterminal(guildId, channelId, (page - 1) * 10);
+        if (result.outcome !== "FOUND") throw new Error("Expected list");
+        expect(result.hasNext).toBe(count > page * 10);
+        expect(result.schedules.map((row) => row.scheduledActionId)).toEqual(
+          Array.from(
+            { length: count },
+            (_, i) => `boundary-${i.toString().padStart(2, "0")}`,
+          ).slice((page - 1) * 10, page * 10),
+        );
+      }
+      expect(await store.listNonterminal("wrong-guild", channelId, 0)).toEqual({
+        outcome: "FOUND",
+        schedules: [],
+        hasNext: false,
+      });
+      expect(await store.listNonterminal(guildId, "wrong-channel", 0)).toEqual({
+        outcome: "FOUND",
+        schedules: [],
+        hasNext: false,
+      });
+      expect(
+        await database.client
+          .select()
+          .from(scheduledMessageAudits)
+          .where(eq(scheduledMessageAudits.guildId, guildId))
+          .orderBy(asc(scheduledMessageAudits.id)),
+      ).toEqual(auditsBefore);
+      expect(
+        await database.client
+          .select()
+          .from(scheduledActions)
+          .where(eq(scheduledActions.guildId, guildId)),
+      ).toEqual(actionsBefore);
+    },
+  );
 
   it("does not disclose a wrong-context payload and distinguishes lifecycle states", async () => {
     const active = await store.create(creation("editable-active", baseTime, "private payload"));
