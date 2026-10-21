@@ -182,6 +182,50 @@ pg-boss, Discord, and the application database close. The existing 30-second pro
 remains the sole timeout authority. Compose checks readiness from inside the app container; the
 health port is not published.
 
+### English and Japanese localization (Issue #122)
+
+The complete implemented MVP user interface supports canonical English (`en-US`) and Japanese
+(`ja`): all application command descriptions and fixed choice names; configuration, thread,
+managed-message and scheduling responses; validation and authorization errors; every WEFT-authored
+Modal, Button and Select; bulk-close and list views; link previews; optional audit notifications; and thread rename/close
+reasons in Discord standard audit logs.
+User-authored content and names, operational logs, database history and technical identities are
+not translated. Bilingual Wiki publication remains separate work.
+
+Each interaction resolves its own `interaction.locale`: exactly `ja` selects Japanese; all other,
+missing or invalid values select `en-US`. Never use guild locale, timezone or database preferences
+for interaction language, retain locale across interactions, or encode it in custom IDs. A Modal
+uses its opening interaction's locale; submission and each Button/Select action resolve anew.
+Background output uses the available guild's `preferredLocale` obtained synchronously from existing
+Guild information. Missing/unavailable guilds and unsupported locales use English. No extra REST
+lookup, Gateway intent or persistent preference is introduced solely to select language.
+
+English defines stable semantic translation keys and named parameter contracts. Japanese must
+cover all keys with compatible argument types. Missing, empty, invalid or throwing Japanese entries
+fall back synchronously to the same English key and arguments. Production omissions fail ordinary
+validation; canonical rendering failure raises an error rather than inventing success. Translation
+performs no I/O and never decides business behavior. See the development guide's localization
+inventory, bilingual glossary, style conventions and coverage procedure.
+
+Command names, group/subcommand/option names, choice values, required constraints and ordering,
+permissions, contexts and registration paths remain stable. Only descriptions and fixed choice
+names gain Japanese metadata. Redeploy definitions separately to the Guild/Global scopes actually
+in use; runtime restart does not register commands.
+
+Keep identifiers, timestamps, input syntax, stored enums, audit/operation codes, serialized payloads,
+custom IDs and Modal fields stable. Preserve required uppercase status display, translating only
+surrounding explanation. Never classify state or control availability from translated text.
+Scheduled-list rendering returns typed content/displayability evidence; unsafe complete pages
+have no controls in either language and never truncate essential IDs or change page size.
+
+Preserve authorization, ACK deadlines and ownership, ephemeral responses, context-specific Markdown
+escaping, mention suppression, privacy, service calls, persistence, auditing, retry, reconciliation
+and shutdown. No language-dependent mutation path or retry is allowed. Distinguish confirmed
+success, no change, PENDING work still owned by WEFT, UNCONFIRMED outcomes, confirmed failures and
+PARTIAL historical effects. Saved schedules with delivery awaiting reconciliation remain saved;
+cancelled schedules with cleanup awaiting confirmation remain cancelled. Compensation wording must
+state only established effects and never infer current residual state from historical PARTIAL.
+
 ### Guild configuration
 
 WEFT must store configuration separately for each guild.
@@ -655,8 +699,8 @@ A Discord mutation may remain pending after the command stops waiting synchronou
 result. Normal discord.js rate-limit queueing is not a failure or an unknown outcome solely
 because it exceeds the caller wait budget. In this case, WEFT must:
 
-- tell the caller that Discord is still processing the update, that rate limiting thread-name changes
-  can be one cause without asserting it is the cause, and that completion may take several minutes,
+- tell the caller that WEFT is still processing or confirming the operation, that Discord rate limits
+  can cause delays without asserting they are the cause, and that completion may take several minutes,
 - continue tracking the raw mutation without aborting it because the caller wait budget expired,
 - prevent another Discord mutation for the same thread until mutation finalization completes,
 - treat a later successful Discord response as confirmed success without an extra Discord fetch,
@@ -987,6 +1031,14 @@ The managed rich embed supports only a title, description, color, and image URL.
 footer, author, thumbnail, title URL, timestamp, raw embed JSON, and multiple managed embeds are not
 supported. The modal maximums are 2000 Unicode code points for plain content, 256 UTF-16 code units
 for the title, 4000 UTF-16 code units for the description, and 2048 code units for the image URL.
+
+After checking the original content's type and length, WEFT normalizes whitespace-only content
+(as defined by ECMAScript `trim`) to an empty string. Nonblank content retains all leading/trailing
+whitespace and newlines. Empty content is accepted when a valid embed has a title, description or
+image URL; otherwise the payload is rejected with `EMPTY_CONTENT`. A color-only embed is rejected
+with `EMBED_COLOR_ONLY`, even when text is present. Embed validation precedes the final empty-payload
+check, so whitespace-only input follows the same embed error precedence as empty content.
+All send, edit and scheduled-post payload paths use this normalization before sending or persistence.
 
 Embed title and description are outer-trimmed while internal whitespace is preserved. Blank embed
 fields are absent. Color accepts exactly `RRGGBB` or `#RRGGBB`, is normalized to an integer, and is

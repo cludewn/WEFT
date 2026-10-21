@@ -40,7 +40,7 @@ describe("audit notification format", () => {
   it("renders bounded metadata with inert IDs and a source-separated stable nonce", () => {
     const first = formatAuditNotification(record)!;
     expect(first.content).toContain(`Audit ID: \`${auditId}\``);
-    expect(first.content).toContain("Actor ID: `100000000000000002`");
+    expect(first.content).toContain("Actor user ID: `100000000000000002`");
     expect(first.content).not.toMatch(/<@|@everyone|@here/);
     expect(first.content.length).toBeLessThan(2000);
     expect(formatAuditNotification(record)?.nonce).toBe(first.nonce);
@@ -61,8 +61,8 @@ describe("audit notification format", () => {
         "Source: `THREAD`",
         "Event: `CLOSE`",
         "Outcome: `SUCCESS`",
-        "Actor: `USER`",
-        `Actor ID: \`${actorId}\``,
+        "Actor type: `USER`",
+        `Actor user ID: \`${actorId}\``,
         "Thread ID: `100000000000000003`",
       ],
     },
@@ -84,7 +84,7 @@ describe("audit notification format", () => {
         "Source: `SCHEDULED_THREAD_CLOSE`",
         "Event: `EXECUTION_FAILED`",
         "Outcome: `FAILURE`",
-        "Actor: `SYSTEM`",
+        "Actor type: `SYSTEM`",
         "Thread ID: `100000000000000003`",
         "Scheduled action ID: `action-close`",
         "Failure code: `BOT_PERMISSION_MISSING`",
@@ -108,8 +108,8 @@ describe("audit notification format", () => {
         "Source: `MANAGED_MESSAGE`",
         "Event: `CREATED`",
         "Outcome: `SUCCESS`",
-        "Actor: `USER`",
-        `Actor ID: \`${actorId}\``,
+        "Actor type: `USER`",
+        `Actor user ID: \`${actorId}\``,
         "Channel ID: `100000000000000004`",
         "Message ID: `100000000000000005`",
       ],
@@ -132,7 +132,7 @@ describe("audit notification format", () => {
         "Source: `SCHEDULED_MESSAGE`",
         "Event: `EXECUTION_RETRY`",
         "Outcome: `FAILURE`",
-        "Actor: `SYSTEM`",
+        "Actor type: `SYSTEM`",
         "Channel ID: `100000000000000004`",
         "Scheduled action ID: `action-message`",
         "Failure code: `CURRENT_STATE_CHECK_FAILED`",
@@ -156,7 +156,7 @@ describe("audit notification format", () => {
         "Source: `RECURRING_MESSAGE`",
         "Event: `DST_GAP_SKIPPED`",
         "Outcome: `SKIPPED`",
-        "Actor: `SYSTEM`",
+        "Actor type: `SYSTEM`",
         "Channel ID: `100000000000000004`",
         "Scheduled action ID: `action-recurring`",
         "Skip reason: `DST_GAP`",
@@ -180,8 +180,8 @@ describe("audit notification format", () => {
         "Source: `AUDIT_LOG_DESTINATION`",
         "Event: `CHANGE`",
         "Outcome: `SUCCESS`",
-        "Actor: `USER`",
-        `Actor ID: \`${actorId}\``,
+        "Actor type: `USER`",
+        `Actor user ID: \`${actorId}\``,
         "Previous destination ID: `100000000000000006`",
         "New destination ID: `100000000000000007`",
       ],

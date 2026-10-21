@@ -589,6 +589,7 @@ function button(f: ReturnType<typeof fixture>, patch: object = {}) {
   const deferReply = vi.fn(() => Promise.resolve(undefined));
   const editReply = vi.fn(() => Promise.resolve(undefined));
   const interaction = {
+    locale: "en-US",
     customId: previewCustomId(target),
     inGuild: () => true,
     guildId: "1",
@@ -1503,4 +1504,282 @@ describe("candidate budgets, overflow rendering and privacy", () => {
     expect(f.classify).not.toHaveBeenCalled();
     expect(f.post).not.toHaveBeenCalled();
   });
+});
+
+describe("localized preview background and Button paths", () => {
+  it.each([
+    [{ available: true, preferredLocale: "ja" }, "プレビュー1", "ほか4件"],
+    [{ available: true, preferredLocale: "en-US" }, "Preview 1", "+4 more"],
+    [{ available: true, preferredLocale: "en-GB" }, "Preview 1", "+4 more"],
+    [{ available: true, preferredLocale: null }, "Preview 1", "+4 more"],
+    [{ available: false, preferredLocale: "ja" }, "Preview 1", "+4 more"],
+    [undefined, "Preview 1", "+4 more"],
+  ] as const)(
+    "uses existing Guild locale %j without any locale REST lookup",
+    async (guild, label, more) => {
+      const f = fixture();
+      const service = createLinkPreviewService({
+        readMode: () => Promise.resolve("button-only"),
+        discord: f.discord,
+        log: vi.fn(),
+      });
+      const operations: Promise<unknown>[] = [];
+      registerLinkPreviewHandlers(
+        f.client,
+        service,
+        { debug: vi.fn() },
+        {
+          run: (work) => {
+            const operation = Promise.resolve(work());
+            operations.push(operation);
+            return operation;
+          },
+        },
+      );
+      const content = Array.from(
+        { length: 7 },
+        (_, index) => `https://discord.com/channels/1/2/${index + 3}`,
+      ).join(" ");
+      f.client.emit(Events.MessageCreate, {
+        inGuild: () => true,
+        guildId: "1",
+        channelId: "4",
+        id: "5",
+        guild,
+        author: { id: "9", bot: false },
+        content,
+        type: 0,
+        system: false,
+        webhookId: null,
+        channel: { type: C.GuildText },
+      } as never);
+      await Promise.all(operations);
+      expect(f.post).toHaveBeenCalledOnce();
+      expect(f.post.mock.calls[0]![1].body).toMatchObject({
+        content: more,
+        components: [
+          {
+            components: [
+              { label, custom_id: "lp:1:1:2:3" },
+              { custom_id: "lp:1:1:2:4" },
+              { custom_id: "lp:1:1:2:5" },
+            ],
+          },
+        ],
+        allowed_mentions: { parse: [], replied_user: false },
+        nonce: previewNonce({ guildId: "1", channelId: "4", messageId: "5" }),
+        enforce_nonce: true,
+      });
+      expect(f.get.mock.calls.map(([route]) => route).sort()).toEqual(
+        [
+          "/channels/4",
+          "/guilds/1",
+          "/guilds/1/roles",
+          "/guilds/1/members/8",
+          "/channels/4",
+          "/guilds/1",
+          "/guilds/1/roles",
+          "/guilds/1/members/8",
+        ].sort(),
+      );
+    },
+  );
+
+  it.each([
+    ["ja", "ja", "プレビュー", "元のメッセージを開く"],
+    ["ja", "en-US", "プレビュー", "Open original"],
+    ["en-US", "ja", "Preview", "元のメッセージを開く"],
+    ["en-US", "en-US", "Preview", "Open original"],
+  ])(
+    "keeps Guild %s labels separate from Button locale %s and leaves historical replies intact",
+    async (preferredLocale, locale, initialLabel, originalLabel) => {
+      const f = fixture();
+      const service = createLinkPreviewService({
+        readMode: () => Promise.resolve("button-only"),
+        discord: f.discord,
+        log: vi.fn(),
+      });
+      const operations: Promise<unknown>[] = [];
+      const logger = { debug: vi.fn() };
+      registerLinkPreviewHandlers(f.client, service, logger, {
+        run: (work) => {
+          const operation = Promise.resolve(work());
+          operations.push(operation);
+          return operation;
+        },
+      });
+      const guild = { available: true, preferredLocale };
+      const source = {
+        inGuild: () => true,
+        guildId: "1",
+        channelId: "4",
+        id: "5",
+        guild,
+        author: { id: "9", bot: false },
+        content: originalUrl(target),
+        type: 0,
+        system: false,
+        webhookId: null,
+        channel: { type: C.GuildText },
+      };
+      f.client.emit(Events.MessageCreate, source as never);
+      await Promise.all(operations.splice(0));
+      const expectedInitial = {
+        components: [
+          {
+            type: 1,
+            components: [
+              {
+                type: 2,
+                style: ButtonStyle.Secondary,
+                label: initialLabel,
+                custom_id: "lp:1:1:2:3",
+              },
+            ],
+          },
+        ],
+        allowed_mentions: { parse: [], replied_user: false },
+        message_reference: {
+          message_id: "5",
+          channel_id: "4",
+          guild_id: "1",
+          fail_if_not_exists: true,
+        },
+        nonce: previewNonce({ guildId: "1", channelId: "4", messageId: "5" }),
+        enforce_nonce: true,
+      };
+      expect(f.post).toHaveBeenCalledExactlyOnceWith("/channels/4/messages", {
+        body: expectedInitial,
+      });
+      expect(f.get).toHaveBeenCalledTimes(8);
+      const b = button(f, {
+        locale,
+        guildLocale: locale === "ja" ? "en-US" : "ja",
+        isButton: () => true,
+      });
+      f.client.emit(Events.InteractionCreate, b.interaction);
+      await Promise.all(operations.splice(0));
+      expect(b.deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+      expect(b.editReply).toHaveBeenCalledExactlyOnceWith({
+        embeds: [expect.objectContaining({ description: "SECRET_CONTENT" })],
+        components: [
+          {
+            type: 1,
+            components: [
+              { type: 2, style: ButtonStyle.Link, label: originalLabel, url: originalUrl(target) },
+            ],
+          },
+        ],
+        allowedMentions: { parse: [], repliedUser: false },
+      });
+      expect(f.get).toHaveBeenCalledTimes(20);
+      expect(f.post).toHaveBeenCalledOnce();
+      expect(b.deferReply.mock.invocationCallOrder[0]).toBeLessThan(
+        b.editReply.mock.invocationCallOrder[0]!,
+      );
+
+      // Locale changes affect newly generated replies, not already serialized components.
+      guild.preferredLocale = preferredLocale === "ja" ? "en-US" : "ja";
+      expect(f.post).toHaveBeenCalledOnce();
+      f.client.emit(Events.MessageCreate, { ...source, id: "6" } as never);
+      await Promise.all(operations.splice(0));
+      expect(f.post).toHaveBeenCalledTimes(2);
+      expect(f.post.mock.calls[0]![1].body).toEqual(expectedInitial);
+      expect(f.post.mock.calls[1]).toEqual([
+        "/channels/4/messages",
+        {
+          body: {
+            ...expectedInitial,
+            components: [
+              {
+                type: 1,
+                components: [
+                  {
+                    type: 2,
+                    style: ButtonStyle.Secondary,
+                    label: preferredLocale === "ja" ? "Preview" : "プレビュー",
+                    custom_id: "lp:1:1:2:3",
+                  },
+                ],
+              },
+            ],
+            message_reference: { ...expectedInitial.message_reference, message_id: "6" },
+            nonce: previewNonce({ guildId: "1", channelId: "4", messageId: "6" }),
+          },
+        },
+      ]);
+      expect(f.get).toHaveBeenCalledTimes(28);
+      expect(logger.debug).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["ja", "en-US", "en-GB"])(
+    "uses the current Button locale %s for empty content, Open original and safe failure",
+    async (locale) => {
+      const f = fixture();
+      const message = f.data.get("/channels/2/messages/3") as Record<string, unknown>;
+      message.content = "";
+      const service = createLinkPreviewService({
+        readMode: () => Promise.resolve("hybrid"),
+        discord: f.discord,
+        log: vi.fn(),
+      });
+      const operations: Promise<unknown>[] = [];
+      registerLinkPreviewHandlers(
+        f.client,
+        service,
+        { debug: vi.fn() },
+        {
+          run: (work) => {
+            const operation = Promise.resolve(work());
+            operations.push(operation);
+            return operation;
+          },
+        },
+      );
+      const b = button(f, {
+        locale,
+        guildLocale: locale === "ja" ? "en-US" : "ja",
+        isButton: () => true,
+      });
+      f.client.emit(Events.InteractionCreate, b.interaction);
+      await Promise.all(operations.splice(0));
+      expect(b.editReply).toHaveBeenCalledExactlyOnceWith({
+        embeds: [
+          expect.objectContaining({
+            description:
+              locale === "ja"
+                ? "プレビューに表示できる内容がありません。"
+                : "No supported content is available for this preview.",
+          }),
+        ],
+        components: [
+          {
+            type: 1,
+            components: [
+              {
+                type: 2,
+                style: ButtonStyle.Link,
+                label: locale === "ja" ? "元のメッセージを開く" : "Open original",
+                url: originalUrl(target),
+              },
+            ],
+          },
+        ],
+        allowedMentions: { parse: [], repliedUser: false },
+      });
+      expect(b.deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+      expect(f.get).toHaveBeenCalledTimes(12);
+      expect(f.post).not.toHaveBeenCalled();
+      f.data.set("/channels/2", { ...channel(), nsfw: true });
+      const denied = button(f, { locale, isButton: () => true });
+      f.client.emit(Events.InteractionCreate, denied.interaction);
+      await Promise.all(operations.splice(0));
+      expect(denied.editReply).toHaveBeenCalledExactlyOnceWith({
+        content: locale === "ja" ? "WEFTはこのメッセージを表示できませんでした。" : PREVIEW_FAILURE,
+        allowedMentions: { parse: [], repliedUser: false },
+      });
+      expect(f.post).not.toHaveBeenCalled();
+    },
+  );
 });

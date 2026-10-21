@@ -10,6 +10,7 @@ import {
 import type { Client, Guild, ThreadChannel } from "discord.js";
 
 import { refreshThreadParent } from "../discord-thread-parent.js";
+import { resolveGuildLocale, translate } from "../i18n/translate.js";
 
 import type { AutoCloseDiscord } from "./automatic-close-configuration.js";
 import type { AutomaticCloseThreadMaintenanceDiscord } from "./automatic-close-thread-maintenance.js";
@@ -345,16 +346,22 @@ export function createThreadLifecycleDiscord(client: Client): ThreadLifecycleDis
       }
       return hasRequiredPermissions(guildId, threadId, client.user.id);
     },
-    async renameThread(_guildId, threadId, name) {
+    async renameThread(guildId, threadId, name) {
       await client.rest.patch(Routes.channel(threadId), {
         body: { name },
-        reason: "WEFT thread lifecycle update",
+        reason: translate(
+          resolveGuildLocale(client.guilds.cache.get(guildId)),
+          "audit.reason.rename",
+        ),
       });
     },
-    async archiveThread(_guildId, threadId, name) {
+    async archiveThread(guildId, threadId, name) {
       await client.rest.patch(Routes.channel(threadId), {
         body: { name, archived: true },
-        reason: "WEFT soft close",
+        reason: translate(
+          resolveGuildLocale(client.guilds.cache.get(guildId)),
+          "audit.reason.close",
+        ),
       });
     },
     classifyMutationFailure: classifyThreadDiscordMutationFailure,

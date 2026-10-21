@@ -1,0 +1,479 @@
+[
+  {
+    "options": [
+      {
+        "type": 1,
+        "name": "show",
+        "description": "Show WEFT settings",
+        "options": []
+      },
+      {
+        "type": 1,
+        "name": "timezone",
+        "description": "Set WEFT's default timezone",
+        "options": [
+          {
+            "type": 3,
+            "name": "value",
+            "description": "IANA timezone, e.g. Asia/Tokyo or UTC",
+            "required": true
+          }
+        ]
+      },
+      {
+        "type": 2,
+        "name": "closed-prefix",
+        "description": "Configure the closed prefix",
+        "options": [
+          {
+            "type": 1,
+            "name": "set",
+            "description": "Set the prefix for future closes",
+            "options": [
+              {
+                "type": 3,
+                "name": "value",
+                "description": "Closed prefix, 1–20 characters",
+                "required": true
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "disable",
+            "description": "Disable the closed prefix",
+            "options": []
+          }
+        ]
+      },
+      {
+        "type": 2,
+        "name": "link-preview",
+        "description": "Configure link previews",
+        "options": [
+          {
+            "type": 1,
+            "name": "show",
+            "description": "Show the link preview mode",
+            "options": []
+          },
+          {
+            "type": 1,
+            "name": "mode",
+            "description": "Set the link preview mode",
+            "options": [
+              {
+                "type": 3,
+                "choices": [
+                  {
+                    "name": "Automatic previews + buttons",
+                    "value": "hybrid"
+                  },
+                  {
+                    "name": "Automatic public previews only",
+                    "value": "public-only"
+                  },
+                  {
+                    "name": "Preview buttons only",
+                    "value": "button-only"
+                  },
+                  {
+                    "name": "Off",
+                    "value": "off"
+                  }
+                ],
+                "name": "value",
+                "description": "How to display link previews",
+                "required": true
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "type": 2,
+        "name": "audit-log",
+        "description": "Configure audit notifications",
+        "options": [
+          {
+            "type": 1,
+            "name": "show",
+            "description": "Show the audit notification channel",
+            "options": []
+          },
+          {
+            "type": 1,
+            "name": "set",
+            "description": "Set the audit notification channel",
+            "options": [
+              {
+                "channel_types": [0, 5],
+                "name": "channel",
+                "description": "Text or announcement channel",
+                "required": true,
+                "type": 7
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "disable",
+            "description": "Disable audit notifications",
+            "options": []
+          }
+        ]
+      },
+      {
+        "type": 2,
+        "name": "auto-close",
+        "description": "Configure automatic thread closing",
+        "options": [
+          {
+            "type": 1,
+            "name": "show",
+            "description": "Show automatic-close settings",
+            "options": []
+          },
+          {
+            "type": 1,
+            "name": "inactivity",
+            "description": "Set the inactivity period for automatic closing",
+            "options": [
+              {
+                "type": 3,
+                "name": "value",
+                "description": "5 minutes to 365 days; e.g. 30m, 12h, 7d",
+                "required": true
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "bot-messages",
+            "description": "Choose whether bot posts count as activity",
+            "options": [
+              {
+                "name": "value",
+                "description": "Include bot posts",
+                "required": true,
+                "type": 5
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "add-parent",
+            "description": "Enable automatic closing in a parent channel",
+            "options": [
+              {
+                "channel_types": [0, 5, 15],
+                "name": "channel",
+                "description": "Text, announcement, or forum channel",
+                "required": true,
+                "type": 7
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "remove-parent",
+            "description": "Disable automatic closing in a parent channel",
+            "options": [
+              {
+                "name": "channel",
+                "description": "Configured parent channel",
+                "required": true,
+                "type": 7
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "name": "config",
+    "description": "View or change WEFT settings",
+    "contexts": [0],
+    "default_member_permissions": "32",
+    "type": 1
+  },
+  {
+    "options": [
+      {
+        "type": 1,
+        "name": "bulk-close",
+        "description": "Select threads for bulk close",
+        "options": []
+      },
+      {
+        "type": 1,
+        "name": "close",
+        "description": "Close this thread",
+        "options": []
+      },
+      {
+        "type": 1,
+        "name": "open",
+        "description": "Remove the closed prefix from an active thread",
+        "options": []
+      },
+      {
+        "type": 1,
+        "name": "close-after",
+        "description": "Schedule this thread to close after a delay",
+        "options": [
+          {
+            "type": 3,
+            "name": "after",
+            "description": "Time until closing: 1 minute to 365 days; e.g. 30m, 2h, 7d",
+            "required": true
+          }
+        ]
+      },
+      {
+        "type": 1,
+        "name": "cancel-close",
+        "description": "Cancel this thread's scheduled close",
+        "options": []
+      },
+      {
+        "type": 1,
+        "name": "track",
+        "description": "Remove this thread's automatic-close exclusion",
+        "options": []
+      },
+      {
+        "type": 1,
+        "name": "untrack",
+        "description": "Exclude this thread from automatic close",
+        "options": []
+      },
+      {
+        "type": 1,
+        "name": "status",
+        "description": "Show automatic-close and scheduled-close status",
+        "options": []
+      }
+    ],
+    "name": "thread",
+    "description": "Manage threads",
+    "contexts": [0],
+    "default_member_permissions": "17179869184",
+    "type": 1
+  },
+  {
+    "options": [
+      {
+        "type": 1,
+        "name": "send",
+        "description": "Send a managed message",
+        "options": []
+      },
+      {
+        "type": 1,
+        "name": "edit",
+        "description": "Edit a managed message",
+        "options": [
+          {
+            "type": 3,
+            "name": "message",
+            "description": "Message ID or message link",
+            "required": true
+          }
+        ]
+      },
+      {
+        "type": 2,
+        "name": "schedule",
+        "description": "Manage scheduled posts",
+        "options": [
+          {
+            "type": 1,
+            "name": "create",
+            "description": "Schedule a one-time post",
+            "options": [
+              {
+                "type": 3,
+                "name": "after",
+                "description": "Time until sending, e.g. 30m, 2h, 7d (specify either after or at)",
+                "required": false
+              },
+              {
+                "type": 3,
+                "name": "at",
+                "description": "YYYY-MM-DD HH:mm in WEFT's default timezone (specify either after or at)",
+                "required": false,
+                "max_length": 16,
+                "min_length": 16
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "recurring-create",
+            "description": "Set up recurring posts",
+            "options": [
+              {
+                "type": 3,
+                "choices": [
+                  {
+                    "name": "daily",
+                    "value": "daily"
+                  },
+                  {
+                    "name": "weekly",
+                    "value": "weekly"
+                  }
+                ],
+                "name": "frequency",
+                "description": "daily or weekly",
+                "required": true
+              },
+              {
+                "type": 3,
+                "name": "time",
+                "description": "24-hour time as HH:MM, e.g. 09:30",
+                "required": true
+              },
+              {
+                "type": 3,
+                "name": "weekdays",
+                "description": "Comma-separated weekdays, e.g. mon,wed,fri; omit for frequency=daily",
+                "required": false
+              },
+              {
+                "type": 3,
+                "name": "timezone",
+                "description": "IANA timezone, e.g. Asia/Tokyo or UTC; defaults to WEFT's setting",
+                "required": false
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "cancel",
+            "description": "Cancel a scheduled post",
+            "options": [
+              {
+                "type": 3,
+                "name": "id",
+                "description": "Schedule ID",
+                "required": true
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "status",
+            "description": "Show a scheduled post's status",
+            "options": [
+              {
+                "type": 3,
+                "name": "id",
+                "description": "Schedule ID",
+                "required": true
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "list",
+            "description": "List scheduled posts",
+            "options": []
+          },
+          {
+            "type": 1,
+            "name": "edit",
+            "description": "Edit scheduled post content",
+            "options": [
+              {
+                "type": 3,
+                "name": "id",
+                "description": "Schedule ID",
+                "required": true
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "reschedule",
+            "description": "Change a one-time post's send time",
+            "options": [
+              {
+                "type": 3,
+                "name": "id",
+                "description": "Schedule ID",
+                "required": true
+              },
+              {
+                "type": 3,
+                "name": "after",
+                "description": "Time until sending, e.g. 30m, 2h, 7d (specify either after or at)",
+                "required": false
+              },
+              {
+                "type": 3,
+                "name": "at",
+                "description": "YYYY-MM-DD HH:mm in WEFT's default timezone (specify either after or at)",
+                "required": false,
+                "max_length": 16,
+                "min_length": 16
+              }
+            ]
+          },
+          {
+            "type": 1,
+            "name": "recurrence-edit",
+            "description": "Change a recurring post's repeat settings",
+            "options": [
+              {
+                "type": 3,
+                "name": "id",
+                "description": "Schedule ID",
+                "required": true
+              },
+              {
+                "type": 3,
+                "choices": [
+                  {
+                    "name": "daily",
+                    "value": "daily"
+                  },
+                  {
+                    "name": "weekly",
+                    "value": "weekly"
+                  }
+                ],
+                "name": "frequency",
+                "description": "daily or weekly",
+                "required": true
+              },
+              {
+                "type": 3,
+                "name": "time",
+                "description": "24-hour time as HH:MM, e.g. 09:30",
+                "required": true
+              },
+              {
+                "type": 3,
+                "name": "weekdays",
+                "description": "Comma-separated weekdays, e.g. mon,wed,fri; omit for frequency=daily",
+                "required": false
+              },
+              {
+                "type": 3,
+                "name": "timezone",
+                "description": "IANA timezone, e.g. Asia/Tokyo or UTC; omit to keep this schedule's timezone",
+                "required": false
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "name": "message",
+    "description": "Send, edit or schedule messages",
+    "contexts": [0],
+    "default_member_permissions": "8192",
+    "type": 1
+  }
+]

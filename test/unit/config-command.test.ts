@@ -1,3 +1,4 @@
+import type { LinkPreviewConfiguration } from "../../src/link-previews/link-preview-configuration.js";
 import { createLinkPreviewConfiguration } from "../../src/link-previews/link-preview-configuration.js";
 import { ChannelType, InteractionContextType, MessageFlags, PermissionFlagsBits } from "discord.js";
 import type { ChatInputCommandInteraction, InteractionEditReplyOptions } from "discord.js";
@@ -61,7 +62,7 @@ describe("config command", () => {
       createPreviewConfig(),
     );
 
-    expect(reply).toHaveBeenCalledWith(ephemeral("This command can only be used in a guild."));
+    expect(reply).toHaveBeenCalledWith(ephemeral("This command can only be used in a server."));
   });
 
   it("checks ManageGuild at execution time", async () => {
@@ -95,7 +96,7 @@ describe("config command", () => {
     expect(store.getOrCreate).toHaveBeenCalledWith(defaultSettings.guildId);
     expect(editReply).toHaveBeenCalledWith(
       edited(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nDiscord audit notifications: disabled; database auditing and retention remain enabled\nAutomatic close: disabled (no enabled parent channels); guild-wide inactivity threshold: 7d\nLink preview mode: Automatic public previews + optional buttons",
+        "WEFT default timezone: UTC\nClosed prefix: [CLOSED]\nAudit notifications: disabled\nAutomatic close: disabled\nInactivity period: 7d\nLink preview mode: Automatic previews + buttons",
       ),
     );
   });
@@ -113,7 +114,7 @@ describe("config command", () => {
     );
     expect(editReply).toHaveBeenCalledWith(
       edited(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nDiscord audit notifications: <#stored-channel>; database auditing and retention remain enabled\nAutomatic close: disabled (no enabled parent channels); guild-wide inactivity threshold: 7d\nLink preview mode: Automatic public previews + optional buttons",
+        "WEFT default timezone: UTC\nClosed prefix: [CLOSED]\nAudit notifications: <#stored-channel>\nAutomatic close: disabled\nInactivity period: 7d\nLink preview mode: Automatic previews + buttons",
       ),
     );
   });
@@ -164,11 +165,11 @@ describe("config command", () => {
       }),
     );
     expect(timezoneInteraction.editReply).toHaveBeenCalledWith({
-      content: "Timezone set to Asia/Tokyo.",
+      content: "WEFT default timezone: Asia/Tokyo (saved)",
       allowedMentions: { parse: [] },
     });
     expect(prefixInteraction.editReply).toHaveBeenCalledWith({
-      content: "Closed prefix set to [DONE].",
+      content: "Closed prefix: [DONE] (saved)",
       allowedMentions: { parse: [] },
     });
   });
@@ -203,7 +204,7 @@ describe("config command", () => {
       expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
       expect(editReply).toHaveBeenCalledOnce();
       expect(editReply).toHaveBeenCalledWith({
-        content: `Timezone set to ${value.replaceAll("_", "\\_")}.`,
+        content: `WEFT default timezone: ${value.replaceAll("_", "\\_")} (saved)`,
         allowedMentions: { parse: [] },
       });
     },
@@ -224,7 +225,7 @@ describe("config command", () => {
       );
       expect(reply).toHaveBeenCalledOnce();
       expect(reply).toHaveBeenCalledWith(
-        ephemeral("Timezone must be a named IANA timezone, e.g. Asia/Tokyo, or UTC"),
+        ephemeral("Enter an IANA timezone, e.g. Asia/Tokyo or UTC."),
       );
       expect(database.insert).not.toHaveBeenCalled();
       expect(database.select).not.toHaveBeenCalled();
@@ -262,10 +263,10 @@ describe("config command", () => {
     );
 
     expect(timezoneInteraction.reply).toHaveBeenCalledWith(
-      ephemeral("Timezone must be a named IANA timezone, e.g. Asia/Tokyo, or UTC"),
+      ephemeral("Enter an IANA timezone, e.g. Asia/Tokyo or UTC."),
     );
     expect(prefixInteraction.reply).toHaveBeenCalledWith(
-      ephemeral("Closed prefix must be 1 to 20 characters and contain no control characters"),
+      ephemeral("The closed prefix must be 1 to 20 characters with no control characters."),
     );
   });
 });
@@ -298,11 +299,7 @@ describe("Discord audit notification configuration command", () => {
       destination,
       createPreviewConfig(),
     );
-    expect(editReply).toHaveBeenCalledWith(
-      edited(
-        "Discord audit notifications: <#stale-id>; database auditing and retention remain enabled",
-      ),
-    );
+    expect(editReply).toHaveBeenCalledWith(edited("Audit notifications: <#stale-id>"));
     expect(store.getOrCreate).not.toHaveBeenCalled();
     expect(destination.show).toHaveBeenCalledWith(defaultSettings.guildId);
   });
@@ -319,11 +316,7 @@ describe("Discord audit notification configuration command", () => {
       createAuditDestination(),
       createPreviewConfig(),
     );
-    expect(editReply).toHaveBeenCalledWith(
-      edited(
-        "Discord audit notifications: disabled; database auditing and retention remain enabled",
-      ),
-    );
+    expect(editReply).toHaveBeenCalledWith(edited("Audit notifications: disabled"));
   });
 
   it("replies once with a bounded ephemeral error when the read fails", async () => {
@@ -345,9 +338,7 @@ describe("Discord audit notification configuration command", () => {
     ).rejects.toBe(failure);
     expect(editReply).toHaveBeenCalledOnce();
     expect(editReply).toHaveBeenCalledWith(
-      edited(
-        "WEFT could not load the Discord audit notification configuration. Please try again later.",
-      ),
+      edited("Could not load audit notification settings. Try again later."),
     );
     expect(JSON.stringify(editReply.mock.calls)).not.toContain("private database details");
   });
@@ -378,16 +369,16 @@ describe("Discord audit notification configuration command", () => {
   it.each([
     [
       { outcome: "CHANGED", previousChannelId: null },
-      "Discord audit notification destination set to <#target>.",
+      "Audit notification channel: <#target> (saved)",
     ],
-    [{ outcome: "NO_CHANGE" }, "Discord audit notification destination is already <#target>."],
+    [{ outcome: "NO_CHANGE" }, "Audit notification channel: <#target> (unchanged)"],
     [
       { outcome: "UNCONFIRMED" },
-      "WEFT could not confirm the Discord audit notification configuration result. Check the setting before trying again.",
+      "Could not confirm the audit notification change. Check the setting before retrying.",
     ],
     [
       { outcome: "VALIDATION_FAILED" },
-      "WEFT cannot use that channel as a Discord audit notification destination. Check its type and WEFT's View Channel and Send Messages permissions.",
+      "Choose a text or announcement channel where WEFT can View Channel and Send Messages.",
     ],
   ] as const)("maps set result %# to one bounded ephemeral response", async (result, expected) => {
     const destination = createAuditDestination();
@@ -413,15 +404,15 @@ describe("Discord audit notification configuration command", () => {
   it.each([
     [
       { outcome: "CHANGED", previousChannelId: "old" },
-      "Discord audit notifications disabled. Database auditing and retention remain enabled.",
+      "Audit notifications disabled. Database auditing continues.",
     ],
     [
       { outcome: "NO_CHANGE" },
-      "Discord audit notifications already disabled (unchanged). Database auditing and retention remain enabled.",
+      "Audit notifications are already disabled. Database auditing continues.",
     ],
     [
       { outcome: "UNCONFIRMED" },
-      "WEFT could not confirm the Discord audit notification configuration result. Check the setting before trying again.",
+      "Could not confirm the audit notification change. Check the setting before retrying.",
     ],
   ] as const)(
     "maps disable result %# to one bounded ephemeral response",
@@ -465,7 +456,7 @@ describe("Discord audit notification configuration command", () => {
     expect(deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
     expect(editReply).toHaveBeenCalledWith({
       content:
-        "WEFT could not confirm the Discord audit notification configuration result. Check the setting before trying again.",
+        "Could not confirm the audit notification change. Check the setting before retrying.",
       allowedMentions: { parse: [] },
     });
   });
@@ -486,8 +477,7 @@ describe("Discord audit notification configuration command", () => {
     );
     expect(destination.disable).toHaveBeenCalledWith(defaultSettings.guildId, "actor");
     expect(editReply).toHaveBeenCalledWith({
-      content:
-        "Discord audit notifications already disabled (unchanged). Database auditing and retention remain enabled.",
+      content: "Audit notifications are already disabled. Database auditing continues.",
       allowedMentions: { parse: [] },
     });
   });
@@ -544,7 +534,7 @@ describe("automatic close configuration command", () => {
 
     expect(editReply).toHaveBeenCalledWith(
       edited(
-        "Guild-wide inactivity threshold: 12h (shared by all enabled parents)\nBot messages count as activity: yes\nEnabled parent channels (2): <#111> <#222>\nIndividual thread exclusions apply. The threshold determines eligibility; closing occurs on a later sweep after state and permission checks.",
+        "Inactivity period: 12h\nBot posts: included\nChannels (2): <#111> <#222>\nIndividual thread exclusions take priority.",
       ),
     );
   });
@@ -574,8 +564,8 @@ describe("automatic close configuration command", () => {
     );
 
     const content = (editReply.mock.calls[0]?.[0] as { content: string }).content;
-    expect(content).toContain(`Enabled parent channels (30):`);
-    expect(content).toContain("... and 5 more");
+    expect(content).toContain(`Channels (30):`);
+    expect(content).toContain("… 5 more");
     expect(content.match(/<#/g)).toHaveLength(AUTO_CLOSE_PARENT_DISPLAY_LIMIT);
     expect(content.length).toBeLessThan(2_000);
   });
@@ -602,7 +592,7 @@ describe("automatic close configuration command", () => {
 
     expect(editReply).toHaveBeenCalledWith(
       edited(
-        "Timezone: UTC\nClosed prefix: [CLOSED]\nDiscord audit notifications: disabled; database auditing and retention remain enabled\nAutomatic close: guild-wide inactivity threshold 7d, 1 enabled parent channel, bot messages counted; individual thread exclusions apply\nLink preview mode: Automatic public previews + optional buttons",
+        "WEFT default timezone: UTC\nClosed prefix: [CLOSED]\nAudit notifications: disabled\nAutomatic close: 1 channel, inactivity 7d, bot posts included\nLink preview mode: Automatic previews + buttons",
       ),
     );
   });
@@ -629,7 +619,7 @@ describe("automatic close configuration command", () => {
       "actor",
     );
     expect(editReply).toHaveBeenCalledWith({
-      content: "Guild-wide automatic-close inactivity threshold set to 12h.",
+      content: "Inactivity period: 12h (saved)",
       allowedMentions: { parse: [] },
     });
   });
@@ -652,7 +642,7 @@ describe("automatic close configuration command", () => {
 
     expect(automaticClose.setInactivitySeconds).not.toHaveBeenCalled();
     expect(reply).toHaveBeenCalledWith(
-      ephemeral("Use one duration from 5 minutes through 365 days, such as 30m, 12h, or 7d."),
+      ephemeral("Enter 5 minutes to 365 days, e.g. 30m, 12h, 7d."),
     );
   });
 
@@ -678,7 +668,7 @@ describe("automatic close configuration command", () => {
       "actor",
     );
     expect(enabled.editReply).toHaveBeenCalledWith({
-      content: "Bot messages now count as thread activity.",
+      content: "Bot posts: included (saved)",
       allowedMentions: { parse: [] },
     });
   });
@@ -700,24 +690,22 @@ describe("automatic close configuration command", () => {
     );
 
     expect(automaticClose.addParentChannel).not.toHaveBeenCalled();
-    expect(reply).toHaveBeenCalledWith(
-      ephemeral("Automatic close supports text, announcement, and forum channels as parents only."),
-    );
+    expect(reply).toHaveBeenCalledWith(ephemeral("Choose a text, announcement or forum channel."));
   });
 
   it.each([
     [
       { outcome: "ENABLED", baselinesApplied: 2 } as const,
-      "Automatic close enabled for <#777>. 2 active threads received a new inactivity baseline.",
+      "Automatic close enabled for <#777>. 2 threads will count inactivity from now.",
     ],
     [
       { outcome: "ENABLED", baselinesApplied: 0 } as const,
-      "Automatic close enabled for <#777>. No active threads needed a new inactivity baseline.",
+      "Automatic close enabled for <#777>. No new activity baselines were needed.",
     ],
     [{ outcome: "ALREADY_ENABLED" } as const, "Automatic close is already enabled for <#777>."],
     [
       { outcome: "ENUMERATION_FAILED" } as const,
-      "WEFT could not read this server's active threads, so the channel was not enabled. Please try again later.",
+      "Could not read active threads. Automatic close was not enabled. Try again later.",
     ],
   ])("reports the add-parent outcome %#", async (outcome, expected) => {
     const automaticClose = createAutomaticClose({
@@ -772,7 +760,7 @@ describe("automatic close configuration command", () => {
       "actor",
     );
     expect(editReply).toHaveBeenCalledWith({
-      content: "Automatic close is not enabled for <#555>. (unchanged)",
+      content: "Automatic close disabled for <#555> (unchanged).",
       allowedMentions: { parse: [] },
     });
   });
@@ -820,7 +808,11 @@ function createInteraction({
   value = "",
   booleanValue = false,
   channel = null,
+  locale = "en-US",
+  guildLocale = "en-US",
 }: {
+  locale?: unknown;
+  guildLocale?: unknown;
   inGuild?: boolean;
   hasManageGuild?: boolean;
   group?: string | null;
@@ -838,6 +830,8 @@ function createInteraction({
   const editReply = vi.fn(() => Promise.resolve());
   const deferReply = vi.fn(() => Promise.resolve());
   const interaction = {
+    locale,
+    guildLocale,
     guildId: inGuild ? defaultSettings.guildId : null,
     inGuild: () => inGuild,
     memberPermissions: { has: () => hasManageGuild },
@@ -907,7 +901,7 @@ function createAuditDestination(): AuditLogDestinationService {
 
 function createPreviewConfig() {
   return {
-    show: vi.fn(() => Promise.resolve("hybrid" as const)),
+    show: vi.fn<LinkPreviewConfiguration["show"]>().mockResolvedValue("hybrid"),
     set: vi.fn(() => Promise.resolve({ outcome: "NO_CHANGE" as const })),
   };
 }
@@ -947,7 +941,7 @@ describe("link preview configuration commands", () => {
     expect(read).toHaveBeenCalledOnce();
     expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
     expect(f.editReply).toHaveBeenCalledWith({
-      content: "Link preview mode: Automatic public previews + optional buttons",
+      content: "Link preview mode: Automatic previews + buttons",
       allowedMentions: { parse: [] },
     });
     const invalid = createInteraction({
@@ -965,7 +959,7 @@ describe("link preview configuration commands", () => {
     expect(change).not.toHaveBeenCalled();
   });
   it.each([
-    ["hybrid", "Automatic public previews + optional buttons"],
+    ["hybrid", "Automatic previews + buttons"],
     ["public-only", "Automatic public previews only"],
     ["button-only", "Preview buttons only"],
     ["off", "Off"],
@@ -1032,7 +1026,7 @@ describe("configuration acknowledgement and unknown results", () => {
       else expect(f.deferReply).toHaveBeenCalledWith({ flags: MessageFlags.Ephemeral });
       expect(f.editReply).toHaveBeenCalledWith({
         content:
-          "WEFT could not confirm the configuration change. Check the setting before trying again.",
+          "Could not confirm the configuration change. Check the setting before trying again.",
         allowedMentions: { parse: [] },
       });
       expect(target).toHaveBeenCalledOnce();
@@ -1058,7 +1052,10 @@ describe("configuration acknowledgement and unknown results", () => {
         createPreviewConfig(),
       );
       expect(f.editReply.mock.calls[0]![0]).toEqual({
-        content: `${subcommand === "timezone" ? "Timezone set to UTC." : "Closed prefix set to [CLOSED]."} (unchanged)`,
+        content:
+          subcommand === "timezone"
+            ? "WEFT default timezone: UTC (unchanged)"
+            : "Closed prefix: [CLOSED] (unchanged)",
         allowedMentions: { parse: [] },
       });
     },
@@ -1175,10 +1172,10 @@ describe("configuration read acknowledgement and ownership", () => {
       expect(f.editReply).toHaveBeenCalledExactlyOnceWith(
         edited(
           group === "audit-log"
-            ? "WEFT could not load the Discord audit notification configuration. Please try again later."
+            ? "Could not load audit notification settings. Try again later."
             : group === "auto-close"
-              ? "WEFT could not load the automatic close configuration. Please try again later."
-              : "WEFT could not load the configuration. Please try again later.",
+              ? "Could not load the automatic close configuration. Try again later."
+              : "Could not load the configuration. Try again later.",
         ),
       );
       expect(f.reply).not.toHaveBeenCalled();
@@ -1193,6 +1190,7 @@ describe("configuration read acknowledgement and ownership", () => {
       expect(f.read).toHaveBeenCalledOnce();
       expect(f.editReply).toHaveBeenCalledOnce();
       expect(JSON.stringify(f.editReply.mock.calls)).not.toContain("could not load");
+      expect(JSON.stringify(f.editReply.mock.calls)).not.toContain("Could not load");
       expect(f.reply).not.toHaveBeenCalled();
     });
   }
@@ -1243,9 +1241,15 @@ it("keeps preview choice values while exposing understandable labels and timezon
   expect(mode.options?.[0]).toMatchObject({
     name: "value",
     choices: [
-      { name: "Automatic public previews + optional buttons", value: "hybrid" },
+      {
+        name: "Automatic previews + buttons",
+        value: "hybrid",
+      },
       { name: "Automatic public previews only", value: "public-only" },
-      { name: "Preview buttons only", value: "button-only" },
+      {
+        name: "Preview buttons only",
+        value: "button-only",
+      },
       { name: "Off", value: "off" },
     ],
   });
@@ -1320,8 +1324,8 @@ describe("explicit closed-prefix commands", () => {
       expect(f.editReply).toHaveBeenCalledWith(
         edited(
           outcome === "CHANGED"
-            ? "Closed prefix disabled."
-            : "Closed prefix already disabled (unchanged).",
+            ? "Closed prefix disabled. Existing thread names are unchanged."
+            : "The closed prefix is already disabled.",
         ),
       );
     },
@@ -1398,8 +1402,320 @@ describe("explicit closed-prefix commands", () => {
       expect(store.setClosedPrefix).not.toHaveBeenCalled();
       expect(store.disableClosedPrefix).not.toHaveBeenCalled();
       expect(f.reply).toHaveBeenCalledWith(
-        ephemeral("Closed prefix must be 1 to 20 characters and contain no control characters"),
+        ephemeral("The closed prefix must be 1 to 20 characters with no control characters."),
       );
     },
   );
+});
+
+const localizedModes = [
+  ["hybrid", "Automatic previews + buttons", "自動表示＋プレビューボタン"],
+  ["public-only", "Automatic public previews only", "公開メッセージの自動表示のみ"],
+  ["button-only", "Preview buttons only", "プレビューボタンのみ"],
+  ["off", "Off", "オフ"],
+] as const;
+
+describe("localized link-preview show", () => {
+  it.each(localizedModes)(
+    "shows %s in each interaction's locale without writes",
+    async (mode, english, japanese) => {
+      const store = createStore();
+      const automatic = createAutomaticClose();
+      const audit = createAuditDestination();
+      const service = createPreviewConfig();
+      service.show.mockResolvedValue(mode);
+      for (const [locale, guildLocale, content] of [
+        ["ja", "en-US", `リンクプレビューモード: ${japanese}`],
+        ["en-US", "ja", `Link preview mode: ${english}`],
+        ["en-GB", "ja", `Link preview mode: ${english}`],
+        [null, "ja", `Link preview mode: ${english}`],
+        ["ja", "en-US", `リンクプレビューモード: ${japanese}`],
+      ] as const) {
+        const f = createInteraction({ group: "link-preview", locale, guildLocale });
+        await handleConfigCommand(f.interaction, store, automatic, audit, service);
+        expect(f.deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+        expect(f.editReply).toHaveBeenCalledExactlyOnceWith(edited(content));
+        expect(f.reply).not.toHaveBeenCalled();
+        expect(f.deferReply.mock.invocationCallOrder[0]).toBeLessThan(
+          service.show.mock.invocationCallOrder.at(-1)!,
+        );
+        expect(service.show.mock.invocationCallOrder.at(-1)).toBeLessThan(
+          f.editReply.mock.invocationCallOrder[0]!,
+        );
+        expect(content.length).toBeLessThanOrEqual(2_000);
+      }
+      expect(service.show).toHaveBeenCalledTimes(5);
+      expect(service.show.mock.calls).toEqual(
+        Array.from({ length: 5 }, () => [defaultSettings.guildId]),
+      );
+      expect(service.set).not.toHaveBeenCalled();
+      for (const dependency of [store, automatic, audit]) {
+        for (const method of Object.values(dependency)) expect(method).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([
+    ["en-US", "Could not load the preview configuration."],
+    ["ja", "WEFTはプレビュー設定を取得できませんでした。"],
+    ["en-GB", "Could not load the preview configuration."],
+  ])("returns one safe read failure in %s", async (locale, content) => {
+    const service = createPreviewConfig();
+    service.show.mockRejectedValue(new Error("private database details"));
+    const f = createInteraction({ group: "link-preview", locale });
+    await handleConfigCommand(
+      f.interaction,
+      createStore(),
+      createAutomaticClose(),
+      createAuditDestination(),
+      service,
+    );
+    expect(f.deferReply).toHaveBeenCalledExactlyOnceWith({ flags: MessageFlags.Ephemeral });
+    expect(service.show).toHaveBeenCalledExactlyOnceWith(defaultSettings.guildId);
+    expect(service.set).not.toHaveBeenCalled();
+    expect(f.editReply).toHaveBeenCalledExactlyOnceWith(edited(content));
+    expect(content.length).toBeLessThanOrEqual(2_000);
+    expect(f.reply).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ inGuild: false }, "このコマンドはサーバー内でのみ使用できます。"],
+    [{ hasManageGuild: false }, "このコマンドには「サーバーの管理」権限が必要です。"],
+  ] as const)(
+    "preserves authorization failures for Japanese interactions (%j)",
+    async (patch, content) => {
+      const f = createInteraction({ group: "link-preview", locale: "ja", ...patch });
+      const service = createPreviewConfig();
+      await handleConfigCommand(
+        f.interaction,
+        createStore(),
+        createAutomaticClose(),
+        createAuditDestination(),
+        service,
+      );
+      expect(f.reply).toHaveBeenCalledExactlyOnceWith(ephemeral(content));
+      expect(f.deferReply).not.toHaveBeenCalled();
+      expect(f.editReply).not.toHaveBeenCalled();
+      expect(service.show).not.toHaveBeenCalled();
+      expect(service.set).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["en-US", "ja"])(
+    "does not read or respond again after ACK failure (%s)",
+    async (locale) => {
+      const f = createInteraction({ group: "link-preview", locale });
+      const service = createPreviewConfig();
+      const error = new Error("ACK response lost");
+      f.deferReply.mockRejectedValue(error);
+      await expect(
+        handleConfigCommand(
+          f.interaction,
+          createStore(),
+          createAutomaticClose(),
+          createAuditDestination(),
+          service,
+        ),
+      ).rejects.toBe(error);
+      expect(f.deferReply).toHaveBeenCalledOnce();
+      expect(service.show).not.toHaveBeenCalled();
+      expect(service.set).not.toHaveBeenCalled();
+      expect(f.reply).not.toHaveBeenCalled();
+      expect(f.editReply).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "does not retry or misclassify edit failure after read failure=%s",
+    async (readFailure) => {
+      const f = createInteraction({ group: "link-preview", locale: "ja" });
+      const service = createPreviewConfig();
+      if (readFailure) service.show.mockRejectedValue(new Error("private read failure"));
+      const error = new Error("edit response lost");
+      f.editReply.mockRejectedValue(error);
+      await expect(
+        handleConfigCommand(
+          f.interaction,
+          createStore(),
+          createAutomaticClose(),
+          createAuditDestination(),
+          service,
+        ),
+      ).rejects.toBe(error);
+      expect(service.show).toHaveBeenCalledExactlyOnceWith(defaultSettings.guildId);
+      expect(service.set).not.toHaveBeenCalled();
+      expect(f.deferReply).toHaveBeenCalledOnce();
+      expect(f.reply).not.toHaveBeenCalled();
+      expect(f.editReply).toHaveBeenCalledExactlyOnceWith(
+        edited(
+          readFailure
+            ? "WEFTはプレビュー設定を取得できませんでした。"
+            : "リンクプレビューモード: 自動表示＋プレビューボタン",
+        ),
+      );
+    },
+  );
+
+  it.each(localizedModes)(
+    "localizes mode %s responses for a Japanese interaction",
+    async (mode, _english, japanese) => {
+      const service = createPreviewConfig();
+      const f = createInteraction({
+        group: "link-preview",
+        subcommand: "mode",
+        value: mode,
+        locale: "ja",
+      });
+      await handleConfigCommand(
+        f.interaction,
+        createStore(),
+        createAutomaticClose(),
+        createAuditDestination(),
+        service,
+      );
+      expect(service.set).toHaveBeenCalledExactlyOnceWith(defaultSettings.guildId, "actor", mode);
+      expect(service.show).not.toHaveBeenCalled();
+      expect(f.editReply).toHaveBeenCalledExactlyOnceWith(
+        edited(`リンクプレビューモード: ${japanese}（変更なし）`),
+      );
+    },
+  );
+
+  it.each([
+    [
+      "ja",
+      "プレビューモードの変更結果を確認できませんでした。再試行する前に設定を確認してください。",
+    ],
+    ["en-US", "Could not confirm the preview mode change. Check the setting before trying again."],
+  ])(
+    "reports mode write uncertainty in %s without misclassifying it as a read failure",
+    async (locale, message) => {
+      const service = createPreviewConfig();
+      service.set.mockRejectedValue(new Error("private failure"));
+      const f = createInteraction({
+        group: "link-preview",
+        subcommand: "mode",
+        value: "off",
+        locale,
+      });
+      await handleConfigCommand(
+        f.interaction,
+        createStore(),
+        createAutomaticClose(),
+        createAuditDestination(),
+        service,
+      );
+      expect(service.set).toHaveBeenCalledExactlyOnceWith(defaultSettings.guildId, "actor", "off");
+      expect(f.editReply).toHaveBeenCalledExactlyOnceWith(edited(message));
+      expect(service.show).not.toHaveBeenCalled();
+    },
+  );
+
+  it("localizes all of /config show for a Japanese interaction", async () => {
+    const f = createInteraction({ locale: "ja" });
+    const service = createPreviewConfig();
+    await handleConfigCommand(
+      f.interaction,
+      createStore(),
+      createAutomaticClose(),
+      createAuditDestination(),
+      service,
+    );
+    expect(f.editReply).toHaveBeenCalledExactlyOnceWith(
+      edited(
+        "WEFTの既定タイムゾーン: UTC\nクローズ用プレフィックス: [CLOSED]\n監査通知: 無効\n自動クローズ: 無効\n無投稿期間: 7d\nリンクプレビューモード: 自動表示＋プレビューボタン",
+      ),
+    );
+    expect(service.show).not.toHaveBeenCalled();
+    expect(service.set).not.toHaveBeenCalled();
+  });
+});
+
+it("adds only Japanese descriptions and choice display names to the representative command", () => {
+  const definition = configCommandDefinition.toJSON();
+  expect(definition.name).toBe("config");
+  expect(definition.description).toBe("View or change WEFT settings");
+  expect(definition.description_localizations).toEqual({
+    ja: "WEFTの設定を表示・変更します",
+  });
+  expect(definition.name_localizations).toBeUndefined();
+  expect(definition.contexts).toEqual([InteractionContextType.Guild]);
+  expect(definition.default_member_permissions).toBe(PermissionFlagsBits.ManageGuild.toString());
+  const preview = definition.options?.find((option) => option.name === "link-preview");
+  expect(preview).toEqual({
+    type: 2,
+    name: "link-preview",
+    description: "Configure link previews",
+    description_localizations: { ja: "リンクプレビューを設定します" },
+    options: [
+      {
+        type: 1,
+        name: "show",
+        description: "Show the link preview mode",
+        description_localizations: { ja: "リンクプレビューのモードを表示します" },
+        options: [],
+      },
+      {
+        type: 1,
+        name: "mode",
+        description: "Set the link preview mode",
+        description_localizations: { ja: "リンクプレビューのモードを設定します" },
+        options: [
+          {
+            type: 3,
+            name: "value",
+            description: "How to display link previews",
+            description_localizations: {
+              ja: "リンクプレビューの表示方法",
+            },
+            required: true,
+            choices: localizedModes.map(([value, name, japanese]) => ({
+              name,
+              value,
+              name_localizations: { ja: japanese },
+            })),
+          },
+        ],
+      },
+    ],
+  });
+});
+
+it("keeps concurrent English and Japanese show interactions independent through delayed reads", async () => {
+  const japaneseRead = Promise.withResolvers<"off">();
+  const englishRead = Promise.withResolvers<"hybrid">();
+  const service = createPreviewConfig();
+  service.show.mockReturnValueOnce(japaneseRead.promise).mockReturnValueOnce(englishRead.promise);
+  const japanese = createInteraction({ group: "link-preview", locale: "ja", guildLocale: "en-US" });
+  const english = createInteraction({ group: "link-preview", locale: "en-US", guildLocale: "ja" });
+  const japaneseOperation = handleConfigCommand(
+    japanese.interaction,
+    createStore(),
+    createAutomaticClose(),
+    createAuditDestination(),
+    service,
+  );
+  const englishOperation = handleConfigCommand(
+    english.interaction,
+    createStore(),
+    createAutomaticClose(),
+    createAuditDestination(),
+    service,
+  );
+  await vi.waitFor(() => expect(service.show).toHaveBeenCalledTimes(2));
+  expect(japanese.editReply).not.toHaveBeenCalled();
+  expect(english.editReply).not.toHaveBeenCalled();
+  englishRead.resolve("hybrid");
+  await englishOperation;
+  expect(english.editReply).toHaveBeenCalledExactlyOnceWith(
+    edited("Link preview mode: Automatic previews + buttons"),
+  );
+  expect(japanese.editReply).not.toHaveBeenCalled();
+  japaneseRead.resolve("off");
+  await japaneseOperation;
+  expect(japanese.editReply).toHaveBeenCalledExactlyOnceWith(
+    edited("リンクプレビューモード: オフ"),
+  );
+  expect(service.show).toHaveBeenCalledTimes(2);
+  expect(service.set).not.toHaveBeenCalled();
 });

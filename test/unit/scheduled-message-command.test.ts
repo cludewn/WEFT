@@ -141,6 +141,75 @@ function fixture() {
 }
 
 describe("scheduled message command service", () => {
+  it("authorizes and saves normalized embed-only content before projecting one-time delivery", async () => {
+    const f = fixture();
+    const payload = { content: "", embed: { title: "Title" } };
+    await expect(
+      f.service.create({
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        schedule: { kind: "AFTER", durationMs: 3_600_000 },
+        payload: { content: " \t\n\u3000", embed: payload.embed },
+      }),
+    ).resolves.toMatchObject({ outcome: "SUCCESS", deliveryPendingReconciliation: false });
+    expect(f.authorizeCreation).toHaveBeenCalledExactlyOnceWith({
+      guildId: "guild-id",
+      channelId: "channel-id",
+      actorUserId: "actor-id",
+      payload,
+    });
+    expect(f.create).toHaveBeenCalledExactlyOnceWith({
+      scheduledActionId: "schedule-id",
+      auditId: "creation-audit-id",
+      guildId: "guild-id",
+      channelId: "channel-id",
+      actorId: "actor-id",
+      executeAt,
+      payload,
+      occurredAt: establishedAt,
+    });
+    expect(f.callOrder).toEqual(["authorize", "persist"]);
+    expect(f.ensureScheduledMessageDelivery).toHaveBeenCalledExactlyOnceWith({
+      scheduledActionId: "schedule-id",
+      executeAt,
+      revision: 0,
+    });
+    expect(f.ensureScheduledMessageDelivery.mock.invocationCallOrder[0]).toBeGreaterThan(
+      f.create.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("passes normalized content to one-time persistence for exact no-op comparison", async () => {
+    const f = fixture();
+    const payload = { content: "", embed: { title: "Title" } };
+    const definition = { ...f.definition, payload };
+    f.edit.mockResolvedValue({ outcome: "UNCHANGED", definition });
+    await expect(
+      f.service.edit({
+        scheduledActionId: "schedule-id",
+        guildId: "guild-id",
+        channelId: "channel-id",
+        actorUserId: "actor-id",
+        expectedRevision: 0,
+        payload: { content: " \t\n\u3000", embed: payload.embed },
+      }),
+    ).resolves.toEqual({ outcome: "UNCHANGED", kind: "ONE_TIME", definition });
+    expect(f.edit).toHaveBeenCalledExactlyOnceWith({
+      scheduledActionId: "schedule-id",
+      guildId: "guild-id",
+      channelId: "channel-id",
+      actorId: "actor-id",
+      expectedRevision: 0,
+      payload,
+      auditId: "schedule-id",
+      occurredAt: establishedAt,
+    });
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.authorizeCreation).not.toHaveBeenCalled();
+    expect(f.ensureScheduledMessageDelivery).not.toHaveBeenCalled();
+  });
+
   it("freshly authorizes before capturing one establishment timestamp and persisting", async () => {
     const f = fixture();
     const result = await f.service.create({

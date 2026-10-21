@@ -159,6 +159,64 @@ function fixture() {
 }
 
 describe("recurring scheduled-message administration service", () => {
+  it("authorizes and saves normalized embed-only recurring payloads before projection", async () => {
+    const f = fixture();
+    const payload = { content: "", embed: { title: "Title" } };
+    f.series.payload = payload;
+    await expect(
+      f.service.createRecurring({
+        ...input,
+        recurrence,
+        payload: { content: " \u3000\n", embed: payload.embed },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "SUCCESS",
+      scheduledActionId: "series-id",
+      deliveryPendingReconciliation: false,
+    });
+    expect(f.authorizeCreation).toHaveBeenCalledExactlyOnceWith({ ...input, payload });
+    expect(f.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        guildId: input.guildId,
+        channelId: input.channelId,
+        actorId: input.actorUserId,
+        scheduledActionId: "series-id",
+        occurrenceId: "occurrence-id",
+        auditId: "audit-id",
+        payload,
+      }),
+    );
+    expect(f.calls).toEqual(["timezone", "authorize", "persist", "project"]);
+    expect(f.project).toHaveBeenCalledOnce();
+    expect(f.editPayload).not.toHaveBeenCalled();
+  });
+
+  it("passes normalized content to recurring persistence without changing revision or occurrence policy", async () => {
+    const f = fixture();
+    const payload = { content: "", embed: { title: "Title" } };
+    f.series.payload = payload;
+    f.editPayload.mockResolvedValue({ outcome: "UNCHANGED", series: f.series });
+    await expect(
+      f.service.edit({
+        ...input,
+        scheduledActionId: "series-id",
+        expectedRevision: 0,
+        payload: { content: " \u3000\n", embed: payload.embed },
+      }),
+    ).resolves.toEqual({ outcome: "UNCHANGED", kind: "RECURRING", definition: f.series });
+    expect(f.editPayload).toHaveBeenCalledExactlyOnceWith({
+      scheduledActionId: "series-id",
+      actorId: input.actorUserId,
+      expectedRevision: 0,
+      payload,
+      auditId: "series-id",
+      occurredAt: establishedAt,
+    });
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.editRecurrence).not.toHaveBeenCalled();
+    expect(f.project).not.toHaveBeenCalled();
+  });
+
   it("loads omitted guild timezone at submission and projects only after confirmed creation", async () => {
     const f = fixture();
     await expect(
@@ -195,26 +253,30 @@ describe("recurring scheduled-message administration service", () => {
     });
   });
 
-  it("uses explicit timezone and stops when guild timezone is invalid", async () => {
-    const f = fixture();
-    f.getOrCreate.mockResolvedValue({ timezone: "+09:00" });
-    await expect(
-      f.service.createRecurring({
+  it.each(["invalid", "unavailable"])(
+    "uses explicit timezone and stops when WEFT's default timezone is %s",
+    async (cause) => {
+      const f = fixture();
+      if (cause === "invalid") f.getOrCreate.mockResolvedValue({ timezone: "+09:00" });
+      else f.getOrCreate.mockRejectedValue(new Error("Settings read failed"));
+      await expect(
+        f.service.createRecurring({
+          ...input,
+          recurrence,
+          payload: { content: "hello", embed: null },
+        }),
+      ).resolves.toEqual({ outcome: "INVALID_GUILD_TIMEZONE" });
+      expect(f.create).not.toHaveBeenCalled();
+      expect(f.authorizeCreation).not.toHaveBeenCalled();
+      await f.service.createRecurring({
         ...input,
-        recurrence,
+        recurrence: { ...recurrence, timezone: "Asia/Tokyo" },
         payload: { content: "hello", embed: null },
-      }),
-    ).resolves.toEqual({ outcome: "INVALID_GUILD_TIMEZONE" });
-    expect(f.create).not.toHaveBeenCalled();
-    expect(f.authorizeCreation).not.toHaveBeenCalled();
-    await f.service.createRecurring({
-      ...input,
-      recurrence: { ...recurrence, timezone: "Asia/Tokyo" },
-      payload: { content: "hello", embed: null },
-    });
-    expect(f.getOrCreate).toHaveBeenCalledTimes(1);
-    expect(f.create.mock.calls.at(-1)?.[0].recurrence.timezone).toBe("Asia/Tokyo");
-  });
+      });
+      expect(f.getOrCreate).toHaveBeenCalledTimes(1);
+      expect(f.create.mock.calls.at(-1)?.[0].recurrence.timezone).toBe("Asia/Tokyo");
+    },
+  );
 
   it("does not project an unconfirmed creation", async () => {
     const f = fixture();
@@ -345,7 +407,7 @@ describe("recurring scheduled-message administration service", () => {
     expect(f.cancel).toHaveBeenCalledWith(expect.objectContaining({ expectedRevision: 0 }));
   });
 
-  it.each([1, 2, 3])("preserves combined hasNext and safe offset on page %i", async (page) => {
+  it.each([1, 2, 3])("preserves combined hasNext due and safe offset on page %i", async (page) => {
     const f = fixture();
     f.listCombined.mockResolvedValueOnce({ outcome: "FOUND", schedules: [], hasNext: true });
     await expect(f.service.list({ guildId: "guild", channelId: "channel", page })).resolves.toEqual(

@@ -1,3 +1,4 @@
+import { resolveLocale, translate, type AppLocale } from "../i18n/translate.js";
 import { randomUUID } from "node:crypto";
 
 import {
@@ -20,10 +21,6 @@ export const SCHEDULED_LIST_PREFIX = "sml:";
 export const SCHEDULED_LIST_TTL_MS = 5 * 60_000;
 export const SCHEDULED_LIST_CAPACITY = 128;
 const IO_TIMEOUT_MS = 2_500;
-const UNAVAILABLE = "WEFT could not load scheduled messages. Please try again later.";
-const RESTART = "These list controls are unavailable. Run /message schedule list again.";
-const DISPLAY_ERROR =
-  "WEFT could not display the complete scheduled-message page safely. No schedules were displayed.";
 
 type ListResult = Awaited<ReturnType<ScheduledMessageCommandService["list"]>>;
 type Session = {
@@ -59,14 +56,20 @@ function validPage(page: number): boolean {
   return Number.isSafeInteger(page) && page >= 1 && Number.isSafeInteger((page - 1) * 10);
 }
 
-function response(result: ListResult, page: number, session: Session, revision: number) {
-  const content = scheduledMessageListMessage(result, page);
-  const usable = result.outcome === "FOUND" && content !== DISPLAY_ERROR;
+function response(
+  result: ListResult,
+  page: number,
+  session: Session,
+  revision: number,
+  locale: AppLocale,
+) {
+  const rendered = scheduledMessageListMessage(result, page, locale);
+  const usable = result.outcome === "FOUND" && rendered.displayable;
   const controls = usable && (page > 1 || result.schedules.length > 0);
   return {
     usable: controls,
     options: {
-      content,
+      content: rendered.content,
       allowedMentions: { parse: [] },
       components: controls
         ? [
@@ -74,12 +77,12 @@ function response(result: ListResult, page: number, session: Session, revision: 
               .addComponents(
                 new ButtonBuilder()
                   .setCustomId(`sml:1:${session.id}:${revision}:previous`)
-                  .setLabel("Previous")
+                  .setLabel(translate(locale, "list.previous"))
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(page === 1),
                 new ButtonBuilder()
                   .setCustomId(`sml:1:${session.id}:${revision}:next`)
-                  .setLabel("Next")
+                  .setLabel(translate(locale, "list.next"))
                   .setStyle(ButtonStyle.Secondary)
                   .setDisabled(!result.hasNext || !validPage(page + 1)),
               )
@@ -124,6 +127,7 @@ export function createScheduledMessageListNavigation(
     page: number,
     initial: boolean,
   ) {
+    const locale = resolveLocale(interaction.locale);
     const retained: Promise<unknown>[] = [];
     async function observe<T>(work: () => Promise<T>, budget = IO_TIMEOUT_MS): Promise<T> {
       const started = performance.now();
@@ -163,7 +167,7 @@ export function createScheduledMessageListNavigation(
       if (!current(session, operation, revision)) throw new Error("List session expired");
       if (!initial && result.outcome !== "FOUND") throw new Error("List read unavailable");
       const nextRevision = initial ? revision : revision + 1;
-      const rendered = response(result, page, session, nextRevision);
+      const rendered = response(result, page, session, nextRevision, locale);
       if (!current(session, operation, revision)) throw new Error("List session expired");
       // Reserve the next revision in the outgoing controls, while BUSY remains exclusive.
       editAttempted = true;
@@ -188,7 +192,7 @@ export function createScheduledMessageListNavigation(
             // The initial read failed before any message edit was attempted.
             await observe(() =>
               interaction.editReply({
-                content: UNAVAILABLE,
+                content: translate(locale, "list.unavailable"),
                 components: [],
                 allowedMentions: { parse: [] },
               }),
@@ -198,7 +202,7 @@ export function createScheduledMessageListNavigation(
             // original. After an initial edit attempt, retire without any recovery write.
             await observe(() =>
               interaction.followUp({
-                content: RESTART,
+                content: translate(locale, "list.restart"),
                 flags: MessageFlags.Ephemeral,
                 components: [],
                 allowedMentions: { parse: [] },
@@ -218,12 +222,13 @@ export function createScheduledMessageListNavigation(
 
   async function reject(
     interaction: ButtonInteraction | ChatInputCommandInteraction,
-    content = RESTART,
+    content?: string,
   ) {
+    const locale = resolveLocale(interaction.locale);
     // One initial-response attempt, owned through raw settlement even after its wait expires.
     const raw = (async () =>
       interaction.reply({
-        content,
+        content: content ?? translate(locale, "list.restart"),
         flags: MessageFlags.Ephemeral,
         components: [],
         allowedMentions: { parse: [] },
@@ -239,12 +244,10 @@ export function createScheduledMessageListNavigation(
 
   return {
     async start(interaction) {
+      const locale = resolveLocale(interaction.locale);
       cleanup();
       if (sessions.size >= SCHEDULED_LIST_CAPACITY) {
-        await reject(
-          interaction,
-          "WEFT cannot open another schedule list right now. Please try again later.",
-        );
+        await reject(interaction, translate(locale, "list.capacity"));
         return;
       }
       const operation = Symbol();
@@ -321,45 +324,70 @@ export function recurringTimeLabel(
   status: string,
   occurrence: string | null,
   compact = false,
+  locale: AppLocale = "en-US",
 ): string {
-  if (status === "CANCELLED") return compact ? "Historical" : "Historical scheduled time";
-  if (occurrence === "PENDING") return compact ? "Next" : "Next scheduled occurrence";
+  if (status === "CANCELLED")
+    return translate(locale, compact ? "list.time.historicalCompact" : "list.time.historical");
+  if (occurrence === "PENDING")
+    return translate(locale, compact ? "list.time.nextCompact" : "list.time.next");
   if (occurrence === null)
-    return compact ? "Last materialized" : "Last materialized scheduled time";
-  return compact ? "Current" : "Current occurrence scheduled time";
+    return translate(locale, compact ? "list.time.lastCompact" : "list.time.last");
+  return translate(locale, compact ? "list.time.currentCompact" : "list.time.current");
 }
+
+export type ScheduledMessageListDisplay = { content: string; displayable: boolean };
 
 export function scheduledMessageListMessage(
   result: Awaited<ReturnType<ScheduledMessageCommandService["list"]>>,
   page: number,
-): string {
-  if (result.outcome === "INVALID_PAGE") return "Page must be a positive integer.";
-  if (result.outcome === "UNAVAILABLE") {
-    return "WEFT could not load scheduled messages. Please try again later.";
-  }
-  if (result.schedules.length === 0) {
-    return `No active or executing scheduled messages were found on page ${page}.`;
-  }
+  locale: AppLocale = "en-US",
+): ScheduledMessageListDisplay {
+  if (result.outcome === "INVALID_PAGE")
+    return { content: translate(locale, "list.invalidPage"), displayable: false };
+  if (result.outcome === "UNAVAILABLE")
+    return { content: translate(locale, "list.unavailable"), displayable: false };
+  if (result.schedules.length === 0)
+    return { content: translate(locale, "list.empty", { page }), displayable: true };
   if (result.schedules.some((schedule) => !Number.isFinite(schedule.executeAt.getTime()))) {
-    return DISPLAY_ERROR;
+    return { content: translate(locale, "list.display_error"), displayable: false };
   }
   const rows = result.schedules.map((schedule) => {
     const when = Math.floor(schedule.executeAt.getTime() / 1_000);
     const creator = `<@${schedule.creatorUserId}> \`${schedule.creatorUserId}\``;
     if ("kind" in schedule && schedule.kind === "RECURRING") {
-      const label = recurringTimeLabel(schedule.status, schedule.currentOccurrenceStatus, true);
+      const label = recurringTimeLabel(
+        schedule.status,
+        schedule.currentOccurrenceStatus,
+        true,
+        locale,
+      );
       const occurrence =
         schedule.currentOccurrenceStatus === null
-          ? "none"
+          ? translate(locale, "list.none")
           : scheduleStateLabel(schedule.currentOccurrenceStatus);
-      return `- \`${schedule.scheduledActionId}\` Recurring ${schedule.frequency === "DAILY" ? "daily" : "weekly"}\nSeries: ${scheduleStateLabel(schedule.status)} · Occurrence: ${occurrence}\n${label}: <t:${when}:F> · By ${creator}`;
+      return translate(locale, "list.recurringRow", {
+        id: schedule.scheduledActionId,
+        daily: schedule.frequency === "DAILY",
+        state: scheduleStateLabel(schedule.status),
+        occurrence,
+        label,
+        when,
+        creator,
+      });
     }
-    return `- \`${schedule.scheduledActionId}\` One-time · ${scheduleStateLabel(schedule.status)}\n  Scheduled: <t:${when}:F> · By: ${creator}`;
+    return translate(locale, "list.oneTimeRow", {
+      id: schedule.scheduledActionId,
+      state: scheduleStateLabel(schedule.status),
+      when,
+      creator,
+    });
   });
   const content = [
-    `Scheduled messages — page ${page}`,
+    translate(locale, "list.header", { page }),
     ...rows,
     "/message schedule status id:<schedule-id>",
   ].join("\n");
-  return content.length <= 2000 ? content : DISPLAY_ERROR;
+  return content.length <= 2000
+    ? { content, displayable: true }
+    : { content: translate(locale, "list.display_error"), displayable: false };
 }

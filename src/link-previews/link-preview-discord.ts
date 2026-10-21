@@ -1,3 +1,4 @@
+import { resolveLocale, resolveGuildLocale, translate, type AppLocale } from "../i18n/translate.js";
 import {
   ButtonStyle,
   ChannelType,
@@ -43,7 +44,7 @@ import {
 } from "./link-preview-permissions.js";
 import type { PreviewChannel } from "./link-preview-permissions.js";
 
-export const PREVIEW_FAILURE = "WEFT could not show this message.";
+export const PREVIEW_FAILURE = translate("en-US", "preview.failure");
 const guildSchema = z.object({
   id: z.string().refine(isSnowflake),
   owner_id: z.string().refine(isSnowflake),
@@ -69,6 +70,7 @@ const safeCdnUrl = (value: string): boolean => {
 export function previewComponents(
   items: PreviewHelper[],
   targetCount: number,
+  locale: AppLocale = "en-US",
 ): APIActionRowComponent<APIButtonComponent>[] {
   return [
     {
@@ -76,13 +78,19 @@ export function previewComponents(
       components: items.map(({ target, ordinal }) => ({
         type: ComponentType.Button,
         style: ButtonStyle.Secondary,
-        label: targetCount === 1 ? "Preview" : `Preview ${ordinal}`,
+        label:
+          targetCount === 1
+            ? translate(locale, "preview.button")
+            : translate(locale, "preview.numberedButton", { ordinal }),
         custom_id: previewCustomId(target),
       })),
     },
   ];
 }
-function openOriginalComponents(target: MessageLink): APIActionRowComponent<APIButtonComponent>[] {
+function openOriginalComponents(
+  target: MessageLink,
+  locale: AppLocale,
+): APIActionRowComponent<APIButtonComponent>[] {
   return [
     {
       type: ComponentType.ActionRow,
@@ -90,7 +98,7 @@ function openOriginalComponents(target: MessageLink): APIActionRowComponent<APIB
         {
           type: ComponentType.Button,
           style: ButtonStyle.Link,
-          label: "Open original",
+          label: translate(locale, "preview.original"),
           url: originalUrl(target),
         },
       ],
@@ -335,13 +343,16 @@ export function createLinkPreviewDiscord(client: Client): LinkPreviewBoundary {
       };
     },
     async send(source, output, nonce) {
+      const locale = source.locale ?? "en-US";
       // No lookups here: this request immediately follows the final observation batch.
       await client.rest.post(Routes.channelMessages(source.channelId), {
         body: {
-          ...(output.overflow ? { content: `+${output.overflow} more` } : {}),
+          ...(output.overflow
+            ? { content: translate(locale, "preview.more", { count: output.overflow }) }
+            : {}),
           ...(output.embeds.length ? { embeds: output.embeds } : {}),
           ...(output.helpers.length
-            ? { components: previewComponents(output.helpers, output.targetCount) }
+            ? { components: previewComponents(output.helpers, output.targetCount, locale) }
             : {}),
           allowed_mentions: { parse: [], replied_user: false },
           message_reference: {
@@ -374,15 +385,19 @@ export async function handlePreviewButton(
   )
     return;
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  const embed = await service.preview(target, interaction.user.id);
+  const locale = resolveLocale(interaction.locale);
+  const embed = await service.preview(target, interaction.user.id, locale);
   await interaction.editReply(
     embed
       ? {
           embeds: [embed],
-          components: openOriginalComponents(target),
+          components: openOriginalComponents(target, locale),
           allowedMentions: { parse: [], repliedUser: false },
         }
-      : { content: PREVIEW_FAILURE, allowedMentions: { parse: [], repliedUser: false } },
+      : {
+          content: translate(locale, "preview.failure"),
+          allowedMentions: { parse: [], repliedUser: false },
+        },
   );
 }
 export function registerLinkPreviewHandlers(
@@ -415,6 +430,7 @@ export function registerLinkPreviewHandlers(
           channelId: message.channelId,
           messageId: message.id,
           content: message.content,
+          locale: resolveGuildLocale(message.guild),
         }),
       )
       ?.catch(failed);

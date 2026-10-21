@@ -49,9 +49,7 @@ describe("thread command", () => {
   it("rejects non-guild contexts ephemerally", async () => {
     const { interaction, reply } = createInteraction({ inGuild: false });
     await handleThreadCommand(interaction, createLifecycle(), logger);
-    expect(reply).toHaveBeenCalledWith(
-      ephemeral("This command can only be used in a supported active thread."),
-    );
+    expect(reply).toHaveBeenCalledWith(ephemeral("Use this command in an active thread."));
   });
 
   it("does not describe maintenance commands as requiring an active thread", async () => {
@@ -82,7 +80,7 @@ describe("thread command", () => {
       logger,
     );
     expect(unsupported.editReply).toHaveBeenCalledWith(
-      edited("This command can only be used in a supported active thread."),
+      edited("Use this command in an active thread."),
     );
     expect(denied.editReply).toHaveBeenCalledWith(
       edited("You need the Manage Threads permission to use this command."),
@@ -123,9 +121,13 @@ describe("thread command", () => {
     expect(lifecycle.close).toHaveBeenCalledWith("guild-id", "thread-id", "actor-id");
     expect(lifecycle.open).toHaveBeenCalledWith("guild-id", "thread-id", "actor-id");
     expect(close.reply).toHaveBeenCalledWith(ephemeral("Closing thread…"));
-    expect(open.reply).toHaveBeenCalledWith(ephemeral("Opening thread…"));
+    expect(open.reply).toHaveBeenCalledWith(
+      ephemeral("Updating WEFT's state for this active thread…"),
+    );
     expect(close.editReply).toHaveBeenCalledWith(edited("Thread closed."));
-    expect(open.editReply).toHaveBeenCalledWith(edited("Thread opened."));
+    expect(open.editReply).toHaveBeenCalledWith(
+      edited("Updated WEFT's state for this active thread."),
+    );
   });
 
   it("edits the initial response with unchanged close and open results", async () => {
@@ -140,7 +142,9 @@ describe("thread command", () => {
     await handleThreadCommand(open.interaction, lifecycle, logger);
 
     expect(close.editReply).toHaveBeenCalledWith(edited("Thread is already closed."));
-    expect(open.editReply).toHaveBeenCalledWith(edited("Thread is already open."));
+    expect(open.editReply).toHaveBeenCalledWith(
+      edited("This thread is active. No changes were needed."),
+    );
   });
 
   it("returns safe lifecycle failures ephemerally", async () => {
@@ -165,7 +169,7 @@ describe("thread command", () => {
     await handleThreadCommand(interaction, lifecycle, logger);
 
     expect(editReply).toHaveBeenCalledWith(
-      edited("A locked thread cannot be soft-closed. Unlock it manually before retrying."),
+      edited("A locked thread cannot be closed. Unlock it manually before retrying."),
     );
   });
 
@@ -217,7 +221,7 @@ describe("thread command", () => {
 
     expect(editReply).toHaveBeenCalledWith(
       edited(
-        "WEFT could not confirm the final outcome. Check the current thread state before retrying.",
+        "Could not confirm the final outcome. Check the current thread state before retrying.",
       ),
     );
   });
@@ -234,7 +238,7 @@ describe("thread command", () => {
     await handleThreadCommand(open.interaction, lifecycle, logger);
 
     const pendingMessage =
-      "Discord is still processing this thread update. This can happen when Discord rate-limits thread name changes, and completion may take several minutes.";
+      "WEFT is still processing or confirming this operation. Discord rate limits may delay completion by several minutes.";
     expect(close.editReply).toHaveBeenCalledWith(edited(pendingMessage));
     expect(open.editReply).toHaveBeenCalledWith(edited(pendingMessage));
     expect(pendingMessage).not.toContain("retry");
@@ -291,12 +295,12 @@ describe("thread command", () => {
     );
     expect(created.editReply).toHaveBeenCalledWith(
       edited(
-        "Thread close schedule `scheduled-action-id` created for <t:1893553440:F> (<t:1893553440:R>).",
+        "Thread close scheduled for <t:1893553440:F> (<t:1893553440:R>). ID: `scheduled-action-id`.",
       ),
     );
     expect(replaced.editReply).toHaveBeenCalledWith(
       edited(
-        "Thread close schedule `scheduled-action-id` replaced. New close time: <t:1893553440:F> (<t:1893553440:R>).",
+        "Thread close rescheduled for <t:1893553440:F> (<t:1893553440:R>). ID: `scheduled-action-id`.",
       ),
     );
   });
@@ -325,7 +329,7 @@ describe("thread command", () => {
 
     expect(fixture.editReply).toHaveBeenCalledWith(
       edited(
-        "Thread close schedule `scheduled-action-id` for <t:1893553440:F> (<t:1893553440:R>) was saved, but WEFT could not confirm its delivery yet. WEFT will reconcile it automatically.",
+        "Thread close schedule `scheduled-action-id` saved for <t:1893553440:F> (<t:1893553440:R>). Execution setup is unconfirmed; WEFT will check and repair it automatically.",
       ),
     );
     expect(JSON.stringify(fixture.editReply.mock.calls)).not.toContain("retry");
@@ -336,13 +340,10 @@ describe("thread command", () => {
       { ok: true, outcome: "CANCELLED", action: createScheduledAction(new Date()) } as const,
       "Thread close schedule `scheduled-action-id` cancelled.",
     ],
-    [
-      { ok: true, outcome: "NOT_SCHEDULED" } as const,
-      "No scheduled close is active for this thread.",
-    ],
+    [{ ok: true, outcome: "NOT_SCHEDULED" } as const, "No thread close is scheduled."],
     [
       { ok: false, code: "EXECUTION_IN_PROGRESS" } as const,
-      "The scheduled close is already executing and can no longer be cancelled.",
+      "The scheduled close is running and cannot be cancelled.",
     ],
     [
       { ok: false, code: "USER_MISSING_PERMISSION" } as const,
@@ -354,11 +355,11 @@ describe("thread command", () => {
     ],
     [
       { ok: false, code: "CONTEXT_VALIDATION_FAILURE" } as const,
-      "WEFT could not verify the current thread or your permissions. Please try again later.",
+      "Could not verify the current thread or your permissions. Try again later.",
     ],
     [
       { ok: false, code: "PERSISTENCE_FAILURE" } as const,
-      "WEFT could not confirm cancellation of the scheduled close. Check the thread status before retrying.",
+      "Thread-close cancellation is unconfirmed. Check thread status before retrying.",
     ],
   ])("routes cancel-close result %# ephemerally", async (result, message) => {
     const scheduledThreadClose = createScheduledThreadClose({
@@ -382,11 +383,11 @@ describe("thread command", () => {
   it.each([
     [
       { outcome: "EXECUTION_IN_PROGRESS" } as const,
-      "A scheduled close is already executing for this thread. The manual close was not started.",
+      "A scheduled close is already running. No manual close was started.",
     ],
     [
       { outcome: "PERSISTENCE_FAILURE" } as const,
-      "WEFT could not confirm cancellation of the scheduled close, so no new thread update was started. Check the thread status before retrying.",
+      "Scheduled-close cancellation is unconfirmed. No new thread update was started. Check thread status before retrying.",
     ],
   ])("maps manual close preparation result %#", async (result, message) => {
     const scheduledThreadClose = createScheduledThreadClose({
@@ -474,19 +475,19 @@ describe("thread command", () => {
   it.each([
     [
       { ok: true, outcome: "TRACKED", parentEnabled: true } as const,
-      "Individual thread exclusion removed. Automatic-close participation is enabled under the enabled parent.",
+      "Exclusion removed. This thread is eligible for automatic close.",
     ],
     [
       { ok: true, outcome: "TRACKED", parentEnabled: false } as const,
-      "Individual thread exclusion removed. Automatic-close participation remains disabled because the parent is not enabled. Track does not enable the parent.",
+      "Exclusion removed. Automatic close is still disabled for the parent channel.",
     ],
     [
       { ok: true, outcome: "ALREADY_TRACKED", parentEnabled: true } as const,
-      "No individual thread exclusion to remove (unchanged). Automatic-close participation is enabled under the enabled parent.",
+      "No exclusion was set. This thread is eligible for automatic close.",
     ],
     [
       { ok: true, outcome: "ALREADY_TRACKED", parentEnabled: false } as const,
-      "No individual thread exclusion to remove (unchanged). Automatic-close participation remains disabled because the parent is not enabled. Track does not enable the parent.",
+      "No exclusion was set. Automatic close is disabled for the parent channel.",
     ],
   ])("routes track result %#", async (result, message) => {
     const maintenance = createMaintenance({ track: vi.fn(() => Promise.resolve(result)) });
@@ -502,18 +503,15 @@ describe("thread command", () => {
     );
 
     expect(maintenance.track).toHaveBeenCalledWith("guild-id", "thread-id", "actor-id");
-    expect(fixture.reply).toHaveBeenCalledWith(ephemeral("Tracking thread…"));
+    expect(fixture.reply).toHaveBeenCalledWith(ephemeral("Removing automatic-close exclusion…"));
     expect(fixture.editReply).toHaveBeenCalledWith(edited(message));
   });
 
   it.each([
-    [
-      { ok: true, outcome: "EXCLUDED" } as const,
-      "Thread excluded from automatic close. Parent-channel settings are unchanged.",
-    ],
+    [{ ok: true, outcome: "EXCLUDED" } as const, "Thread excluded from automatic close."],
     [
       { ok: true, outcome: "ALREADY_EXCLUDED" } as const,
-      "Thread is already excluded from automatic close (unchanged). Parent-channel settings are unchanged.",
+      "This thread is already excluded from automatic close.",
     ],
   ])("routes untrack result %#", async (result, message) => {
     const maintenance = createMaintenance({ untrack: vi.fn(() => Promise.resolve(result)) });
@@ -546,7 +544,7 @@ describe("thread command", () => {
           executeAt: new Date("2030-01-03T03:04:00.000Z"),
         },
       },
-      "Effective automatic-close participation: enabled\nParent automatic-close policy: enabled\nIndividual thread exclusion: none\nGuild-wide inactivity threshold: 7d\nRecorded activity or baseline: <t:1893553440:F> (<t:1893553440:R>)\nExplicit scheduled close: <t:1893639840:F> (<t:1893639840:R>)\nThe recorded timestamp may be an established baseline, not the most recent message. The threshold determines eligibility, not an exact close time.",
+      "Automatic close: eligible\nParent channel: enabled\nThread exclusion: not set\nInactivity period: 7d\nLast post or baseline: <t:1893553440:F> (<t:1893553440:R>)\nScheduled close: <t:1893639840:F> (<t:1893639840:R>)\nThe recorded time may be a baseline. Automatic closing runs on periodic checks.",
     ],
     [
       {
@@ -557,7 +555,7 @@ describe("thread command", () => {
         lastActivityAt: null,
         scheduledClose: { status: "EXECUTING" as const, executeAt: new Date(0) },
       },
-      "Effective automatic-close participation: disabled\nParent automatic-close policy: disabled\nIndividual thread exclusion: none\nGuild-wide inactivity threshold: 1h\nRecorded activity or baseline: not recorded\nExplicit scheduled close: executing\nThe recorded timestamp may be an established baseline, not the most recent message. The threshold determines eligibility, not an exact close time.",
+      "Automatic close: not eligible\nParent channel: disabled\nThread exclusion: not set\nInactivity period: 1h\nLast post or baseline: not recorded\nScheduled close: executing\nThe recorded time may be a baseline. Automatic closing runs on periodic checks.",
     ],
     [
       {
@@ -568,7 +566,7 @@ describe("thread command", () => {
         lastActivityAt: null,
         scheduledClose: undefined,
       },
-      "Effective automatic-close participation: disabled\nParent automatic-close policy: enabled\nIndividual thread exclusion: excluded\nGuild-wide inactivity threshold: 5m\nRecorded activity or baseline: not recorded\nExplicit scheduled close: none\nThe recorded timestamp may be an established baseline, not the most recent message. The threshold determines eligibility, not an exact close time.",
+      "Automatic close: not eligible\nParent channel: enabled\nThread exclusion: set\nInactivity period: 5m\nLast post or baseline: not recorded\nScheduled close: none\nThe recorded time may be a baseline. Automatic closing runs on periodic checks.",
     ],
   ])("formats status result %# as plain text", async (status, message) => {
     const maintenance = createMaintenance({
@@ -594,12 +592,9 @@ describe("thread command", () => {
     ["USER_MISSING_PERMISSION", "You need the Manage Threads permission to use this command."],
     [
       "CONTEXT_VALIDATION_FAILURE",
-      "WEFT could not verify the current thread or your permissions. Please try again later.",
+      "Could not verify the current thread or your permissions. Try again later.",
     ],
-    [
-      "PERSISTENCE_FAILURE",
-      "WEFT could not update automatic close tracking. Please try again later.",
-    ],
+    ["PERSISTENCE_FAILURE", "Could not update the automatic-close exclusion. Try again later."],
   ] as const)("maps maintenance failure %s", async (code, message) => {
     const maintenance = createMaintenance({
       track: vi.fn(() => Promise.resolve({ ok: false as const, code })),
@@ -634,7 +629,7 @@ describe("thread command", () => {
     );
 
     expect(fixture.editReply).toHaveBeenCalledWith(
-      edited("WEFT could not load this thread's status. Please try again later."),
+      edited("Could not load this thread's status. Try again later."),
     );
   });
 
@@ -654,7 +649,7 @@ describe("thread command", () => {
     );
 
     expect(fixture.editReply).toHaveBeenCalledWith(
-      edited("WEFT could not update automatic close tracking. Please try again later."),
+      edited("Could not update the automatic-close exclusion. Try again later."),
     );
   });
 });
@@ -826,13 +821,13 @@ it.each(["track", "untrack"] as const)(
     );
     expect(f.reply).toHaveBeenCalledWith(
       ephemeral(
-        operation === "track" ? "Tracking thread…" : "Excluding thread from automatic close…",
+        operation === "track"
+          ? "Removing automatic-close exclusion…"
+          : "Excluding thread from automatic close…",
       ),
     );
     expect(f.editReply).toHaveBeenCalledWith(
-      edited(
-        "WEFT could not confirm the tracking change. Check the thread status before trying again.",
-      ),
+      edited("Could not confirm the tracking change. Check the thread status before trying again."),
     );
     expect(maintenance[operation]).toHaveBeenCalledOnce();
   },

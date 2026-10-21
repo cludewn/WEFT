@@ -29,6 +29,53 @@ const firstEditedAt = new Date("2026-08-31T01:00:00.000Z");
 const secondEditedAt = new Date("2026-08-31T01:01:00.000Z");
 
 describe("managed-message edit Discord boundary", () => {
+  it("treats normalized whitespace as a coherent embed-only no-op after fresh authorization", async () => {
+    const payload = { content: "", embed: { title: "Title" } };
+    const fixture = createFixture({
+      oldContent: "",
+      oldEmbeds: [{ data: { type: EmbedType.Rich, title: "Title" } } as Embed],
+    });
+    const store = {
+      find: vi.fn<ManagedMessageStore["find"]>().mockResolvedValue({
+        messageId: input.messageId,
+        guildId: input.guildId,
+        channelId: input.channelId,
+        creatorUserId: input.actorUserId,
+        status: "ACTIVE",
+        revision: 1,
+        payload,
+        createdAt: firstEditedAt,
+        updatedAt: firstEditedAt,
+      }),
+      create: vi.fn(),
+      confirmCreation: vi.fn(),
+      edit: vi.fn(),
+      confirmEdit: vi.fn(),
+      markDeleted: vi.fn(),
+      confirmDeletion: vi.fn(),
+      readCompensationSafety: vi.fn(),
+    } satisfies ManagedMessageStore;
+    const service = createManagedMessageService({
+      store,
+      discord: createManagedMessageDiscord(fixture.client),
+      logger: { warn: vi.fn() },
+    });
+    await expect(
+      service.edit({
+        ...input,
+        expectedRevision: 1,
+        payload: { content: " \t\n\u3000", embed: payload.embed },
+      }),
+    ).resolves.toEqual({ outcome: "UNCHANGED", messageId: input.messageId });
+    expect(fixture.fetchChannel).toHaveBeenCalledOnce();
+    expect(fixture.fetchMember).toHaveBeenCalledTimes(2);
+    expect(fixture.fetchMessage).toHaveBeenCalledOnce();
+    expect(fixture.edit).not.toHaveBeenCalled();
+    expect(store.edit).not.toHaveBeenCalled();
+    expect(store.confirmEdit).not.toHaveBeenCalled();
+    expect(store.markDeleted).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["committed", true, "MISSING", "UNSAFE", "SUCCESS"],
     ["exact confirmation", false, "MATCH", "UNSAFE", "SUCCESS"],

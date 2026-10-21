@@ -50,12 +50,10 @@ export function validateManagedMessagePayload(
   input: ManagedMessagePayloadInput,
 ): ManagedMessagePayloadValidationResult {
   if (typeof input.content !== "string") return { ok: false, code: "EMPTY_CONTENT" };
-  if (input.content !== "" && input.content.trim().length === 0) {
-    return { ok: false, code: "EMPTY_CONTENT" };
-  }
   if ([...input.content].length > MANAGED_MESSAGE_CONTENT_MAX_LENGTH) {
     return { ok: false, code: "CONTENT_TOO_LONG" };
   }
+  const content = input.content.trim().length === 0 ? "" : input.content;
 
   const rawEmbed = input.embed ?? {};
   const title = optionalTrimmedString(rawEmbed.title);
@@ -122,8 +120,8 @@ export function validateManagedMessagePayload(
         ...(imageUrl === undefined ? {} : { imageUrl }),
       }
     : null;
-  if (input.content === "" && embed === null) return { ok: false, code: "EMPTY_CONTENT" };
-  return { ok: true, payload: { content: input.content, embed } };
+  if (content === "" && embed === null) return { ok: false, code: "EMPTY_CONTENT" };
+  return { ok: true, payload: { content, embed } };
 }
 
 export function managedMessageEmbedsEqual(

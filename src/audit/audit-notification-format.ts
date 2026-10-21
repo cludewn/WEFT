@@ -1,3 +1,5 @@
+import { translate, type AppLocale } from "../i18n/translate.js";
+import type { MessageKey } from "../i18n/en-US.js";
 import {
   MANAGED_EXECUTION_OPERATIONS,
   MANAGED_EXECUTION_STAGES,
@@ -53,6 +55,7 @@ const safeIdentifier = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function formatAuditNotification(
   record: AuditNotificationRecord,
+  locale: AppLocale = "en-US",
 ): { content: string; nonce: string } | undefined {
   if (
     record.source === "MANAGED_MESSAGE_EXECUTION_FAILURE" &&
@@ -69,42 +72,42 @@ export function formatAuditNotification(
   const privateFailure =
     record.source === "ADMINISTRATIVE_OPERATION_FAILURE" ||
     record.source === "MANAGED_MESSAGE_EXECUTION_FAILURE";
-  const fields: [string, string | undefined][] = [
-    ["Source", record.source],
-    ["Event", record.event],
-    ["Outcome", record.outcome],
-    ["Actor", record.actorType],
-    ["Actor ID", record.actorUserId],
-    ["Thread ID", privateFailure ? undefined : record.threadId],
-    ["Channel ID", privateFailure ? undefined : record.channelId],
-    ["Message ID", privateFailure ? undefined : record.messageId],
-    ["Scheduled action ID", privateFailure ? undefined : record.scheduledActionId],
-    ["Occurrence ID", privateFailure ? undefined : record.occurrenceId],
-    ["Failure code", record.failureCode],
-    ["Failure stage", record.failureStage],
+  const fields: [Extract<MessageKey, `audit.label.${string}`>, string | undefined][] = [
+    ["audit.label.source", record.source],
+    ["audit.label.event", record.event],
+    ["audit.label.outcome", record.outcome],
+    ["audit.label.actor", record.actorType],
+    ["audit.label.actorId", record.actorUserId],
+    ["audit.label.threadId", privateFailure ? undefined : record.threadId],
+    ["audit.label.channelId", privateFailure ? undefined : record.channelId],
+    ["audit.label.messageId", privateFailure ? undefined : record.messageId],
+    ["audit.label.scheduleId", privateFailure ? undefined : record.scheduledActionId],
+    ["audit.label.occurrenceId", privateFailure ? undefined : record.occurrenceId],
+    ["audit.label.failureCode", record.failureCode],
+    ["audit.label.failureStage", record.failureStage],
     [
-      "Discord evidence",
+      "audit.label.discordEvidence",
       record.source === "MANAGED_MESSAGE_EXECUTION_FAILURE" ? record.discordEvidence : undefined,
     ],
     [
-      "Database effect",
+      "audit.label.databaseEffect",
       record.source === "MANAGED_MESSAGE_EXECUTION_FAILURE" ? record.databaseEffect : undefined,
     ],
     [
-      "Compensation evidence",
+      "audit.label.compensationEvidence",
       record.source === "MANAGED_MESSAGE_EXECUTION_FAILURE"
         ? record.compensationEvidence
         : undefined,
     ],
-    ["Skip reason", privateFailure ? undefined : record.skipReason],
-    ["Previous destination ID", privateFailure ? undefined : record.previousDestinationId],
-    ["New destination ID", privateFailure ? undefined : record.newDestinationId],
-    ["Previous mode", privateFailure ? undefined : record.previousMode],
-    ["New mode", privateFailure ? undefined : record.newMode],
-    ["Setting", privateFailure ? undefined : record.settingType],
-    ["Target type", privateFailure ? undefined : record.targetType],
-    ["Target ID", privateFailure ? undefined : record.targetId],
-    ["Audit ID", record.auditId],
+    ["audit.label.skipReason", privateFailure ? undefined : record.skipReason],
+    ["audit.label.previousDestination", privateFailure ? undefined : record.previousDestinationId],
+    ["audit.label.newDestination", privateFailure ? undefined : record.newDestinationId],
+    ["audit.label.previousMode", privateFailure ? undefined : record.previousMode],
+    ["audit.label.newMode", privateFailure ? undefined : record.newMode],
+    ["audit.label.setting", privateFailure ? undefined : record.settingType],
+    ["audit.label.targetType", privateFailure ? undefined : record.targetType],
+    ["audit.label.targetId", privateFailure ? undefined : record.targetId],
+    ["audit.label.auditId", record.auditId],
   ];
   if (
     !safeIdentifier.test(record.guildId) ||
@@ -116,9 +119,11 @@ export function formatAuditNotification(
   }
 
   const content = [
-    "WEFT audit",
-    ...fields.flatMap(([label, value]) => (value === undefined ? [] : [`${label}: \`${value}\``])),
-    `Occurred at: \`${record.occurredAt.toISOString()}\``,
+    translate(locale, "audit.title"),
+    ...fields.flatMap(([label, value]) =>
+      value === undefined ? [] : [`${translate(locale, label)}: \`${value}\``],
+    ),
+    translate(locale, "audit.occurredAt", { when: record.occurredAt.toISOString() }),
   ].join("\n");
   if (content.length > 1800) return undefined;
 

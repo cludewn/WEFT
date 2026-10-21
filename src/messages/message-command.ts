@@ -1,3 +1,4 @@
+import { resolveLocale, translate, type AppLocale } from "../i18n/translate.js";
 import {
   ChannelType,
   escapeMarkdown,
@@ -249,41 +250,63 @@ export function parseScheduledMessageEditModalId(
 
 export const messageCommandDefinition = new SlashCommandBuilder()
   .setName("message")
-  .setDescription("Manage messages sent by WEFT")
+  .setDescription(translate("en-US", "command.message.description"))
+  .setDescriptionLocalization("ja", translate("ja", "command.message.description"))
   .setContexts(InteractionContextType.Guild)
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageMessages)
   .addSubcommand((subcommand) =>
-    subcommand.setName("send").setDescription("Send a managed message in this channel"),
+    subcommand
+      .setName("send")
+      .setDescription(translate("en-US", "command.message.send.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.message.send.description")),
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName("edit")
-      .setDescription("Edit a managed message in this channel")
+      .setDescription(translate("en-US", "command.message.edit.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.message.edit.description"))
       .addStringOption((option) =>
         option
           .setName("message")
-          .setDescription("Discord message ID or canonical message link")
+          .setDescription(translate("en-US", "command.message.edit.message.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.message.edit.message.description"),
+          )
           .setRequired(true),
       ),
   )
   .addSubcommandGroup((group) =>
     group
       .setName("schedule")
-      .setDescription("Manage scheduled messages")
+      .setDescription(translate("en-US", "command.message.schedule.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.message.schedule.description"))
       .addSubcommand((subcommand) =>
         subcommand
           .setName("create")
-          .setDescription("Schedule a managed message in this channel")
+          .setDescription(translate("en-US", "command.message.schedule.create.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.message.schedule.create.description"),
+          )
           .addStringOption((option) =>
             option
               .setName("after")
-              .setDescription("Relative delay such as 30m, 2h, or 7d; choose after or at"),
+              .setDescription(
+                translate("en-US", "command.message.schedule.create.after.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.create.after.description"),
+              ),
           )
           .addStringOption((option) =>
             option
               .setName("at")
-              .setDescription(
-                "YYYY-MM-DD HH:mm in the configured guild timezone; choose after or at",
+              .setDescription(translate("en-US", "command.message.schedule.create.at.description"))
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.create.at.description"),
               )
               .setMinLength(16)
               .setMaxLength(16),
@@ -292,79 +315,187 @@ export const messageCommandDefinition = new SlashCommandBuilder()
       .addSubcommand((subcommand) =>
         subcommand
           .setName("recurring-create")
-          .setDescription("Schedule a recurring managed message in this channel")
+          .setDescription(
+            translate("en-US", "command.message.schedule.recurring-create.description"),
+          )
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.message.schedule.recurring-create.description"),
+          )
           .addStringOption((option) =>
             option
               .setName("frequency")
-              .setDescription("Daily or weekly")
+              .setDescription(
+                translate(
+                  "en-US",
+                  "command.message.schedule.recurring-create.frequency.description",
+                ),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.recurring-create.frequency.description"),
+              )
               .setRequired(true)
-              .addChoices({ name: "daily", value: "daily" }, { name: "weekly", value: "weekly" }),
+              .addChoices(
+                {
+                  name: translate("en-US", "command.choice.daily"),
+                  value: "daily",
+                  name_localizations: { ja: translate("ja", "command.choice.daily") },
+                },
+                {
+                  name: translate("en-US", "command.choice.weekly"),
+                  value: "weekly",
+                  name_localizations: { ja: translate("ja", "command.choice.weekly") },
+                },
+              ),
           )
           .addStringOption((option) =>
             option
               .setName("time")
-              .setDescription("24-hour local time HH:MM, e.g. 09:30")
+              .setDescription(
+                translate("en-US", "command.message.schedule.recurring-create.time.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.recurring-create.time.description"),
+              )
               .setRequired(true),
           )
           .addStringOption((option) =>
             option
               .setName("weekdays")
               .setDescription(
-                "Weekly: unique mon,tue,wed,thu,fri,sat,sun separated by commas; omit for daily",
+                translate(
+                  "en-US",
+                  "command.message.schedule.recurring-create.weekdays.description",
+                ),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.recurring-create.weekdays.description"),
               ),
           )
           .addStringOption((option) =>
             option
               .setName("timezone")
               .setDescription(
-                "IANA timezone, e.g. Asia/Tokyo or UTC; defaults to current guild timezone",
+                translate(
+                  "en-US",
+                  "command.message.schedule.recurring-create.timezone.description",
+                ),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.recurring-create.timezone.description"),
               ),
           ),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("cancel")
-          .setDescription("Cancel a scheduled message in this channel")
+          .setDescription(translate("en-US", "command.message.schedule.cancel.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.message.schedule.cancel.description"),
+          )
           .addStringOption((option) =>
-            option.setName("id").setDescription("Schedule ID").setRequired(true),
+            option
+              .setName("id")
+              .setDescription(translate("en-US", "command.message.schedule.cancel.id.description"))
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.cancel.id.description"),
+              )
+              .setRequired(true),
           ),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("status")
-          .setDescription("Show a scheduled message status in this channel")
+          .setDescription(translate("en-US", "command.message.schedule.status.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.message.schedule.status.description"),
+          )
           .addStringOption((option) =>
-            option.setName("id").setDescription("Schedule ID").setRequired(true),
+            option
+              .setName("id")
+              .setDescription(translate("en-US", "command.message.schedule.status.id.description"))
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.status.id.description"),
+              )
+              .setRequired(true),
           ),
       )
       .addSubcommand((subcommand) =>
-        subcommand.setName("list").setDescription("List active scheduled messages in this channel"),
+        subcommand
+          .setName("list")
+          .setDescription(translate("en-US", "command.message.schedule.list.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.message.schedule.list.description"),
+          ),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("edit")
-          .setDescription("Edit a scheduled message in this channel")
+          .setDescription(translate("en-US", "command.message.schedule.edit.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.message.schedule.edit.description"),
+          )
           .addStringOption((option) =>
-            option.setName("id").setDescription("Schedule ID").setRequired(true),
+            option
+              .setName("id")
+              .setDescription(translate("en-US", "command.message.schedule.edit.id.description"))
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.edit.id.description"),
+              )
+              .setRequired(true),
           ),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("reschedule")
-          .setDescription("Reschedule a message in this channel")
+          .setDescription(translate("en-US", "command.message.schedule.reschedule.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.message.schedule.reschedule.description"),
+          )
           .addStringOption((option) =>
-            option.setName("id").setDescription("Schedule ID").setRequired(true),
+            option
+              .setName("id")
+              .setDescription(
+                translate("en-US", "command.message.schedule.reschedule.id.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.reschedule.id.description"),
+              )
+              .setRequired(true),
           )
           .addStringOption((option) =>
             option
               .setName("after")
-              .setDescription("Relative delay such as 30m, 2h, or 7d; choose after or at"),
+              .setDescription(
+                translate("en-US", "command.message.schedule.reschedule.after.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.reschedule.after.description"),
+              ),
           )
           .addStringOption((option) =>
             option
               .setName("at")
               .setDescription(
-                "YYYY-MM-DD HH:mm in the configured guild timezone; choose after or at",
+                translate("en-US", "command.message.schedule.reschedule.at.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.reschedule.at.description"),
               )
               .setMinLength(16)
               .setMaxLength(16),
@@ -373,35 +504,84 @@ export const messageCommandDefinition = new SlashCommandBuilder()
       .addSubcommand((subcommand) =>
         subcommand
           .setName("recurrence-edit")
-          .setDescription("Edit a recurring message schedule in this channel")
+          .setDescription(
+            translate("en-US", "command.message.schedule.recurrence-edit.description"),
+          )
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.message.schedule.recurrence-edit.description"),
+          )
           .addStringOption((option) =>
-            option.setName("id").setDescription("Schedule ID").setRequired(true),
+            option
+              .setName("id")
+              .setDescription(
+                translate("en-US", "command.message.schedule.recurrence-edit.id.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.recurrence-edit.id.description"),
+              )
+              .setRequired(true),
           )
           .addStringOption((option) =>
             option
               .setName("frequency")
-              .setDescription("Daily or weekly")
+              .setDescription(
+                translate(
+                  "en-US",
+                  "command.message.schedule.recurrence-edit.frequency.description",
+                ),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.recurrence-edit.frequency.description"),
+              )
               .setRequired(true)
-              .addChoices({ name: "daily", value: "daily" }, { name: "weekly", value: "weekly" }),
+              .addChoices(
+                {
+                  name: translate("en-US", "command.choice.daily"),
+                  value: "daily",
+                  name_localizations: { ja: translate("ja", "command.choice.daily") },
+                },
+                {
+                  name: translate("en-US", "command.choice.weekly"),
+                  value: "weekly",
+                  name_localizations: { ja: translate("ja", "command.choice.weekly") },
+                },
+              ),
           )
           .addStringOption((option) =>
             option
               .setName("time")
-              .setDescription("24-hour local time HH:MM, e.g. 09:30")
+              .setDescription(
+                translate("en-US", "command.message.schedule.recurrence-edit.time.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.recurrence-edit.time.description"),
+              )
               .setRequired(true),
           )
           .addStringOption((option) =>
             option
               .setName("weekdays")
               .setDescription(
-                "Weekly: unique mon,tue,wed,thu,fri,sat,sun separated by commas; omit for daily",
+                translate("en-US", "command.message.schedule.recurrence-edit.weekdays.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.recurrence-edit.weekdays.description"),
               ),
           )
           .addStringOption((option) =>
             option
               .setName("timezone")
               .setDescription(
-                "IANA timezone, e.g. Asia/Tokyo or UTC; omitted keeps the existing series timezone",
+                translate("en-US", "command.message.schedule.recurrence-edit.timezone.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.message.schedule.recurrence-edit.timezone.description"),
               ),
           ),
       ),
@@ -436,14 +616,15 @@ function createPayloadModal(
   customId: string,
   title: string,
   payload?: ManagedMessagePayload,
+  locale: AppLocale = "en-US",
 ): ModalBuilder {
   return new ModalBuilder()
     .setCustomId(customId)
     .setTitle(title)
     .addLabelComponents(
       new LabelBuilder()
-        .setLabel("Message content")
-        .setDescription("Enter text or provide a visible embed.")
+        .setLabel(translate(locale, "message.contentLabel"))
+        .setDescription(translate(locale, "message.contentDescription"))
         .setTextInputComponent(
           createInput(
             MANAGED_MESSAGE_CONTENT_INPUT_ID,
@@ -453,7 +634,7 @@ function createPayloadModal(
           ),
         ),
       new LabelBuilder()
-        .setLabel("Embed title")
+        .setLabel(translate(locale, "message.embedTitleLabel"))
         .setTextInputComponent(
           createInput(
             MANAGED_MESSAGE_EMBED_TITLE_INPUT_ID,
@@ -463,7 +644,7 @@ function createPayloadModal(
           ),
         ),
       new LabelBuilder()
-        .setLabel("Embed description")
+        .setLabel(translate(locale, "message.embedDescriptionLabel"))
         .setTextInputComponent(
           createInput(
             MANAGED_MESSAGE_EMBED_DESCRIPTION_INPUT_ID,
@@ -473,8 +654,8 @@ function createPayloadModal(
           ),
         ),
       new LabelBuilder()
-        .setLabel("Embed color")
-        .setDescription("Hex color: RRGGBB or #RRGGBB.")
+        .setLabel(translate(locale, "message.embedColorLabel"))
+        .setDescription(translate(locale, "message.embedColorDescription"))
         .setTextInputComponent(
           createInput(
             MANAGED_MESSAGE_EMBED_COLOR_INPUT_ID,
@@ -486,8 +667,8 @@ function createPayloadModal(
           ),
         ),
       new LabelBuilder()
-        .setLabel("Embed image URL")
-        .setDescription("Absolute HTTP or HTTPS URL.")
+        .setLabel(translate(locale, "message.embedImageLabel"))
+        .setDescription(translate(locale, "message.embedImageDescription"))
         .setTextInputComponent(
           createInput(
             MANAGED_MESSAGE_EMBED_IMAGE_URL_INPUT_ID,
@@ -499,33 +680,50 @@ function createPayloadModal(
     );
 }
 
-export function createManagedMessageSendModal(): ModalBuilder {
-  return createPayloadModal(MANAGED_MESSAGE_SEND_MODAL_ID, "Send managed message");
+export function createManagedMessageSendModal(locale: AppLocale = "en-US"): ModalBuilder {
+  return createPayloadModal(
+    MANAGED_MESSAGE_SEND_MODAL_ID,
+    translate(locale, "message.sendModalTitle"),
+    undefined,
+    locale,
+  );
 }
 
 export function createManagedMessageEditModal(
   messageId: string,
   revision: number,
   payload: ManagedMessagePayload,
+  locale: AppLocale = "en-US",
 ): ModalBuilder {
   return createPayloadModal(
     `${MANAGED_MESSAGE_EDIT_MODAL_PREFIX}${messageId}:${revision}`,
-    "Edit managed message",
+    translate(locale, "message.editModalTitle"),
     payload,
+    locale,
   );
 }
 
-export function createScheduledMessageCreateModal(schedule: OneTimeScheduleInput): ModalBuilder {
+export function createScheduledMessageCreateModal(
+  schedule: OneTimeScheduleInput,
+  locale: AppLocale = "en-US",
+): ModalBuilder {
   return createPayloadModal(
     createScheduledMessageCreateModalId(schedule),
-    "Schedule managed message",
+    translate(locale, "message.scheduleModalTitle"),
+    undefined,
+    locale,
   );
 }
 
-export function createRecurringMessageCreateModal(input: RecurringCommandInput): ModalBuilder {
+export function createRecurringMessageCreateModal(
+  input: RecurringCommandInput,
+  locale: AppLocale = "en-US",
+): ModalBuilder {
   return createPayloadModal(
     createRecurringMessageCreateModalId(input),
-    "Schedule recurring message",
+    translate(locale, "message.recurringModalTitle"),
+    undefined,
+    locale,
   );
 }
 
@@ -533,11 +731,13 @@ export function createScheduledMessageEditModal(
   scheduledActionId: string,
   revision: number,
   payload: ManagedMessagePayload,
+  locale: AppLocale = "en-US",
 ): ModalBuilder {
   return createPayloadModal(
     createScheduledMessageEditModalId(scheduledActionId, revision),
-    "Edit scheduled message",
+    translate(locale, "message.scheduleEditModalTitle"),
     payload,
+    locale,
   );
 }
 
@@ -569,8 +769,6 @@ function isSupportedTarget(channel: ChatInputCommandInteraction["channel"]): boo
 
 const EDIT_MODAL_PREPARATION_MS = 2_000;
 const MODAL_ERROR_RESPONSE_MS = 2_500;
-const MODAL_PREPARATION_FAILURE =
-  "WEFT could not prepare the message form. Please try again later.";
 
 async function replyBeforeModalDeadline(
   interaction: ChatInputCommandInteraction,
@@ -587,6 +785,7 @@ async function showEditableMessageModal<T>(
   prepare: (target: T) => ModalBuilder | string,
   unavailable: string,
 ): Promise<void> {
+  const locale = resolveLocale(interaction.locale);
   if (elapsed() >= EDIT_MODAL_PREPARATION_MS) {
     await replyBeforeModalDeadline(interaction, elapsed, unavailable);
     return;
@@ -623,7 +822,11 @@ async function showEditableMessageModal<T>(
       }
     } catch (error) {
       try {
-        await replyBeforeModalDeadline(interaction, elapsed, MODAL_PREPARATION_FAILURE);
+        await replyBeforeModalDeadline(
+          interaction,
+          elapsed,
+          translate(locale, "message.formFailed"),
+        );
       } catch {
         // Preparation remains the primary error for bounded dispatcher logging.
       }
@@ -650,6 +853,7 @@ export async function handleMessageCommand(
   scheduledMessages?: ScheduledMessageCommandService,
   scheduledMessageLists?: ScheduledMessageListNavigation,
 ): Promise<void> {
+  const locale = resolveLocale(interaction.locale);
   const startedAt = performance.now();
   const initialAge = Math.max(0, Date.now() - interaction.createdTimestamp);
   const elapsed = () => initialAge + performance.now() - startedAt;
@@ -682,13 +886,13 @@ export async function handleMessageCommand(
   if (!supportedContext) {
     await replyContextError(
       scheduled && subcommand !== "create" && subcommand !== "recurring-create"
-        ? "Scheduled-message administration is only supported in a guild text or thread channel."
-        : "Managed messages are only supported in a guild text or active thread channel.",
+        ? translate(locale, "message.scheduleContext")
+        : translate(locale, "message.context"),
     );
     return;
   }
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
-    await replyContextError("You need the Manage Messages permission to manage messages.");
+    await replyContextError(translate(locale, "message.managePermission"));
     return;
   }
   if (scheduled) {
@@ -700,10 +904,12 @@ export async function handleMessageCommand(
         interaction.options.getString("at"),
       );
       if (!selector.ok) {
-        await interaction.reply(ephemeralReply(ONE_TIME_SCHEDULE_ERRORS[selector.code]));
+        await interaction.reply(
+          ephemeralReply(translate(locale, `schedule.error.${selector.code}`)),
+        );
         return;
       }
-      await interaction.showModal(createScheduledMessageCreateModal(selector.schedule));
+      await interaction.showModal(createScheduledMessageCreateModal(selector.schedule, locale));
       return;
     }
 
@@ -712,24 +918,28 @@ export async function handleMessageCommand(
       const recurrenceValidation = validateRecurringCommandInput(recurrence);
       if (!recurrenceValidation.ok) {
         await interaction.reply(
-          ephemeralReply(recurrenceInputGuidance(recurrenceValidation.field)),
+          ephemeralReply(recurrenceInputGuidance(recurrenceValidation.field, locale)),
         );
         return;
       }
       let modal;
       try {
-        modal = createRecurringMessageCreateModal(recurrence).toJSON();
+        modal = createRecurringMessageCreateModal(recurrence, locale).toJSON();
       } catch (error) {
         if (error instanceof RecurringModalTimezoneTooLongError) {
           await replyBeforeModalDeadline(
             interaction,
             elapsed,
-            "The recurring timezone is too long for this form.",
+            translate(locale, "message.timezoneTooLong"),
           );
           return;
         }
         try {
-          await replyBeforeModalDeadline(interaction, elapsed, MODAL_PREPARATION_FAILURE);
+          await replyBeforeModalDeadline(
+            interaction,
+            elapsed,
+            translate(locale, "message.formFailed"),
+          );
         } catch {
           // Preserve the construction/serialization error for bounded dispatcher logging.
         }
@@ -757,9 +967,10 @@ export async function handleMessageCommand(
                 target.definition.action.id,
                 target.definition.revision,
                 target.definition.payload,
+                locale,
               )
-            : scheduledMessageEditableLoadMessage(target),
-        "WEFT could not load the scheduled message. Please try again later.",
+            : scheduledMessageEditableLoadMessage(target, locale),
+        translate(locale, "message.scheduleReadFailed"),
       );
       return;
     }
@@ -771,7 +982,9 @@ export async function handleMessageCommand(
         interaction.options.getString("at"),
       );
       if (!selector.ok) {
-        await interaction.reply(ephemeralReply(ONE_TIME_SCHEDULE_ERRORS[selector.code]));
+        await interaction.reply(
+          ephemeralReply(translate(locale, `schedule.error.${selector.code}`)),
+        );
         return;
       }
       rescheduleInput = selector.schedule;
@@ -795,7 +1008,7 @@ export async function handleMessageCommand(
         recurrence: recurrenceOptions(interaction),
       });
       await interaction.editReply(
-        editReply(recurrenceEditResultMessage(result, scheduledActionId!)),
+        editReply(recurrenceEditResultMessage(result, scheduledActionId!, locale)),
       );
       return;
     }
@@ -807,7 +1020,7 @@ export async function handleMessageCommand(
         actorUserId: interaction.user.id,
       });
       await interaction.editReply(
-        editReply(cancelScheduledMessageResultMessage(result, scheduledActionId!)),
+        editReply(cancelScheduledMessageResultMessage(result, scheduledActionId!, locale)),
       );
       return;
     }
@@ -821,7 +1034,9 @@ export async function handleMessageCommand(
         actorUserId: interaction.user.id,
         schedule: rescheduleInput,
       });
-      await interaction.editReply(editReply(scheduledMessageRescheduleResultMessage(result)));
+      await interaction.editReply(
+        editReply(scheduledMessageRescheduleResultMessage(result, locale)),
+      );
       return;
     }
     const result = await scheduledMessages.status({
@@ -829,11 +1044,11 @@ export async function handleMessageCommand(
       guildId: interaction.guildId,
       channelId: interaction.channelId,
     });
-    await interaction.editReply(editReply(scheduledMessageStatusMessage(result)));
+    await interaction.editReply(editReply(scheduledMessageStatusMessage(result, locale)));
     return;
   }
   if (subcommand === "send") {
-    await interaction.showModal(createManagedMessageSendModal());
+    await interaction.showModal(createManagedMessageSendModal(locale));
     return;
   }
 
@@ -847,8 +1062,8 @@ export async function handleMessageCommand(
       interaction,
       elapsed,
       reference.code === "CURRENT_CHANNEL_MISMATCH"
-        ? "The managed message must be in the current guild and channel."
-        : "Enter a valid Discord message ID or canonical discord.com message link.",
+        ? translate(locale, "message.referenceScope")
+        : translate(locale, "message.invalidReference"),
     );
     return;
   }
@@ -863,13 +1078,13 @@ export async function handleMessageCommand(
       }),
     (target) =>
       target.outcome === "FOUND"
-        ? createManagedMessageEditModal(target.messageId, target.revision, target.payload)
+        ? createManagedMessageEditModal(target.messageId, target.revision, target.payload, locale)
         : target.outcome === "DELETED"
-          ? "That managed message has been deleted."
+          ? translate(locale, "message.deletedTarget")
           : target.outcome === "FAILURE"
-            ? "WEFT could not load the managed message. Please try again later."
-            : "No active managed message was found in this channel for that target.",
-    "WEFT could not load the managed message. Please try again later.",
+            ? translate(locale, "message.readFailed")
+            : translate(locale, "message.notFound"),
+    translate(locale, "message.readFailed"),
   );
 }
 
@@ -884,46 +1099,51 @@ function safeScheduleMetadata(value: string): string {
     .replaceAll(">", "\\>");
 }
 
-function recurrenceInputGuidance(field?: RecurringInputField): string {
+function recurrenceInputGuidance(field?: RecurringInputField, locale: AppLocale = "en-US"): string {
   switch (field) {
     case "frequency":
-      return "Choose daily or weekly for frequency.";
+      return translate(locale, "message.invalidFrequency");
     case "time":
-      return "Enter time as HH:MM on a 24-hour clock, e.g. 09:30.";
+      return translate(locale, "message.invalidTime");
     case "weekdays":
-      return "For daily, omit weekdays. For weekly, enter unique comma-separated mon,tue,wed,thu,fri,sat,sun tokens, e.g. mon,wed,fri.";
+      return translate(locale, "message.invalidWeekdays");
     case "timezone":
-      return "Enter a named IANA timezone, e.g. Asia/Tokyo, or UTC. Numeric offsets are not supported.";
+      return translate(locale, "message.invalidTimezone");
     default:
-      return "Choose daily without weekdays, or weekly with unique comma-separated mon,tue,wed,thu,fri,sat,sun; use HH:MM and a named IANA timezone such as Asia/Tokyo or UTC.";
+      return translate(locale, "message.invalidRecurrence");
   }
 }
 
-function createScheduledMessageResultMessage(result: CreateScheduledMessageCommandResult): string {
+function createScheduledMessageResultMessage(
+  result: CreateScheduledMessageCommandResult,
+  locale: AppLocale = "en-US",
+): string {
   if (result.outcome === "SUCCESS") {
     const when = Math.floor(result.definition.action.executeAt.getTime() / 1_000);
-    const base = `One-time schedule \`${result.definition.action.id}\` created. Target: <#${result.definition.action.targetId}>. Scheduled for: <t:${when}:F> (<t:${when}:R>).`;
-    return result.deliveryPendingReconciliation
-      ? `${base} Delivery is pending reconciliation.`
-      : base;
+    return translate(locale, "message.scheduleCreated", {
+      id: result.definition.action.id,
+      channelId: result.definition.action.targetId,
+      when,
+      pending: result.deliveryPendingReconciliation,
+    });
   }
   switch (result.code) {
     case "EMPTY_CONTENT":
-      return "Enter message content or a visible embed; non-empty content cannot be whitespace-only.";
+      return translate(locale, "message.emptyContent");
     case "CONTENT_TOO_LONG":
-      return "Message content must be 2000 characters or fewer.";
+      return translate(locale, "message.contentTooLong");
     case "EMBED_TITLE_TOO_LONG":
-      return "The embed title must be 256 characters or fewer.";
+      return translate(locale, "message.embedTitleTooLong");
     case "EMBED_DESCRIPTION_TOO_LONG":
-      return "The embed description must be 4000 characters or fewer.";
+      return translate(locale, "message.embedDescriptionTooLong");
     case "EMBED_COLOR_INVALID":
-      return "Enter the embed color as RRGGBB or #RRGGBB.";
+      return translate(locale, "message.invalidEmbedColor");
     case "EMBED_COLOR_ONLY":
-      return "An embed color requires a title, description, or image URL.";
+      return translate(locale, "message.embedColorOnly");
     case "EMBED_IMAGE_URL_TOO_LONG":
-      return "The embed image URL must be 2048 characters or fewer.";
+      return translate(locale, "message.embedImageTooLong");
     case "EMBED_IMAGE_URL_INVALID":
-      return "Enter an absolute HTTP or HTTPS embed image URL.";
+      return translate(locale, "message.invalidEmbedImage");
     case "MISSING_SELECTOR":
     case "CONFLICTING_SELECTORS":
     case "INVALID_AT_FORMAT":
@@ -935,151 +1155,181 @@ function createScheduledMessageResultMessage(result: CreateScheduledMessageComma
     case "TOO_SOON":
     case "TOO_FAR":
     case "INVALID_DURATION":
-      return ONE_TIME_SCHEDULE_ERRORS[result.code];
+      return translate(locale, `schedule.error.${result.code}`);
     case "UNSUPPORTED_TARGET":
     case "TARGET_GUILD_MISMATCH":
-      return "Scheduled messages are only supported in the current guild text or active thread channel.";
+      return translate(locale, "message.scheduleTarget");
     case "ARCHIVED_THREAD":
-      return "Messages cannot be scheduled from an archived thread.";
+      return translate(locale, "message.scheduleArchived");
     case "ACTOR_PERMISSION_MISSING":
-      return "You no longer have the Manage Messages permission required to schedule messages.";
+      return translate(locale, "message.schedulePermissionLost");
     case "BOT_PERMISSION_MISSING":
-      return "WEFT cannot send messages in this channel with its current permissions.";
+      return translate(locale, "message.sendBotPermission");
     case "CURRENT_STATE_CHECK_REJECTED":
     case "CURRENT_STATE_CHECK_FAILED":
-      return "WEFT could not verify the current channel or permissions. Please try again later.";
+      return translate(locale, "message.channelCheckFailed");
     case "PERSISTENCE_UNCONFIRMED":
-      return "WEFT could not confirm that the schedule was saved. No delivery was enqueued. Inspect the schedule list before retrying.";
+      return translate(locale, "message.scheduleSaveUnconfirmed");
   }
 }
 
 function cancelScheduledMessageResultMessage(
   result: Awaited<ReturnType<ScheduledMessageCommandService["cancel"]>>,
   scheduledActionId: string,
+  locale: AppLocale = "en-US",
 ): string {
   if (result.outcome === "CANCELLED" || result.outcome === "ALREADY_CANCELLED") {
-    const kind = result.kind === "RECURRING" ? "Recurring schedule" : "One-time schedule";
-    const resultText = result.outcome === "CANCELLED" ? "cancelled" : "already cancelled";
-    const warning =
-      result.kind === "RECURRING"
-        ? " Future occurrences will not be scheduled. An occurrence already executing may still finish."
-        : "";
-    const base = `${kind} \`${scheduledActionId}\` ${resultText}.${warning}`;
-    return result.deliveryCleanupPending
-      ? `${base} Delivery cleanup could not be confirmed, but the schedule remains cancelled.`
-      : base;
+    return translate(locale, "message.scheduleCancelled", {
+      id: scheduledActionId,
+      recurring: result.kind === "RECURRING",
+      already: result.outcome === "ALREADY_CANCELLED",
+      cleanupPending: result.deliveryCleanupPending,
+    });
   }
   switch (result.outcome) {
     case "EXECUTING":
-      return "That scheduled message is already executing and cannot be cancelled.";
+      return translate(locale, "message.cancelExecuting");
     case "COMPLETED":
-      return "That scheduled message has already completed.";
+      return translate(locale, "message.scheduleCompleted");
     case "FAILED":
-      return "That scheduled message has already failed.";
+      return translate(locale, "message.scheduleFailed");
     case "NOT_FOUND_OR_WRONG_CONTEXT":
-      return "No scheduled message was found in this channel for that ID.";
+      return translate(locale, "message.scheduleNotFound");
     case "PERSISTENCE_UNCONFIRMED":
-      return "WEFT could not confirm the cancellation. Inspect the schedule before retrying.";
+      return translate(locale, "message.cancelUnconfirmed");
     case "CONFLICT":
-      return "The scheduled message changed concurrently. Review it before retrying.";
+      return translate(locale, "message.scheduleConflict");
   }
 }
 
 function createRecurringMessageResultMessage(
   result: Awaited<ReturnType<NonNullable<ScheduledMessageCommandService["createRecurring"]>>>,
+  locale: AppLocale = "en-US",
 ): string {
   if (result.outcome === "SUCCESS") {
     const when = Math.floor(result.scheduledFor.getTime() / 1_000);
-    return `Recurring schedule created as \`${result.scheduledActionId}\`. First occurrence: <t:${when}:F>.${result.deliveryPendingReconciliation ? " Delivery is pending reconciliation." : ""}`;
+    return translate(locale, "message.recurringCreated", {
+      id: result.scheduledActionId,
+      when,
+      pending: result.deliveryPendingReconciliation,
+    });
   }
-  if (result.outcome === "FAILURE") return createScheduledMessageResultMessage(result);
+  if (result.outcome === "FAILURE") return createScheduledMessageResultMessage(result, locale);
   if (result.outcome === "INVALID_GUILD_TIMEZONE")
-    return "Configure a valid named IANA guild timezone or supply an explicit valid timezone.";
-  if (result.outcome === "INVALID_RECURRENCE") return recurrenceInputGuidance(result.field);
+    return translate(locale, "message.guildTimezoneInvalid");
+  if (result.outcome === "INVALID_RECURRENCE") return recurrenceInputGuidance(result.field, locale);
   if (result.outcome === "PERSISTENCE_UNCONFIRMED")
-    return "WEFT could not confirm that the recurring schedule was saved. No delivery was enqueued. Inspect the schedule list before retrying.";
-  return "Recurring scheduling is temporarily unavailable.";
+    return translate(locale, "message.recurringSaveUnconfirmed");
+  return translate(locale, "message.recurringUnavailable");
 }
 
 function recurrenceEditResultMessage(
   result: Awaited<ReturnType<NonNullable<ScheduledMessageCommandService["editRecurrence"]>>>,
   scheduledActionId: string,
+  locale: AppLocale = "en-US",
 ): string {
   if (result.outcome === "COMMITTED")
-    return `Recurring schedule \`${scheduledActionId}\` recurrence updated.${result.effect.deferredMaterialization ? " An occurrence already claimed or executing keeps its existing recurrence; future scheduling is deferred." : ""}${result.deliveryPendingReconciliation ? " Delivery is pending reconciliation." : ""}`;
+    return translate(locale, "message.recurrenceEdited", {
+      id: scheduledActionId,
+      deferred: result.effect.deferredMaterialization,
+      pending: result.deliveryPendingReconciliation,
+    });
   if (result.outcome === "UNCHANGED")
-    return `Recurring schedule \`${scheduledActionId}\` recurrence unchanged.`;
-  if (result.outcome === "WRONG_KIND")
-    return "This is a one-time schedule; use /message schedule reschedule.";
-  if (result.outcome === "INVALID_RECURRENCE") return recurrenceInputGuidance(result.field);
-  if (result.outcome === "CONFLICT")
-    return "The recurring schedule changed concurrently. Review it before retrying.";
+    return translate(locale, "message.recurrenceUnchanged", { id: scheduledActionId });
+  if (result.outcome === "WRONG_KIND") return translate(locale, "message.oneTimeUseReschedule");
+  if (result.outcome === "INVALID_RECURRENCE") return recurrenceInputGuidance(result.field, locale);
+  if (result.outcome === "CONFLICT") return translate(locale, "message.recurringConflict");
   if (result.outcome === "NOT_FOUND_OR_WRONG_CONTEXT")
-    return "No recurring schedule was found in this channel for that ID.";
+    return translate(locale, "message.recurringNotFound");
   if (result.outcome === "PERSISTENCE_UNCONFIRMED")
-    return "WEFT could not confirm the recurrence edit. Inspect the schedule before retrying.";
-  return "WEFT could not load the recurring schedule. Please try again later.";
+    return translate(locale, "message.recurrenceUnconfirmed");
+  return translate(locale, "message.recurringReadFailed");
 }
 
 function scheduledMessageStatusMessage(
   result: Awaited<ReturnType<ScheduledMessageCommandService["status"]>>,
+  locale: AppLocale = "en-US",
 ): string {
   if (result.outcome === "FOUND") {
     const schedule = result.schedule;
     const when = Math.floor(schedule.executeAt.getTime() / 1_000);
-    const creator = `Creator: <@${schedule.creatorUserId}> (\`${schedule.creatorUserId}\`)`;
+    const creator = translate(locale, "message.status.creator", { id: schedule.creatorUserId });
     if ("kind" in schedule) {
       const days =
         schedule.frequency === "WEEKLY"
-          ? `Weekdays: ${weekdays.filter((_, index) => (schedule.weekdayMask & (1 << index)) !== 0).join(", ")}\n`
+          ? translate(locale, "message.status.weekdays", {
+              days: weekdays
+                .filter((_, index) => (schedule.weekdayMask & (1 << index)) !== 0)
+                .join(", "),
+            })
           : "";
-      const timeMeaning = recurringTimeLabel(schedule.status, schedule.currentOccurrenceStatus);
+      const timeMeaning = recurringTimeLabel(
+        schedule.status,
+        schedule.currentOccurrenceStatus,
+        false,
+        locale,
+      );
       return [
-        `Recurring schedule \`${schedule.scheduledActionId}\``,
-        `Series status: ${scheduleStateLabel(schedule.status)}`,
-        `Target: <#${schedule.channelId}>`,
+        translate(locale, "message.status.recurring", { id: schedule.scheduledActionId }),
+        translate(locale, "message.status.series", { state: scheduleStateLabel(schedule.status) }),
+        translate(locale, "message.status.target", { id: schedule.channelId }),
         creator,
-        `Revision: ${schedule.revision}`,
+        translate(locale, "message.status.revision", { revision: schedule.revision }),
         "",
-        `Recurrence: ${schedule.frequency === "DAILY" ? "Daily" : "Weekly"}`,
-        `${days}Local time: ${safeScheduleMetadata(schedule.localTime.slice(0, 5))}`,
-        `Scheduling timezone: ${safeScheduleMetadata(schedule.timezone)}`,
+        translate(locale, "message.status.recurrence", { daily: schedule.frequency === "DAILY" }),
+        translate(locale, "message.status.localTime", {
+          days,
+          time: safeScheduleMetadata(schedule.localTime.slice(0, 5)),
+        }),
+        translate(locale, "message.status.timezone", {
+          timezone: safeScheduleMetadata(schedule.timezone),
+        }),
         `${timeMeaning}: <t:${when}:F>`,
-        "Discord timestamps display in your local timezone.",
+        translate(locale, "message.timestampNote"),
         "",
-        `Current occurrence: ${schedule.currentOccurrenceId === null ? "none" : `\`${schedule.currentOccurrenceId}\``}`,
-        `Occurrence status: ${schedule.currentOccurrenceStatus === null ? "none" : scheduleStateLabel(schedule.currentOccurrenceStatus)}`,
-        `Occurrence retry count: ${schedule.currentOccurrenceId === null ? "none" : (schedule.retryCount ?? "none")}`,
+        translate(locale, "message.status.occurrence", { id: schedule.currentOccurrenceId }),
+        translate(locale, "message.status.occurrenceState", {
+          state:
+            schedule.currentOccurrenceStatus === null
+              ? translate(locale, "message.none")
+              : scheduleStateLabel(schedule.currentOccurrenceStatus),
+        }),
+        translate(locale, "message.status.occurrenceRetries", {
+          count: schedule.currentOccurrenceId === null ? null : (schedule.retryCount ?? null),
+        }),
       ].join("\n");
     }
     const timeMeaning =
       schedule.status === "ACTIVE"
-        ? "Scheduled for"
+        ? translate(locale, "message.scheduledFor")
         : schedule.status === "EXECUTING"
-          ? "Current execution scheduled for"
-          : "Originally scheduled for";
+          ? translate(locale, "message.executingScheduledFor")
+          : translate(locale, "message.originalScheduledFor");
     const lines = [
-      `One-time schedule \`${schedule.scheduledActionId}\``,
-      `Status: ${scheduleStateLabel(schedule.status)}`,
-      `Target: <#${schedule.channelId}>`,
+      translate(locale, "message.status.oneTime", { id: schedule.scheduledActionId }),
+      translate(locale, "message.status.state", { state: scheduleStateLabel(schedule.status) }),
+      translate(locale, "message.status.target", { id: schedule.channelId }),
       `${timeMeaning}: <t:${when}:F> (<t:${when}:R>)`,
       creator,
-      `Retry count: ${schedule.retryCount}`,
+      translate(locale, "message.status.retries", { count: schedule.retryCount }),
     ];
     if (schedule.status === "COMPLETED" && schedule.resultMessageId !== null)
       lines.push(
-        `Message: https://discord.com/channels/${schedule.guildId}/${schedule.channelId}/${schedule.resultMessageId}`,
+        translate(locale, "message.status.link", {
+          guildId: schedule.guildId,
+          channelId: schedule.channelId,
+          messageId: schedule.resultMessageId,
+        }),
       );
     return lines.join("\n");
   }
-
   switch (result.outcome) {
     case "NOT_FOUND_OR_WRONG_CONTEXT":
-      return "No scheduled message was found in this channel for that ID.";
+      return translate(locale, "message.scheduleNotFound");
     case "CORRUPT":
-      return "WEFT found inconsistent scheduled-message state. Administrator inspection is required.";
+      return translate(locale, "message.scheduleCorrupt");
     case "UNAVAILABLE":
-      return "WEFT could not load the scheduled-message status. Please try again later.";
+      return translate(locale, "message.scheduleStatusFailed");
   }
 }
 
@@ -1088,201 +1338,209 @@ function scheduledMessageEditableLoadMessage(
     Awaited<ReturnType<ScheduledMessageCommandService["findEditable"]>>,
     { outcome: "ACTIVE" }
   >,
+  locale: AppLocale = "en-US",
 ): string {
   switch (result.outcome) {
     case "EXECUTING":
-      return "That scheduled message is already executing and cannot be edited.";
+      return translate(locale, "message.editExecuting");
     case "CANCELLED":
-      return "That scheduled message has been cancelled.";
+      return translate(locale, "message.scheduleAlreadyCancelled");
     case "COMPLETED":
-      return "That scheduled message has already completed.";
+      return translate(locale, "message.scheduleCompleted");
     case "FAILED":
-      return "That scheduled message has already failed.";
+      return translate(locale, "message.scheduleFailed");
     case "NOT_FOUND_OR_WRONG_CONTEXT":
-      return "No scheduled message was found in this channel for that ID.";
+      return translate(locale, "message.scheduleNotFound");
     case "CORRUPT":
-      return "WEFT found inconsistent scheduled-message state. Administrator inspection is required.";
+      return translate(locale, "message.scheduleCorrupt");
     case "UNAVAILABLE":
-      return "WEFT could not load the scheduled message. Please try again later.";
+      return translate(locale, "message.scheduleReadFailed");
   }
 }
 
 function scheduledMessageEditResultMessage(
   result: Awaited<ReturnType<ScheduledMessageCommandService["edit"]>>,
+  locale: AppLocale = "en-US",
 ): string {
   if (result.outcome === "EDITED" || result.outcome === "UNCHANGED") {
-    const kind = result.kind === "RECURRING" ? "Recurring schedule" : "One-time schedule";
-    const warning =
-      result.kind === "RECURRING"
-        ? " An occurrence already claimed or executing keeps its existing payload."
-        : "";
-    return `${kind} \`${result.definition.action.id}\` payload ${result.outcome === "EDITED" ? "updated" : "unchanged"}.${warning}`;
+    return translate(locale, "message.schedulePayloadEdited", {
+      id: result.definition.action.id,
+      recurring: result.kind === "RECURRING",
+      unchanged: result.outcome === "UNCHANGED",
+    });
   }
   if (result.outcome === "INVALID_PAYLOAD") {
-    return createScheduledMessageResultMessage({ outcome: "FAILURE", code: result.code });
+    return createScheduledMessageResultMessage({ outcome: "FAILURE", code: result.code }, locale);
   }
   if (result.outcome === "CONFLICT") {
-    return "This scheduled message changed after the edit form opened. Open a new edit form and try again.";
+    return translate(locale, "message.scheduleEditConflict");
   }
   if (result.outcome === "PERSISTENCE_UNCONFIRMED") {
-    return "WEFT could not confirm the scheduled-message edit. Inspect the current schedule before retrying.";
+    return translate(locale, "message.scheduleEditUnconfirmed");
   }
   if (result.outcome === "CORRUPT") {
-    return "WEFT found inconsistent scheduled-message state. Administrator inspection is required.";
+    return translate(locale, "message.scheduleCorrupt");
   }
   if (result.outcome === "NOT_FOUND_OR_WRONG_CONTEXT") {
-    return "No scheduled message was found in this channel for that ID.";
+    return translate(locale, "message.scheduleNotFound");
   }
   if (result.outcome === "EXECUTING") {
-    return "That scheduled message is already executing and cannot be edited.";
+    return translate(locale, "message.editExecuting");
   }
-  if (result.outcome === "CANCELLED") return "That scheduled message has been cancelled.";
-  if (result.outcome === "COMPLETED") return "That scheduled message has already completed.";
-  if (result.outcome === "FAILED") return "That scheduled message has already failed.";
-  return "WEFT received an unexpected scheduled-message edit result.";
+  if (result.outcome === "CANCELLED") return translate(locale, "message.scheduleAlreadyCancelled");
+  if (result.outcome === "COMPLETED") return translate(locale, "message.scheduleCompleted");
+  if (result.outcome === "FAILED") return translate(locale, "message.scheduleFailed");
+  return translate(locale, "message.unexpectedScheduleEdit");
 }
 
 function scheduledMessageRescheduleResultMessage(
   result: Awaited<ReturnType<ScheduledMessageCommandService["reschedule"]>>,
+  locale: AppLocale = "en-US",
 ): string {
   if (result.outcome === "RESCHEDULED") {
     const when = Math.floor(result.definition.action.executeAt.getTime() / 1_000);
-    const base = `One-time schedule \`${result.definition.action.id}\` rescheduled for <t:${when}:F> (<t:${when}:R>).`;
-    return result.deliveryPendingReconciliation
-      ? `${base} Delivery is pending reconciliation.`
-      : base;
+    return translate(locale, "message.rescheduled", {
+      id: result.definition.action.id,
+      when,
+      pending: result.deliveryPendingReconciliation,
+    });
   }
   if (result.outcome in ONE_TIME_SCHEDULE_ERRORS) {
-    return ONE_TIME_SCHEDULE_ERRORS[result.outcome as keyof typeof ONE_TIME_SCHEDULE_ERRORS];
+    return translate(
+      locale,
+      `schedule.error.${result.outcome as keyof typeof ONE_TIME_SCHEDULE_ERRORS}`,
+    );
   }
   if (result.outcome === "WRONG_KIND")
-    return "This is a recurring schedule; use /message schedule recurrence-edit.";
+    return translate(locale, "message.recurringUseRecurrenceEdit");
   if (result.outcome === "CONFLICT") {
-    return "The scheduled message changed concurrently. Review it and retry the reschedule.";
+    return translate(locale, "message.rescheduleConflict");
   }
   if (result.outcome === "PERSISTENCE_UNCONFIRMED") {
-    return "WEFT could not confirm the reschedule. Inspect the current schedule before retrying.";
+    return translate(locale, "message.rescheduleUnconfirmed");
   }
   if (result.outcome === "UNAVAILABLE") {
-    return "WEFT could not load the scheduled message. Please try again later.";
+    return translate(locale, "message.scheduleReadFailed");
   }
   if (result.outcome === "CORRUPT") {
-    return "WEFT found inconsistent scheduled-message state. Administrator inspection is required.";
+    return translate(locale, "message.scheduleCorrupt");
   }
   if (result.outcome === "NOT_FOUND_OR_WRONG_CONTEXT") {
-    return "No scheduled message was found in this channel for that ID.";
+    return translate(locale, "message.scheduleNotFound");
   }
   if (result.outcome === "EXECUTING") {
-    return "That scheduled message is already executing and cannot be rescheduled.";
+    return translate(locale, "message.rescheduleExecuting");
   }
-  if (result.outcome === "CANCELLED") return "That scheduled message has been cancelled.";
-  if (result.outcome === "COMPLETED") return "That scheduled message has already completed.";
-  if (result.outcome === "FAILED") return "That scheduled message has already failed.";
-  return "WEFT received an unexpected scheduled-message reschedule result.";
+  if (result.outcome === "CANCELLED") return translate(locale, "message.scheduleAlreadyCancelled");
+  if (result.outcome === "COMPLETED") return translate(locale, "message.scheduleCompleted");
+  if (result.outcome === "FAILED") return translate(locale, "message.scheduleFailed");
+  return translate(locale, "message.unexpectedReschedule");
 }
 
-function sendResultMessage(result: ManagedMessageSendResult): string {
-  if (result.outcome === "SUCCESS") return `Managed message \`${result.messageId}\` sent.`;
+function sendResultMessage(result: ManagedMessageSendResult, locale: AppLocale = "en-US"): string {
+  if (result.outcome === "SUCCESS")
+    return translate(locale, "message.sent", { id: result.messageId });
   if (result.outcome === "UNCONFIRMED") {
-    return `WEFT sent message \`${result.messageId}\`, but could not confirm whether it is managed. WEFT did not attempt removal. Check its state before retrying or deleting it.`;
+    return translate(locale, "message.managementUnconfirmed", { id: result.messageId });
   }
   if (result.outcome === "PARTIAL_FAILURE") {
     if (result.deletionOutcome === "REJECTED")
-      return `WEFT sent message \`${result.messageId}\`, but could not establish it as managed. Discord rejected removal; manual cleanup may be required.`;
-    return `WEFT sent message \`${result.messageId}\`, but could not establish it as managed or confirm its removal. The message may still exist; manual cleanup may be required.`;
+      return translate(locale, "message.removalRejected", { id: result.messageId });
+    return translate(locale, "message.removalUnconfirmed", { id: result.messageId });
   }
   switch (result.code) {
     case "EMPTY_CONTENT":
-      return "Enter message content or a visible embed; non-empty content cannot be whitespace-only.";
+      return translate(locale, "message.emptyContent");
     case "CONTENT_TOO_LONG":
-      return "Message content must be 2000 characters or fewer.";
+      return translate(locale, "message.contentTooLong");
     case "EMBED_TITLE_TOO_LONG":
-      return "The embed title must be 256 characters or fewer.";
+      return translate(locale, "message.embedTitleTooLong");
     case "EMBED_DESCRIPTION_TOO_LONG":
-      return "The embed description must be 4000 characters or fewer.";
+      return translate(locale, "message.embedDescriptionTooLong");
     case "EMBED_COLOR_INVALID":
-      return "Enter the embed color as RRGGBB or #RRGGBB.";
+      return translate(locale, "message.invalidEmbedColor");
     case "EMBED_COLOR_ONLY":
-      return "An embed color requires a title, description, or image URL.";
+      return translate(locale, "message.embedColorOnly");
     case "EMBED_IMAGE_URL_TOO_LONG":
-      return "The embed image URL must be 2048 characters or fewer.";
+      return translate(locale, "message.embedImageTooLong");
     case "EMBED_IMAGE_URL_INVALID":
-      return "Enter an absolute HTTP or HTTPS embed image URL.";
+      return translate(locale, "message.invalidEmbedImage");
     case "UNSUPPORTED_TARGET":
-      return "Managed messages are only supported in a guild text or active thread channel.";
+      return translate(locale, "message.context");
     case "ARCHIVED_THREAD":
-      return "Managed messages cannot be sent in an archived thread.";
+      return translate(locale, "message.sendArchived");
     case "ACTOR_PERMISSION_MISSING":
-      return "You need the Manage Messages permission to send managed messages.";
+      return translate(locale, "message.sendPermission");
     case "BOT_PERMISSION_MISSING":
-      return "WEFT cannot send messages in this channel with its current permissions.";
+      return translate(locale, "message.sendBotPermission");
     case "CURRENT_STATE_CHECK_FAILED":
-      return "WEFT could not verify the current channel or permissions. Please try again later.";
+      return translate(locale, "message.channelCheckFailed");
     case "SEND_REJECTED":
-      return "Discord rejected the managed message. The message was not sent.";
+      return translate(locale, "message.sendRejected");
     case "SEND_UNCONFIRMED":
-      return "WEFT could not confirm whether Discord sent the message. Check the channel before retrying.";
+      return translate(locale, "message.sendUnconfirmed");
     case "PERSISTENCE_UNCONFIRMED_ALREADY_ABSENT":
-      return "WEFT sent the message but could not establish it as managed. The message is already absent.";
+      return translate(locale, "message.alreadyAbsent");
     case "PERSISTENCE_UNCONFIRMED_COMPENSATED":
-      return "WEFT sent the message but could not establish it as managed, so the sent message was removed.";
+      return translate(locale, "message.sendCompensated");
   }
 }
 
-function editResultMessage(result: ManagedMessageEditResult): string {
-  if (result.outcome === "SUCCESS") return `Managed message \`${result.messageId}\` edited.`;
-  if (result.outcome === "UNCHANGED") return `Managed message \`${result.messageId}\` unchanged.`;
-  if (result.outcome === "DELETED")
-    return "The Discord message no longer exists and is now marked as deleted in WEFT.";
+function editResultMessage(result: ManagedMessageEditResult, locale: AppLocale = "en-US"): string {
+  if (result.outcome === "SUCCESS")
+    return translate(locale, "message.edited", { id: result.messageId });
+  if (result.outcome === "UNCHANGED")
+    return translate(locale, "message.unchanged", { id: result.messageId });
+  if (result.outcome === "DELETED") return translate(locale, "message.deletionDetected");
   if (result.outcome === "PARTIAL_FAILURE") {
     return result.kind === "DELETION_DETECTION"
-      ? `Discord message \`${result.messageId}\` is missing, but WEFT could not confirm the managed deletion state. Administrator inspection is required.`
-      : `WEFT edited message \`${result.messageId}\`, but could not confirm managed-state finalization or a safe restoration. Administrator inspection is required.`;
+      ? translate(locale, "message.deletionUnconfirmed", { id: result.messageId })
+      : translate(locale, "message.editPartial", { id: result.messageId });
   }
   switch (result.code) {
     case "EMPTY_CONTENT":
-      return "Enter message content or a visible embed; non-empty content cannot be whitespace-only.";
+      return translate(locale, "message.emptyContent");
     case "CONTENT_TOO_LONG":
-      return "Message content must be 2000 characters or fewer.";
+      return translate(locale, "message.contentTooLong");
     case "EMBED_TITLE_TOO_LONG":
-      return "The embed title must be 256 characters or fewer.";
+      return translate(locale, "message.embedTitleTooLong");
     case "EMBED_DESCRIPTION_TOO_LONG":
-      return "The embed description must be 4000 characters or fewer.";
+      return translate(locale, "message.embedDescriptionTooLong");
     case "EMBED_COLOR_INVALID":
-      return "Enter the embed color as RRGGBB or #RRGGBB.";
+      return translate(locale, "message.invalidEmbedColor");
     case "EMBED_COLOR_ONLY":
-      return "An embed color requires a title, description, or image URL.";
+      return translate(locale, "message.embedColorOnly");
     case "EMBED_IMAGE_URL_TOO_LONG":
-      return "The embed image URL must be 2048 characters or fewer.";
+      return translate(locale, "message.embedImageTooLong");
     case "EMBED_IMAGE_URL_INVALID":
-      return "Enter an absolute HTTP or HTTPS embed image URL.";
+      return translate(locale, "message.invalidEmbedImage");
     case "TARGET_NOT_FOUND":
-      return "No active managed message was found in this channel for that target.";
+      return translate(locale, "message.notFound");
     case "CONFLICT":
-      return "This managed message changed after the edit form opened. Open a new edit form and try again.";
+      return translate(locale, "message.editConflict");
     case "ACTOR_PERMISSION_MISSING":
-      return "You no longer have the Manage Messages permission required to edit this message.";
+      return translate(locale, "message.editPermissionLost");
     case "STATE_MISMATCH":
-      return "Discord and WEFT disagree about this managed message. An administrator must inspect it before editing.";
+      return translate(locale, "message.stateMismatch");
     case "ARCHIVED_THREAD":
-      return "Managed messages cannot be edited in an archived thread.";
+      return translate(locale, "message.editArchived");
     case "UNSUPPORTED_TARGET":
     case "MESSAGE_INVALID":
-      return "WEFT could not verify that target as an editable managed message in this channel.";
+      return translate(locale, "message.invalidEditableTarget");
     case "BOT_PERMISSION_MISSING":
-      return "WEFT cannot edit this message with its current access and permissions.";
+      return translate(locale, "message.editBotPermission");
     case "CURRENT_STATE_CHECK_FAILED":
-      return "WEFT could not verify the current message or permissions. Please try again later.";
+      return translate(locale, "message.messageCheckFailed");
     case "EDIT_REJECTED":
-      return "Discord rejected the managed-message edit.";
+      return translate(locale, "message.editRejected");
     case "EDIT_NOT_APPLIED":
-      return "Discord did not apply the managed-message edit. No managed state was changed.";
+      return translate(locale, "message.editNotApplied");
     case "EDIT_UNCONFIRMED":
-      return "WEFT could not confirm whether Discord applied the edit. Administrator inspection is required.";
+      return translate(locale, "message.editUnconfirmed");
     case "PERSISTENCE_CHECK_FAILED":
-      return "WEFT could not verify the current managed state. Please try again later.";
+      return translate(locale, "message.stateCheckFailed");
     case "PERSISTENCE_UNCONFIRMED_COMPENSATED":
-      return "WEFT could not finalize the managed edit, so it safely restored the previous Discord message.";
+      return translate(locale, "message.editCompensated");
   }
 }
 
@@ -1291,6 +1549,7 @@ export async function handleManagedMessageModalSubmit(
   service: ManagedMessageService,
   scheduledMessages?: ScheduledMessageCommandService,
 ): Promise<boolean> {
+  const locale = resolveLocale(interaction.locale);
   const send = interaction.customId === MANAGED_MESSAGE_SEND_MODAL_ID;
   const ownedEdit = interaction.customId.startsWith(MANAGED_MESSAGE_EDIT_MODAL_PREFIX);
   const ownedScheduledCreate = interaction.customId.startsWith(
@@ -1314,46 +1573,32 @@ export async function handleManagedMessageModalSubmit(
     ? parseScheduledMessageEditModalId(interaction.customId)
     : undefined;
   if (ownedEdit && editTarget === undefined) {
-    await interaction.reply(
-      ephemeralReply("This managed-message edit form is invalid or expired."),
-    );
+    await interaction.reply(ephemeralReply(translate(locale, "message.editFormExpired")));
     return true;
   }
   if (ownedScheduledCreate && scheduledInput === undefined) {
-    await interaction.reply(ephemeralReply("This scheduled-message form is invalid or expired."));
+    await interaction.reply(ephemeralReply(translate(locale, "message.scheduleFormExpired")));
     return true;
   }
   if (ownedRecurringCreate && recurringInput === undefined) {
-    await interaction.reply(ephemeralReply("This recurring-message form is invalid or expired."));
+    await interaction.reply(ephemeralReply(translate(locale, "message.recurringFormExpired")));
     return true;
   }
   if (ownedScheduledEdit && scheduledEditTarget === undefined) {
-    await interaction.reply(
-      ephemeralReply("This scheduled-message edit form is invalid or expired."),
-    );
+    await interaction.reply(ephemeralReply(translate(locale, "message.scheduleEditFormExpired")));
     return true;
   }
   if (ownedScheduledEdit) {
     if (!interaction.inGuild() || interaction.channelId === null) {
-      await interaction.reply(
-        ephemeralReply(
-          "Scheduled-message administration is only supported in a guild text or thread channel.",
-        ),
-      );
+      await interaction.reply(ephemeralReply(translate(locale, "message.scheduleContext")));
       return true;
     }
     if (!isSupportedTarget(interaction.channel)) {
-      await interaction.reply(
-        ephemeralReply(
-          "Scheduled-message administration is only supported in a guild text or thread channel.",
-        ),
-      );
+      await interaction.reply(ephemeralReply(translate(locale, "message.scheduleContext")));
       return true;
     }
     if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageMessages)) {
-      await interaction.reply(
-        ephemeralReply("You need the Manage Messages permission to manage messages."),
-      );
+      await interaction.reply(ephemeralReply(translate(locale, "message.managePermission")));
       return true;
     }
   }
@@ -1371,20 +1616,16 @@ export async function handleManagedMessageModalSubmit(
     await interaction.reply(
       ephemeralReply(
         ownedScheduledCreate || ownedRecurringCreate
-          ? createScheduledMessageResultMessage(result)
+          ? createScheduledMessageResultMessage(result, locale)
           : send
-            ? sendResultMessage(result)
-            : editResultMessage(result),
+            ? sendResultMessage(result, locale)
+            : editResultMessage(result, locale),
       ),
     );
     return true;
   }
   if (!interaction.inGuild() || interaction.channelId === null) {
-    await interaction.reply(
-      ephemeralReply(
-        "Managed messages are only supported in a guild text or active thread channel.",
-      ),
-    );
+    await interaction.reply(ephemeralReply(translate(locale, "message.context")));
     return true;
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -1399,7 +1640,7 @@ export async function handleManagedMessageModalSubmit(
       schedule: scheduledInput,
       payload: validation.payload,
     });
-    await interaction.editReply(editReply(createScheduledMessageResultMessage(result)));
+    await interaction.editReply(editReply(createScheduledMessageResultMessage(result, locale)));
   } else if (ownedRecurringCreate) {
     if (recurringInput === undefined || scheduledMessages?.createRecurring === undefined)
       throw new Error("Recurring creation is unavailable");
@@ -1410,7 +1651,7 @@ export async function handleManagedMessageModalSubmit(
       recurrence: recurringInput,
       payload: validation.payload,
     });
-    await interaction.editReply(editReply(createRecurringMessageResultMessage(result)));
+    await interaction.editReply(editReply(createRecurringMessageResultMessage(result, locale)));
   } else if (ownedScheduledEdit) {
     if (scheduledEditTarget === undefined)
       throw new Error("Validated scheduled edit target is missing");
@@ -1424,7 +1665,7 @@ export async function handleManagedMessageModalSubmit(
       expectedRevision: scheduledEditTarget.expectedRevision,
       payload: validation.payload,
     });
-    await interaction.editReply(editReply(scheduledMessageEditResultMessage(result)));
+    await interaction.editReply(editReply(scheduledMessageEditResultMessage(result, locale)));
   } else if (send) {
     const result = await service.send({
       guildId: interaction.guildId,
@@ -1432,7 +1673,7 @@ export async function handleManagedMessageModalSubmit(
       actorUserId: interaction.user.id,
       payload: validation.payload,
     });
-    await interaction.editReply(editReply(sendResultMessage(result)));
+    await interaction.editReply(editReply(sendResultMessage(result, locale)));
   } else {
     if (editTarget === undefined) throw new Error("Validated edit target is missing");
     const result = await service.edit({
@@ -1443,7 +1684,7 @@ export async function handleManagedMessageModalSubmit(
       expectedRevision: editTarget.expectedRevision,
       payload: validation.payload,
     });
-    await interaction.editReply(editReply(editResultMessage(result)));
+    await interaction.editReply(editReply(editResultMessage(result, locale)));
   }
   return true;
 }

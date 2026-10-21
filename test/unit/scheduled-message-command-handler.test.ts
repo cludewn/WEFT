@@ -29,7 +29,7 @@ import {
   SCHEDULED_MESSAGE_EDIT_MODAL_PREFIX,
 } from "../../src/messages/message-command.js";
 import { createScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
-import { ONE_TIME_SCHEDULE_ERRORS } from "../../src/messages/one-time-message-schedule.js";
+import type { ONE_TIME_SCHEDULE_ERRORS } from "../../src/messages/one-time-message-schedule.js";
 import type { GuildSettingsStore } from "../../src/guild/guild-settings.js";
 import type { ScheduledMessageStore } from "../../src/messages/scheduled-message-persistence.js";
 import type { ScheduledMessageCommandService } from "../../src/messages/scheduled-message-command.js";
@@ -345,7 +345,7 @@ describe("scheduled message command handler", () => {
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
     const response = JSON.stringify(f.editReply.mock.calls);
     expect(response).toContain("Current occurrence scheduled time");
-    expect(response).not.toContain("Next scheduled occurrence");
+    expect(response).not.toContain("Next occurrence scheduled time");
     expect(response).not.toContain("sensitive scheduled content");
     expect(response).toContain("Weekdays: mon, wed");
   });
@@ -376,7 +376,7 @@ describe("scheduled message command handler", () => {
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
     const response = JSON.stringify(f.editReply.mock.calls);
     expect(response).toContain("retry count: none");
-    expect(response).toContain("Historical scheduled time");
+    expect(response).toContain("Scheduled time before cancellation");
   });
 
   it("labels recurring list rows by state", async () => {
@@ -411,8 +411,8 @@ describe("scheduled message command handler", () => {
     const response = f.editReply.mock.calls[0]![0].content!;
     expect(response).toContain("One-time · **ACTIVE**");
     expect(response).toContain("Recurring daily\nSeries: **ACTIVE** · Occurrence: **EXECUTING**");
-    expect(response).toContain("Current: <t:1893553445:F>");
-    expect(response).not.toContain("Next:");
+    expect(response).toContain("Due: <t:1893553445:F>");
+    expect(response).not.toContain("Next due:");
     expect(response).not.toContain("sensitive scheduled content");
   });
   it("round-trips only a validated relative delay in the modal custom ID", () => {
@@ -434,7 +434,7 @@ describe("scheduled message command handler", () => {
     await handleMessageCommand(f.interaction, s.managed, s.scheduled);
     expect(ModalBuilder.from(f.showModal.mock.calls[0]![0]).toJSON()).toMatchObject({
       custom_id: createScheduledMessageCreateModalId({ kind: "AFTER", durationMs: 1_800_000 }),
-      title: "Schedule managed message",
+      title: "Schedule a post",
     });
     expect(f.deferReply).not.toHaveBeenCalled();
   });
@@ -458,8 +458,8 @@ describe("scheduled message command handler", () => {
     expect(s.managed.send).not.toHaveBeenCalled();
     const response = JSON.stringify(f.editReply.mock.calls);
     expect(response).toContain("schedule-id");
-    expect(response).toContain("Target: <#channel-id>");
-    expect(response).toContain("Scheduled for: <t:1893553445:F> (<t:1893553445:R>)");
+    expect(response).toContain("Channel: <#channel-id>");
+    expect(response).toContain("Send time: <t:1893553445:F> (<t:1893553445:R>)");
     expect(response).not.toContain("sensitive scheduled content");
     expect(response).not.toContain("sensitive embed title");
     expect(response).not.toContain("sensitive embed description");
@@ -477,9 +477,11 @@ describe("scheduled message command handler", () => {
     await handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled);
     const response = JSON.stringify(f.editReply.mock.calls);
     expect(response).toContain("schedule-id");
-    expect(response).toContain("Target: <#channel-id>");
-    expect(response).toContain("Scheduled for: <t:1893553445:F> (<t:1893553445:R>)");
-    expect(response).toContain("Delivery is pending reconciliation");
+    expect(response).toContain("Channel: <#channel-id>");
+    expect(response).toContain("Send time: <t:1893553445:F> (<t:1893553445:R>)");
+    expect(response).toContain(
+      "Execution setup is unconfirmed; WEFT will check and repair it automatically",
+    );
     expect(response).not.toContain("sensitive scheduled content");
     expect(response).not.toContain("sensitive embed title");
     expect(response).not.toContain("sensitive embed description");
@@ -550,7 +552,7 @@ describe("scheduled message command handler", () => {
     const modal = ModalBuilder.from(f.showModal.mock.calls[0]![0]).toJSON();
     expect(modal).toMatchObject({
       custom_id: createScheduledMessageEditModalId(scheduleId, 4),
-      title: "Edit scheduled message",
+      title: "Edit scheduled post",
     });
     expect(JSON.stringify(modal)).toContain("prefilled content");
     expect(JSON.stringify(modal)).toContain("prefilled title");
@@ -581,7 +583,7 @@ describe("scheduled message command handler", () => {
 
     expect(f.reply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content: "You need the Manage Messages permission to manage messages.",
+        content: "The Manage Messages permission is required.",
       }),
     );
     expect(f.getTextInputValue).not.toHaveBeenCalled();
@@ -601,8 +603,7 @@ describe("scheduled message command handler", () => {
 
     expect(f.reply).toHaveBeenCalledWith(
       expect.objectContaining({
-        content:
-          "Scheduled-message administration is only supported in a guild text or thread channel.",
+        content: "Use a server text or announcement channel, or a thread.",
       }),
     );
     expect(f.getTextInputValue).not.toHaveBeenCalled();
@@ -759,7 +760,8 @@ describe("scheduled message list responses", () => {
     const content =
       page === null
         ? options.content
-        : scheduledMessageListMessage({ outcome: "FOUND", hasNext: false, schedules }, page);
+        : scheduledMessageListMessage({ outcome: "FOUND", hasNext: false, schedules }, page)
+            .content;
     if (typeof content !== "string") throw new Error("Expected list response content");
     expect(content.length).toBeLessThanOrEqual(2000);
     expect(options.allowedMentions).toEqual({ parse: [] });
@@ -828,7 +830,7 @@ describe("scheduled message list responses", () => {
       });
       const { content } = await render(schedules);
       expectCompleteRows(content, schedules);
-      expect(content.split("\n")[0]).toBe("Scheduled messages — page 1");
+      expect(content.split("\n")[0]).toBe("Scheduled posts — page 1");
       expect(content).not.toContain("(series / occurrence)");
       const entries = content.split("\n- ").slice(1);
       const rows = content.split("\n").filter((line) => line.startsWith("- "));
@@ -843,17 +845,19 @@ describe("scheduled message list responses", () => {
           expect(row).toBe(
             `- \`${schedule.scheduledActionId}\` Recurring ${schedule.frequency.toLowerCase()}`,
           );
-          expect(entries[index]).toContain("\nSeries: **ACTIVE** · Occurrence: **PENDING**\nNext:");
+          expect(entries[index]).toContain(
+            "\nSeries: **ACTIVE** · Occurrence: **PENDING**\nNext due:",
+          );
         }
       }
     },
   );
 
   it.each([
-    ["PENDING", "Next"],
-    ["EXECUTING", "Current"],
-    ["RETRY_PENDING", "Current"],
-    [null, "Last materialized"],
+    ["PENDING", "Next due"],
+    ["EXECUTING", "Due"],
+    ["RETRY_PENDING", "Due"],
+    [null, "Last due"],
   ] as const)("labels %s using the authoritative instant as %s", async (status, label) => {
     const schedule = {
       ...recurring(),
@@ -867,9 +871,7 @@ describe("scheduled message list responses", () => {
     expect(content).toContain(`Series: **ACTIVE** · Occurrence: ${state}`);
     expect(content).toContain(`${label}: <t:1893553445:F>`);
     expect(content.match(/<t:[^>]+>/g)).toEqual(["<t:1893553445:F>"]);
-    for (const other of ["Next", "Current", "Last materialized"].filter(
-      (meaning) => meaning !== label,
-    ))
+    for (const other of ["Next due", "Due", "Last due"].filter((meaning) => meaning !== label))
       expect(content).not.toContain(`${other}:`);
   });
 
@@ -894,15 +896,13 @@ describe("scheduled message list responses", () => {
 
   it.each([null, 2])("renders an empty page %s", async (page) => {
     const { content } = await render([], page);
-    expect(content).toBe(
-      `No active or executing scheduled messages were found on page ${page ?? 1}.`,
-    );
+    expect(content).toBe(`No active or executing posts on page ${page ?? 1}.`);
   });
 
   it("renders page 2 without changing the supplied order", async () => {
     const schedules = [recurring(2), oneTime(1)];
     const { content } = await render(schedules, 2);
-    expect(content.startsWith("Scheduled messages — page 2\n")).toBe(true);
+    expect(content.startsWith("Scheduled posts — page 2\n")).toBe(true);
     expectCompleteRows(content, schedules);
   });
 
@@ -931,17 +931,17 @@ describe("scheduled message list responses", () => {
       // This page still has a safe integer offset in the application service.
       const { content } = await render(schedules, 900_719_925_474_100);
       expectCompleteRows(content, schedules);
-      expect(content.startsWith("Scheduled messages — page 900719925474100\n")).toBe(true);
+      expect(content.startsWith("Scheduled posts — page 900719925474100\n")).toBe(true);
       if (kind === "weekly" && currentOccurrenceStatus === "RETRY_PENDING") {
-        expect(content.length).toBe(1993);
+        expect(content.length).toBe(1950);
         expect(content.split("Series: **ACTIVE** · Occurrence: **RETRY_PENDING**")).toHaveLength(
           11,
         );
       }
       if (kind === "weekly" && currentOccurrenceStatus === null) {
-        expect(content.length).toBe(1963);
+        expect(content.length).toBe(1870);
         expect(content.split("Series: **ACTIVE** · Occurrence: none")).toHaveLength(11);
-        expect(content.split("Last materialized:")).toHaveLength(11);
+        expect(content.split("Last due:")).toHaveLength(11);
       }
     },
   );
@@ -959,7 +959,7 @@ describe("scheduled message list responses", () => {
       row.scheduledActionId += "x".repeat(extra);
       const overflow = await render(schedules);
       expect(overflow.content).toBe(
-        "WEFT could not display the complete scheduled-message page safely. No schedules were displayed.",
+        "The complete page could not be displayed safely. No schedules are shown.",
       );
       expect(overflow.editReply.mock.calls[0]![0].components).toEqual([]);
       for (const schedule of schedules)
@@ -979,9 +979,10 @@ describe("scheduled message list responses", () => {
       if (field === "invalid date") row.executeAt = new Date(NaN);
       const { content } = await render(schedules);
       expect(content).toBe(
-        "WEFT could not display the complete scheduled-message page safely. No schedules were displayed.",
+        "The complete page could not be displayed safely. No schedules are shown.",
       );
       expect(content).not.toContain("Scheduled messages — page");
+      expect(content).not.toContain("Scheduled posts — page");
       expect(content).not.toContain("unexpected");
       expect(content).not.toContain("😀");
       for (const schedule of schedules) expect(content).not.toContain(schedule.scheduledActionId);
@@ -990,7 +991,7 @@ describe("scheduled message list responses", () => {
 
   it.each([
     ["INVALID_PAGE", 0, "Page must be a positive integer."],
-    ["UNAVAILABLE", 1, "WEFT could not load scheduled messages. Please try again later."],
+    ["UNAVAILABLE", 1, "Could not load scheduled posts. Try again later."],
   ] as const)("preserves the %s response", async (outcome, page, expected) => {
     const f = commandInteraction({ subcommand: "list", value: "", page });
     const s = services();
@@ -1013,7 +1014,7 @@ describe("scheduled message list responses", () => {
     const s = services();
     await handleListCommand(f.interaction, s);
     expect(f.reply).toHaveBeenCalledWith({
-      content: "You need the Manage Messages permission to manage messages.",
+      content: "The Manage Messages permission is required.",
       flags: MessageFlags.Ephemeral,
       allowedMentions: { parse: [] },
     });
@@ -1213,27 +1214,39 @@ describe("absolute one-time commands and modal transport", () => {
     expect(getOrCreate).not.toHaveBeenCalled();
   });
 
-  it.each(Object.entries(ONE_TIME_SCHEDULE_ERRORS))(
-    "renders bounded %s errors for create and reschedule",
-    async (code, message) => {
-      const s = services();
-      const typedCode = code as keyof typeof ONE_TIME_SCHEDULE_ERRORS;
-      s.create.mockResolvedValue({ outcome: "FAILURE", code: typedCode });
-      const modal = modalInteraction(
-        createScheduledMessageCreateModalId({ kind: "AT", localDateTime: "2030-01-02 03:06" }),
-      );
-      await handleManagedMessageModalSubmit(modal.interaction, s.managed, s.scheduled);
-      expect(modal.editReply).toHaveBeenCalledWith(
-        expect.objectContaining({ content: message, allowedMentions: { parse: [] } }),
-      );
-      s.scheduled.reschedule.mockResolvedValue({ outcome: typedCode });
-      const f = commandInteraction({ subcommand: "reschedule", value: "schedule-id", after: "1m" });
-      await handleMessageCommand(f.interaction, s.managed, s.scheduled);
-      expect(f.editReply).toHaveBeenCalledWith(
-        expect.objectContaining({ content: message, allowedMentions: { parse: [] } }),
-      );
-    },
-  );
+  it.each(
+    Object.entries({
+      MISSING_SELECTOR: "Specify either after or at.",
+      CONFLICTING_SELECTORS: "Specify either after or at; they cannot be combined.",
+      INVALID_DURATION: "Enter 1m to 365d, e.g. 30m, 2h, 7d.",
+      INVALID_AT_FORMAT: "Use YYYY-MM-DD HH:mm in WEFT's default timezone.",
+      INVALID_AT_DATE: "Enter a valid date.",
+      INVALID_GUILD_TIMEZONE: "Set WEFT's default IANA timezone before using at.",
+      TIMEZONE_UNAVAILABLE: "Could not load WEFT's default timezone. Try again later.",
+      DST_GAP: "That time does not exist in the configured timezone. Choose another time.",
+      DST_OVERLAP:
+        "That time occurs twice in the configured timezone. Choose another time or use after.",
+      TOO_SOON: "Schedule the message at least one minute ahead.",
+      TOO_FAR: "Choose a time within the next 365 days.",
+    } satisfies Record<keyof typeof ONE_TIME_SCHEDULE_ERRORS, string>),
+  )("renders bounded %s errors for create and reschedule", async (code, message) => {
+    const s = services();
+    const typedCode = code as keyof typeof ONE_TIME_SCHEDULE_ERRORS;
+    s.create.mockResolvedValue({ outcome: "FAILURE", code: typedCode });
+    const modal = modalInteraction(
+      createScheduledMessageCreateModalId({ kind: "AT", localDateTime: "2030-01-02 03:06" }),
+    );
+    await handleManagedMessageModalSubmit(modal.interaction, s.managed, s.scheduled);
+    expect(modal.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: message, allowedMentions: { parse: [] } }),
+    );
+    s.scheduled.reschedule.mockResolvedValue({ outcome: typedCode });
+    const f = commandInteraction({ subcommand: "reschedule", value: "schedule-id", after: "1m" });
+    await handleMessageCommand(f.interaction, s.managed, s.scheduled);
+    expect(f.editReply).toHaveBeenCalledWith(
+      expect.objectContaining({ content: message, allowedMentions: { parse: [] } }),
+    );
+  });
 });
 
 afterEach(() => {
@@ -1430,15 +1443,15 @@ describe("recurring-create Modal failure classification", () => {
   }
 
   it.each([
-    [{ frequency: "invalid" }, "Choose daily or weekly for frequency."],
-    [{ time: "9:30" }, "Enter time as HH:MM on a 24-hour clock, e.g. 09:30."],
+    [{ frequency: "invalid" }, "Set frequency to daily or weekly."],
+    [{ time: "9:30" }, "Set time as a 24-hour HH:MM value, e.g. 09:30."],
     [
       { weekdays: "mon" },
-      "For daily, omit weekdays. For weekly, enter unique comma-separated mon,tue,wed,thu,fri,sat,sun tokens, e.g. mon,wed,fri.",
+      "frequency=weekly requires one or more unique comma-separated weekdays (mon,tue,wed,thu,fri,sat,sun). Omit weekdays for frequency=daily.",
     ],
     [
       { timezone: "invalid/timezone" },
-      "Enter a named IANA timezone, e.g. Asia/Tokyo, or UTC. Numeric offsets are not supported.",
+      "Set timezone to an IANA timezone, e.g. Asia/Tokyo or UTC. Numeric offsets are not supported.",
     ],
   ] as const)(
     "reports grounded recurrence validation failure for %j",
@@ -1479,7 +1492,7 @@ describe("recurring-create Modal failure classification", () => {
       await expect(handleMessageCommand(f.interaction, f.managed, f.scheduled)).rejects.toBe(error);
       expect(f.reply).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
-          content: "WEFT could not prepare the message form. Please try again later.",
+          content: "Could not open the message form. Try again later.",
           flags: MessageFlags.Ephemeral,
           allowedMentions: { parse: [] },
         }),
@@ -1599,11 +1612,11 @@ describe("scheduled-message response contract", () => {
           outcome === "CANCELLED" ? "cancelled." : "already cancelled.",
         );
         expect(response.content).toContain(
-          "Delivery cleanup could not be confirmed, but the schedule remains cancelled.",
+          "Stopping queued work is unconfirmed; WEFT will check it automatically.",
         );
         if (kind === "RECURRING") {
-          expect(response.content).toContain("Future occurrences will not be scheduled.");
-          expect(response.content).toContain("An occurrence already executing may still finish.");
+          expect(response.content).toContain("No future occurrences will be scheduled.");
+          expect(response.content).toContain("Work already running may still finish.");
         } else expect(response.content).not.toContain("occurrence");
       }
     },
@@ -1622,14 +1635,14 @@ describe("scheduled-message response contract", () => {
         const response = f.editReply.mock.calls[0]![0];
         expect(response.content).toContain(`\`${editableScheduleId}\``);
         expect(response.content).toContain(
-          outcome === "EDITED" ? "payload updated." : "payload unchanged.",
+          outcome === "EDITED" ? "content updated." : "content unchanged.",
         );
         expect(response.content).toContain(
           kind === "RECURRING" ? "Recurring schedule" : "One-time schedule",
         );
         if (kind === "RECURRING")
           expect(response.content).toContain(
-            "An occurrence already claimed or executing keeps its existing payload.",
+            "Running or retrying occurrences keep their previous content.",
           );
         else expect(response.content).not.toContain("occurrence");
         expect(response.allowedMentions).toEqual({ parse: [] });
@@ -1655,10 +1668,10 @@ describe("scheduled-message response contract", () => {
     });
     await handleMessageCommand(reschedule.interaction, s.managed, s.scheduled);
     expect(reschedule.editReply.mock.calls[0]![0].content).toContain(
-      `One-time schedule \`${editableScheduleId}\` rescheduled`,
+      `One-time schedule \`${editableScheduleId}\` moved to`,
     );
     expect(reschedule.editReply.mock.calls[0]![0].content).toContain(
-      "Delivery is pending reconciliation.",
+      "Execution setup is unconfirmed; WEFT will check and repair it automatically.",
     );
     for (const outcome of ["COMMITTED", "UNCHANGED"] as const) {
       s.scheduled.editRecurrence.mockResolvedValue(
@@ -1679,13 +1692,13 @@ describe("scheduled-message response contract", () => {
       await handleMessageCommand(f.interaction, s.managed, s.scheduled);
       const response = f.editReply.mock.calls[0]![0];
       expect(response.content).toContain(
-        `Recurring schedule \`${editableScheduleId}\` recurrence ${outcome === "COMMITTED" ? "updated" : "unchanged"}.`,
+        `Recurring schedule \`${editableScheduleId}\` ${outcome === "COMMITTED" ? "updated" : "is unchanged"}.`,
       );
       if (outcome === "COMMITTED") {
+        expect(response.content).toContain("Running or retrying occurrences keep the old settings");
         expect(response.content).toContain(
-          "An occurrence already claimed or executing keeps its existing recurrence",
+          "Execution setup is unconfirmed; WEFT will check and repair it automatically.",
         );
-        expect(response.content).toContain("Delivery is pending reconciliation.");
       }
       expect(response.allowedMentions).toEqual({ parse: [] });
     }
@@ -1713,9 +1726,9 @@ describe("scheduled-message response contract", () => {
         const response = f.editReply.mock.calls[0]![0];
         expect(response.content).not.toContain(invalidId);
         expect(response.content).not.toContain("private");
-        expect(response.content).not.toMatch(/updated\.|cancelled\.|rescheduled for/);
+        expect(response.content).not.toMatch(/updated\.|cancelled\.|rescheduled for|moved to/);
         if (outcome === "PERSISTENCE_UNCONFIRMED") {
-          expect(response.content).toContain("could not confirm");
+          expect(response.content).toContain("Could not confirm");
           expect(response.content).toMatch(/Inspect .*schedule before retrying/);
         }
         expect(response.allowedMentions).toEqual({ parse: [] });
@@ -1761,11 +1774,11 @@ describe("scheduled-message response contract", () => {
 });
 
 it.each([
-  ["ACTIVE", "PENDING", "Next scheduled occurrence", "**PENDING**"],
+  ["ACTIVE", "PENDING", "Next occurrence scheduled time", "**PENDING**"],
   ["ACTIVE", "EXECUTING", "Current occurrence scheduled time", "**EXECUTING**"],
   ["ACTIVE", "RETRY_PENDING", "Current occurrence scheduled time", "**RETRY_PENDING**"],
-  ["ACTIVE", null, "Last materialized scheduled time", "none"],
-  ["CANCELLED", "EXECUTING", "Historical scheduled time", "**EXECUTING**"],
+  ["ACTIVE", null, "Most recent occurrence scheduled time", "none"],
+  ["CANCELLED", "EXECUTING", "Scheduled time before cancellation", "**EXECUTING**"],
 ] as const)(
   "groups recurring %s/%s status independently and escapes scheduling metadata",
   async (status, currentOccurrenceStatus, timeLabel, occurrenceLabel) => {
@@ -1800,12 +1813,12 @@ it.each([
     expect(response.content).toContain("Creator: <@18446744073709551615> (`18446744073709551615`)");
     expect(response.content).toContain("Revision: 2147483647");
     expect(response.content).toContain("Scheduling timezone: \\*\\*zone\\*\\* \\[bad](url)");
-    expect(response.content).toContain("Discord timestamps display in your local timezone.");
+    expect(response.content).toContain("Discord shows timestamps in your local timezone.");
     expect(response.content).not.toContain("**zone**");
     expect(response.allowedMentions).toEqual({ parse: [] });
     expect(response.content!.length).toBeLessThanOrEqual(2000);
     if (status === "CANCELLED")
-      expect(response.content).not.toContain("Next scheduled occurrence:");
+      expect(response.content).not.toContain("Next occurrence scheduled time:");
   },
 );
 
@@ -1820,8 +1833,7 @@ it.each([
     handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled),
   ).resolves.toBe(true);
   expect(f.reply).toHaveBeenCalledExactlyOnceWith({
-    content:
-      "Enter message content or a visible embed; non-empty content cannot be whitespace-only.",
+    content: "Enter text or an embed title, description or image URL.",
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });

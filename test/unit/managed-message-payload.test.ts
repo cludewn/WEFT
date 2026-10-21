@@ -31,11 +31,72 @@ describe("managed message payload", () => {
 
   it.each([
     { content: "", embed: null },
-    { content: " \n\t", embed: { title: "visible" } },
+    { content: " \n\t", embed: null },
+    { content: "\u00a0\u3000\u2028\ufeff", embed: { title: " \t", description: "\u3000" } },
   ])("rejects an empty or whitespace-content payload %#", (input) => {
-    expect(validateManagedMessagePayload(input)).toMatchObject({
+    expect(validateManagedMessagePayload(input)).toEqual({
       ok: false,
       code: "EMPTY_CONTENT",
+    });
+  });
+
+  describe.each([
+    ["empty", ""],
+    ["ASCII whitespace", " \t\n\r"],
+    ["Unicode whitespace", "\u00a0\u1680\u2000\u2028\u2029\u202f\u205f\u3000\ufeff"],
+  ])("normalization of %s content", (_label, content) => {
+    it.each([
+      { title: "Title" },
+      { description: "Description" },
+      { imageUrl: "https://example.invalid/image.png" },
+    ])("accepts a visible embed %j with canonical empty content", (embed) => {
+      const result = validateManagedMessagePayload({ content, embed });
+      expect(result).toEqual({ ok: true, payload: { content: "", embed } });
+      if (!result.ok) throw new Error("Expected valid embed-only payload");
+      expect(validateManagedMessagePayload(result.payload)).toEqual(result);
+      expect(managedMessagePayloadsEqual(result.payload, { content: "", embed })).toBe(true);
+    });
+
+    it.each([
+      [{ title: "x".repeat(257), color: "invalid" }, "EMBED_TITLE_TOO_LONG"],
+      [{ description: "x".repeat(4001), color: "invalid" }, "EMBED_DESCRIPTION_TOO_LONG"],
+      [{ color: "invalid", imageUrl: "invalid" }, "EMBED_COLOR_INVALID"],
+      [{ imageUrl: "x".repeat(2049) }, "EMBED_IMAGE_URL_TOO_LONG"],
+      [{ imageUrl: "invalid" }, "EMBED_IMAGE_URL_INVALID"],
+      [{ color: "#FF0000" }, "EMBED_COLOR_ONLY"],
+      [null, "EMPTY_CONTENT"],
+    ] as const)("keeps embed validation precedence for case %#", (embed, code) => {
+      expect(validateManagedMessagePayload({ content, embed })).toEqual({ ok: false, code });
+    });
+  });
+
+  it.each([undefined, null, 1, {}, []])(
+    "rejects a non-string body %j before embed validation",
+    (content) => {
+      expect(validateManagedMessagePayload({ content, embed: { color: "invalid" } })).toEqual({
+        ok: false,
+        code: "EMPTY_CONTENT",
+      });
+    },
+  );
+
+  it("checks the original length before normalization or embed validation", () => {
+    expect(
+      validateManagedMessagePayload({ content: "\u3000".repeat(2000), embed: { title: "Title" } }),
+    ).toEqual({ ok: true, payload: { content: "", embed: { title: "Title" } } });
+    for (const content of [" ".repeat(2001), "\u3000".repeat(2001), "😀".repeat(2001)]) {
+      expect(validateManagedMessagePayload({ content, embed: { color: "invalid" } })).toEqual({
+        ok: false,
+        code: "CONTENT_TOO_LONG",
+      });
+    }
+  });
+
+  it("preserves leading/trailing spaces and newlines when the body has text", () => {
+    const content = " \t\n\u3000🌸 text\n\u00a0 ";
+    expect(validateManagedMessagePayload({ content, embed: { title: "Title" } })).toEqual({
+      ok: true,
+      payload: { content, embed: { title: "Title" } },
     });
   });
 
@@ -72,6 +133,8 @@ describe("managed message payload", () => {
 
   it.each([
     ["000000", 0],
+    ["#FF0000", 0xff0000],
+    ["FF0000", 0xff0000],
     ["#abcdef", 0xabcdef],
     ["#FFFFFF", 0xffffff],
   ])("normalizes color %s", (input, color) => {

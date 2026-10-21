@@ -1,3 +1,4 @@
+import { translate, type AppLocale } from "../i18n/translate.js";
 import { createHash } from "node:crypto";
 
 export const MAX_VISIBLE_ITEMS = 3;
@@ -76,39 +77,56 @@ function clip(value: string, maximum: number): string {
   if (/[\uD800-\uDBFF]/.test(value[end - 1]!)) end--;
   return value.slice(0, end) + "…";
 }
-function plainMentions(value: string): string {
+function plainMentions(value: string, locale: AppLocale): string {
   return value
-    .replace(/<@!?([0-9]+)>/g, "@user:$1")
-    .replace(/<@&([0-9]+)>/g, "@role:$1")
-    .replace(/<#([0-9]+)>/g, "#channel:$1")
+    .replace(/<@!?([0-9]+)>/g, (_match, id: string) =>
+      translate(locale, "preview.userMention", { id }),
+    )
+    .replace(/<@&([0-9]+)>/g, (_match, id: string) =>
+      translate(locale, "preview.roleMention", { id }),
+    )
+    .replace(/<#([0-9]+)>/g, (_match, id: string) =>
+      translate(locale, "preview.channelMention", { id }),
+    )
     .replace(/@(everyone|here)/g, "@\u200b$1");
 }
-function boundedContent(content: string): string {
+function boundedContent(content: string, locale: AppLocale): string {
   // Omit spoiler spans altogether: truncation and malformed Markdown cannot expose them.
-  return clip(plainMentions(content.replace(/\|\|[\s\S]*?(?:\|\||$)/g, "[spoiler omitted]")), 1500);
+  return clip(
+    plainMentions(
+      content.replace(/\|\|[\s\S]*?(?:\|\||$)/g, () => translate(locale, "preview.spoiler")),
+      locale,
+    ),
+    1500,
+  );
 }
-export function renderPreview(message: PreviewMessage, location: string): PreviewEmbed {
+export function renderPreview(
+  message: PreviewMessage,
+  location: string,
+  locale: AppLocale = "en-US",
+): PreviewEmbed {
   const image = message.attachments.find((attachment) => attachment.image && !attachment.spoiler);
   const description = message.forwarded
-    ? "No preview available."
-    : boundedContent(message.content) || (image ? undefined : "No preview available.");
+    ? translate(locale, "preview.empty")
+    : boundedContent(message.content, locale) ||
+      (image ? undefined : translate(locale, "preview.empty"));
   return {
     ...(description ? { description } : {}),
     ...(!message.forwarded
       ? {
           author: {
-            name: clip(plainMentions(message.author), 128),
+            name: clip(plainMentions(message.author, locale), 128),
             ...(message.avatar ? { icon_url: message.avatar } : {}),
           },
         }
       : {}),
-    footer: previewFooter(location),
+    footer: previewFooter(location, locale),
     timestamp: message.timestamp,
     ...(!message.forwarded && image ? { image: { url: image.url } } : {}),
   };
 }
-function previewFooter(location: string): PreviewEmbed["footer"] {
-  return { text: clip(plainMentions(location), 128) };
+function previewFooter(location: string, locale: AppLocale): PreviewEmbed["footer"] {
+  return { text: clip(plainMentions(location, locale), 128) };
 }
 
 export type PreviewState = "PUBLIC" | "RESTRICTED" | "UNCERTAIN" | "INELIGIBLE";
@@ -121,7 +139,7 @@ export type PreviewOutput = {
   targetCount: number;
   overflow: number;
 };
-export type PreviewSource = MessageLink & { content: string };
+export type PreviewSource = MessageLink & { content: string; locale?: AppLocale };
 export type LinkPreviewBoundary = {
   sourceSendable: (source: PreviewSource) => Promise<boolean>;
   classify: (targets: MessageLink[]) => Promise<PreviewObservation[]>;
@@ -138,6 +156,7 @@ export function createLinkPreviewService(dependencies: {
   const { discord, readMode, log } = dependencies;
   return {
     async detect(source: PreviewSource): Promise<void> {
+      const locale = source.locale ?? "en-US";
       const candidates = parseMessageLinks(source.content, source.guildId);
       const targets = candidates.slice(0, MAX_CANDIDATES_EXAMINED);
       const key = previewCustomId(source);
@@ -155,7 +174,11 @@ export function createLinkPreviewService(dependencies: {
               return {
                 target,
                 ordinal: index + 1,
-                embed: renderPreview(await discord.fetchMessage(target), observation.location),
+                embed: renderPreview(
+                  await discord.fetchMessage(target),
+                  observation.location,
+                  locale,
+                ),
               };
             }
           }),
@@ -185,7 +208,7 @@ export function createLinkPreviewService(dependencies: {
           if (observation?.state === "PUBLIC")
             eligible.push({
               ...item,
-              embed: { ...item.embed, footer: previewFooter(observation.location) },
+              embed: { ...item.embed, footer: previewFooter(observation.location, locale) },
             });
           else if (mode === "hybrid" && observation?.state !== "INELIGIBLE")
             eligible.push({ target: item.target, ordinal: item.ordinal });
@@ -215,16 +238,20 @@ export function createLinkPreviewService(dependencies: {
         active.delete(key);
       }
     },
-    async preview(target: MessageLink, userId: string): Promise<PreviewEmbed | undefined> {
+    async preview(
+      target: MessageLink,
+      userId: string,
+      locale: AppLocale = "en-US",
+    ): Promise<PreviewEmbed | undefined> {
       try {
         const mode = await readMode(target.guildId);
         if (mode === "off" || mode === "public-only") return;
         const initial = await discord.authorize(target, userId);
         if (!initial) return;
-        const embed = renderPreview(await discord.fetchMessage(target), initial.location);
+        const embed = renderPreview(await discord.fetchMessage(target), initial.location, locale);
         const final = await discord.authorize(target, userId);
         if (!final) return;
-        return { ...embed, footer: previewFooter(final.location) };
+        return { ...embed, footer: previewFooter(final.location, locale) };
       } catch {
         return;
       }

@@ -521,7 +521,7 @@ describe("thread lifecycle", () => {
       expect.objectContaining({ action: "OPEN", actorType: "USER", outcome: "SUCCESS" }),
     ]);
     expect(command.editReply).toHaveBeenCalledWith({
-      content: "Thread opened.",
+      content: "Updated WEFT's state for this active thread.",
       allowedMentions: { parse: [] },
     });
   });
@@ -586,7 +586,7 @@ describe("thread lifecycle", () => {
       expect.objectContaining({ action: "OPEN", outcome: "SUCCESS" }),
     ]);
     expect(command.editReply).toHaveBeenCalledWith({
-      content: "Thread opened.",
+      content: "Updated WEFT's state for this active thread.",
       allowedMentions: { parse: [] },
     });
     expect(fixture.logger.debug).toHaveBeenCalledWith(
