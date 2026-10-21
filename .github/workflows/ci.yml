@@ -44,3 +44,47 @@ jobs:
 
       - name: Build
         run: corepack pnpm build
+
+  integration:
+    name: Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          # This CI-only bootstrap role owns the disposable database and test-created schemas.
+          POSTGRES_USER: weft_test
+          POSTGRES_PASSWORD: ci-only-test-password
+          POSTGRES_DB: weft_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U weft_test -d weft_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_HOST: 127.0.0.1
+      TEST_DATABASE_PORT: "5432"
+      TEST_DATABASE_NAME: weft_test
+      TEST_DATABASE_USER: weft_test
+      TEST_DATABASE_PASSWORD: ci-only-test-password
+      TEST_DATABASE_SSL: "false"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Run integration tests
+        run: corepack pnpm test:integration
