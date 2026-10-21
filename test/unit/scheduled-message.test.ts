@@ -186,53 +186,56 @@ describe("scheduled message application operation", () => {
     expect(now).not.toHaveBeenCalled();
   });
 
-  it("generates stable identifiers and occurredAt once and passes normalized payload", async () => {
-    const definition = {
-      action: {
-        id: "scheduled-action-id",
-        guildId: "guild-id",
-        actionType: "SEND_MESSAGE",
-        targetId: "channel-id",
-        status: "ACTIVE",
-        executeAt,
-        createdAt: occurredAt,
-        updatedAt: occurredAt,
-      },
-      creatorUserId: "actor-id",
-      retryCount: 0,
-      revision: 0,
-      payload: { content: "", embed: { title: "title", color: 0 } },
-      resultMessageId: null,
-    } satisfies Awaited<ReturnType<ScheduledMessageStore["create"]>>;
-    const store = { create: vi.fn().mockResolvedValue(definition) };
-    const generateId = vi
-      .fn<() => string>()
-      .mockReturnValueOnce("scheduled-action-id")
-      .mockReturnValueOnce("audit-id");
-    const now = vi.fn(() => occurredAt);
-    const service = createScheduledMessageService({ store, generateId, now });
+  it.each(["", " \t\n", "\u00a0\u3000\u2028"])(
+    "generates stable identifiers and occurredAt once and passes normalized payload for %j",
+    async (content) => {
+      const definition = {
+        action: {
+          id: "scheduled-action-id",
+          guildId: "guild-id",
+          actionType: "SEND_MESSAGE",
+          targetId: "channel-id",
+          status: "ACTIVE",
+          executeAt,
+          createdAt: occurredAt,
+          updatedAt: occurredAt,
+        },
+        creatorUserId: "actor-id",
+        retryCount: 0,
+        revision: 0,
+        payload: { content: "", embed: { title: "title", color: 0 } },
+        resultMessageId: null,
+      } satisfies Awaited<ReturnType<ScheduledMessageStore["create"]>>;
+      const store = { create: vi.fn().mockResolvedValue(definition) };
+      const generateId = vi
+        .fn<() => string>()
+        .mockReturnValueOnce("scheduled-action-id")
+        .mockReturnValueOnce("audit-id");
+      const now = vi.fn(() => occurredAt);
+      const service = createScheduledMessageService({ store, generateId, now });
 
-    await expect(
-      service.create({
+      await expect(
+        service.create({
+          guildId: "guild-id",
+          channelId: "channel-id",
+          actorId: "actor-id",
+          executeAt,
+          payload: { content, embed: { title: "  title  ", color: "000000" } },
+        }),
+      ).resolves.toEqual({ ok: true, definition });
+
+      expect(generateId).toHaveBeenCalledTimes(2);
+      expect(now).toHaveBeenCalledOnce();
+      expect(store.create).toHaveBeenCalledWith({
+        scheduledActionId: "scheduled-action-id",
+        auditId: "audit-id",
         guildId: "guild-id",
         channelId: "channel-id",
         actorId: "actor-id",
         executeAt,
-        payload: { content: "", embed: { title: "  title  ", color: "000000" } },
-      }),
-    ).resolves.toEqual({ ok: true, definition });
-
-    expect(generateId).toHaveBeenCalledTimes(2);
-    expect(now).toHaveBeenCalledOnce();
-    expect(store.create).toHaveBeenCalledWith({
-      scheduledActionId: "scheduled-action-id",
-      auditId: "audit-id",
-      guildId: "guild-id",
-      channelId: "channel-id",
-      actorId: "actor-id",
-      executeAt,
-      payload: { content: "", embed: { title: "title", color: 0 } },
-      occurredAt,
-    });
-  });
+        payload: { content: "", embed: { title: "title", color: 0 } },
+        occurredAt,
+      });
+    },
+  );
 });

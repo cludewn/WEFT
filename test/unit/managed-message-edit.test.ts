@@ -22,6 +22,42 @@ const baseInput = {
 const oldPayload = { content: "old content", embed: { title: "old embed" } } as const;
 
 describe("managed message edit service", () => {
+  it("persists and audits normalized embed-only content after one confirmed edit", async () => {
+    const fixture = createFixture();
+    const payload = { content: "", embed: { title: "Title" } };
+    await expect(
+      fixture.service.edit({
+        ...baseInput,
+        payload: {
+          content: " \t\n\u00a0\u3000",
+          embed: payload.embed,
+        },
+      }),
+    ).resolves.toEqual({ outcome: "SUCCESS", messageId: baseInput.messageId, revision: 2 });
+    expect(fixture.discord.editManagedMessage).toHaveBeenCalledExactlyOnceWith({
+      guildId: baseInput.guildId,
+      channelId: baseInput.channelId,
+      messageId: baseInput.messageId,
+      actorUserId: baseInput.actorUserId,
+      previousPayload: oldPayload,
+      payload,
+    });
+    expect(fixture.store.edit).toHaveBeenCalledExactlyOnceWith({
+      auditId: "audit-id",
+      messageId: baseInput.messageId,
+      guildId: baseInput.guildId,
+      channelId: baseInput.channelId,
+      actorUserId: baseInput.actorUserId,
+      expectedRevision: 1,
+      previousPayload: oldPayload,
+      payload,
+      occurredAt: editedAt,
+    });
+    expect(fixture.store.confirmEdit).not.toHaveBeenCalled();
+    expect(fixture.store.markDeleted).not.toHaveBeenCalled();
+    expect(fixture.discord.restoreManagedMessage).not.toHaveBeenCalled();
+  });
+
   it("rejects a stale revision before any Discord inspection", async () => {
     const fixture = createFixture({ row: managedRow({ revision: 2 }) });
 

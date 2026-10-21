@@ -159,6 +159,64 @@ function fixture() {
 }
 
 describe("recurring scheduled-message administration service", () => {
+  it("authorizes and saves normalized embed-only recurring payloads before projection", async () => {
+    const f = fixture();
+    const payload = { content: "", embed: { title: "Title" } };
+    f.series.payload = payload;
+    await expect(
+      f.service.createRecurring({
+        ...input,
+        recurrence,
+        payload: { content: " \u3000\n", embed: payload.embed },
+      }),
+    ).resolves.toMatchObject({
+      outcome: "SUCCESS",
+      scheduledActionId: "series-id",
+      deliveryPendingReconciliation: false,
+    });
+    expect(f.authorizeCreation).toHaveBeenCalledExactlyOnceWith({ ...input, payload });
+    expect(f.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        guildId: input.guildId,
+        channelId: input.channelId,
+        actorId: input.actorUserId,
+        scheduledActionId: "series-id",
+        occurrenceId: "occurrence-id",
+        auditId: "audit-id",
+        payload,
+      }),
+    );
+    expect(f.calls).toEqual(["timezone", "authorize", "persist", "project"]);
+    expect(f.project).toHaveBeenCalledOnce();
+    expect(f.editPayload).not.toHaveBeenCalled();
+  });
+
+  it("passes normalized content to recurring persistence without changing revision or occurrence policy", async () => {
+    const f = fixture();
+    const payload = { content: "", embed: { title: "Title" } };
+    f.series.payload = payload;
+    f.editPayload.mockResolvedValue({ outcome: "UNCHANGED", series: f.series });
+    await expect(
+      f.service.edit({
+        ...input,
+        scheduledActionId: "series-id",
+        expectedRevision: 0,
+        payload: { content: " \u3000\n", embed: payload.embed },
+      }),
+    ).resolves.toEqual({ outcome: "UNCHANGED", kind: "RECURRING", definition: f.series });
+    expect(f.editPayload).toHaveBeenCalledExactlyOnceWith({
+      scheduledActionId: "series-id",
+      actorId: input.actorUserId,
+      expectedRevision: 0,
+      payload,
+      auditId: "series-id",
+      occurredAt: establishedAt,
+    });
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.editRecurrence).not.toHaveBeenCalled();
+    expect(f.project).not.toHaveBeenCalled();
+  });
+
   it("loads omitted guild timezone at submission and projects only after confirmed creation", async () => {
     const f = fixture();
     await expect(

@@ -1095,7 +1095,7 @@ describe.each(["en-US", "ja"])("complete localization dispatch (%s)", (locale) =
         content:
           locale === "ja"
             ? "本文、埋め込みのタイトル・説明文・画像URLのいずれかを入力してください。"
-            : "Enter text or an embed title, description or image URL. To omit text, leave its field empty without spaces.",
+            : "Enter text or an embed title, description or image URL.",
         flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
@@ -1221,8 +1221,10 @@ describe.each(["en-US", "ja"])("quality regression dispatch (%s)", (locale) => {
 describe.each(["en-US", "ja"])("input wording through production dispatch (%s)", (locale) => {
   it.each([
     ["empty", "", "", "", ""],
-    ["whitespace-with-embed", " \t\n", "User 🌸 title", "", ""],
+    ["ASCII-whitespace-without-embed", " \t\n", "", "", ""],
+    ["Unicode-whitespace-without-embed", "\u00a0\u3000\u2028", "", "", ""],
     ["color-only", "", "", "#FF0000", ""],
+    ["whitespace-with-color-only", " \u3000\n", "", "#FF0000", ""],
     ["text-with-color-only-embed", "User text", "", "#FF0000", ""],
     ["invalid-color", "", "User 🌸 title", "red", ""],
   ])(
@@ -1244,13 +1246,15 @@ describe.each(["en-US", "ja"])("input wording through production dispatch (%s)",
             ? locale === "ja"
               ? "カラーコードは6桁の16進数で指定してください（例：#FF0000、FF0000）。"
               : "Enter a 6-digit hexadecimal color code, e.g. #FF0000 or FF0000."
-            : kind === "color-only" || kind === "text-with-color-only-embed"
+            : ["color-only", "whitespace-with-color-only", "text-with-color-only-embed"].includes(
+                  kind,
+                )
               ? locale === "ja"
                 ? "埋め込みは色の指定のみでは送信できません。タイトル・説明文・画像URLのいずれかも入力してください。"
                 : "A color code alone cannot create an embed. Add an embed title, description or image URL."
               : locale === "ja"
                 ? "本文、埋め込みのタイトル・説明文・画像URLのいずれかを入力してください。"
-                : "Enter text or an embed title, description or image URL. To omit text, leave its field empty without spaces.";
+                : "Enter text or an embed title, description or image URL.";
         expect(value.reply).toHaveBeenCalledExactlyOnceWith({
           content: expected,
           flags: MessageFlags.Ephemeral,
@@ -1264,6 +1268,84 @@ describe.each(["en-US", "ja"])("input wording through production dispatch (%s)",
       } finally {
         await f.finish();
       }
+    },
+  );
+
+  describe.each(["send", "edit", "create", "recurring", "scheduled-edit"] as const)(
+    "%s Modal payload normalization",
+    (kind) => {
+      it.each([
+        ["empty", ""],
+        ["ASCII whitespace", " \t\n\r"],
+        ["Unicode whitespace", "\u00a0\u3000\u2028\ufeff"],
+        ["nonblank with surrounding whitespace", " \n🌸 **authored** <@123>\n\u3000 "],
+      ])(
+        "passes canonical %s content to one service operation after ACK",
+        async (label, rawContent) => {
+          const f = fixture();
+          try {
+            const id =
+              kind === "send"
+                ? MANAGED_MESSAGE_SEND_MODAL_ID
+                : kind === "edit"
+                  ? createManagedMessageEditModal(messageId, 1, payload).data.custom_id!
+                  : kind === "create"
+                    ? createScheduledMessageCreateModalId({ kind: "AFTER", durationMs: 60000 })
+                    : kind === "recurring"
+                      ? createRecurringMessageCreateModalId({ frequency: "daily", time: "09:30" })
+                      : createScheduledMessageEditModalId(scheduleId, 1);
+            const value = modal(f, locale, id);
+            const fields: Record<string, string> = {
+              "managed-message:content": rawContent,
+              "managed-message:embed-title": "User 🌸 title",
+            };
+            value.fields.getTextInputValue = (name) => fields[name] ?? "";
+            await f.dispatch(value);
+            const services = {
+              send: f.managed.send,
+              edit: f.managed.edit,
+              create: f.scheduled.create,
+              recurring: f.scheduled.createRecurring,
+              "scheduled-edit": f.scheduled.edit,
+            };
+            const service = services[kind];
+            expect(value.deferReply).toHaveBeenCalledExactlyOnceWith({
+              flags: MessageFlags.Ephemeral,
+            });
+            expect(service).toHaveBeenCalledExactlyOnceWith({
+              guildId,
+              channelId,
+              actorUserId: actorId,
+              payload: {
+                content: label === "nonblank with surrounding whitespace" ? rawContent : "",
+                embed: { title: "User 🌸 title" },
+              },
+              ...(kind === "edit" ? { messageId, expectedRevision: 1 } : {}),
+              ...(kind === "create" ? { schedule: { kind: "AFTER", durationMs: 60000 } } : {}),
+              ...(kind === "recurring"
+                ? { recurrence: { frequency: "daily", time: "09:30" } }
+                : {}),
+              ...(kind === "scheduled-edit"
+                ? { scheduledActionId: scheduleId, expectedRevision: 1 }
+                : {}),
+            });
+            for (const [name, operation] of Object.entries(services))
+              if (name !== kind) expect(operation).not.toHaveBeenCalled();
+            expect(service.mock.invocationCallOrder[0]).toBeGreaterThan(
+              value.deferReply.mock.invocationCallOrder[0]!,
+            );
+            expect(value.editReply).toHaveBeenCalledOnce();
+            expect(value.editReply.mock.invocationCallOrder[0]).toBeGreaterThan(
+              service.mock.invocationCallOrder[0]!,
+            );
+            content(value);
+            expect(value.reply).not.toHaveBeenCalled();
+            expect(value.followUp).not.toHaveBeenCalled();
+          } finally {
+            await f.finish();
+          }
+        },
+      );
     },
   );
 

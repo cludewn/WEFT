@@ -1833,8 +1833,7 @@ it.each([
     handleManagedMessageModalSubmit(f.interaction, s.managed, s.scheduled),
   ).resolves.toBe(true);
   expect(f.reply).toHaveBeenCalledExactlyOnceWith({
-    content:
-      "Enter text or an embed title, description or image URL. To omit text, leave its field empty without spaces.",
+    content: "Enter text or an embed title, description or image URL.",
     flags: MessageFlags.Ephemeral,
     allowedMentions: { parse: [] },
   });

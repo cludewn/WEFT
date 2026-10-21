@@ -241,9 +241,9 @@ Status displays may use 毎日/毎週 because they describe a saved rule rather 
 Use カラーコード / “Color code” with one example in the Modal. Explain the six hexadecimal digits
 in the validation error; the accepted optional `#` and input constraints remain unchanged.
 For EMPTY_CONTENT, explain the alternatives: content may be empty if an embed has a title,
-description or image URL, but whitespace-only content is rejected even with such an embed. A
-shared error must tell the user to leave omitted content truly empty rather than implying it is
-required. Color alone cannot create a visible embed, even when message text is present.
+description or image URL. Whitespace-only content is normalized to empty before embed validation,
+so do not add a warning that text must be omitted without spaces. Color alone cannot create a
+visible embed, even when message text is present.
 
 Use 監査通知 / “audit notifications” throughout its settings. On disabling, state that database
 auditing continues. Use 除外設定 for a thread exclusion in status and error messages; distinguish it
@@ -1788,10 +1788,15 @@ distributed lock, embed authoring, or generic audit/modal framework.
 
 Phase 7C adds one canonical `ManagedMessagePayload` representation in
 `src/messages/managed-message-payload.ts`: exact plain content plus either one normalized supported embed or no
-embed. The shared send/edit validator preserves accepted plain content, counts it by Unicode code
-point, outer-trims embed text, applies builder-compatible UTF-16 limits, normalizes exact six-digit
-hex colors, and performs syntax-only WHATWG normalization of absolute HTTP/HTTPS image URLs. Empty
-payloads, whitespace-only non-empty content, and color-only embeds are rejected.
+embed. The shared validator checks plain content's type and original Unicode code point length,
+then normalizes whitespace-only content (ECMAScript `trim`) to an empty string. Nonblank content
+retains its leading/trailing whitespace and newlines. It outer-trims embed text, applies
+builder-compatible UTF-16 limits, normalizes exact six-digit hex colors, and performs syntax-only
+WHATWG normalization of absolute HTTP/HTTPS image URLs. Empty normalized content requires a valid
+embed title, description or image URL; color-only embeds are rejected even with text. Type and raw
+content length checks precede embed checks; embed errors precede the final `EMPTY_CONTENT` check.
+Send, edit, one-time/recurring creation and scheduled content edits pass the canonical result to
+Discord and persistence, including payload comparison and no-op detection.
 
 Both send and edit use one five-field modal for content, embed title, description, color, and image
 URL. The Discord boundary builds at most one explicit rich embed with only those supported

@@ -1032,6 +1032,14 @@ footer, author, thumbnail, title URL, timestamp, raw embed JSON, and multiple ma
 supported. The modal maximums are 2000 Unicode code points for plain content, 256 UTF-16 code units
 for the title, 4000 UTF-16 code units for the description, and 2048 code units for the image URL.
 
+After checking the original content's type and length, WEFT normalizes whitespace-only content
+(as defined by ECMAScript `trim`) to an empty string. Nonblank content retains all leading/trailing
+whitespace and newlines. Empty content is accepted when a valid embed has a title, description or
+image URL; otherwise the payload is rejected with `EMPTY_CONTENT`. A color-only embed is rejected
+with `EMBED_COLOR_ONLY`, even when text is present. Embed validation precedes the final empty-payload
+check, so whitespace-only input follows the same embed error precedence as empty content.
+All send, edit and scheduled-post payload paths use this normalization before sending or persistence.
+
 Embed title and description are outer-trimmed while internal whitespace is preserved. Blank embed
 fields are absent. Color accepts exactly `RRGGBB` or `#RRGGBB`, is normalized to an integer, and is
 prefilled for editing as uppercase `#RRGGBB`. Image URLs are outer-trimmed, must be absolute HTTP or

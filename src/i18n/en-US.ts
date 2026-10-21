@@ -368,8 +368,7 @@ export const enUS = {
   "message.invalidTimezone":
     "Set timezone to an IANA timezone, e.g. Asia/Tokyo or UTC. Numeric offsets are not supported.",
   "message.invalidRecurrence": "Check frequency, time (HH:MM), weekdays and timezone.",
-  "message.emptyContent":
-    "Enter text or an embed title, description or image URL. To omit text, leave its field empty without spaces.",
+  "message.emptyContent": "Enter text or an embed title, description or image URL.",
   "message.contentTooLong": "Message content must be 2000 characters or fewer.",
   "message.embedTitleTooLong": "The embed title must be 256 characters or fewer.",
   "message.embedDescriptionTooLong": "The embed description must be 4000 characters or fewer.",

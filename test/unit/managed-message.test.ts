@@ -17,6 +17,56 @@ describe("managed message operation identifiers", () => {
 });
 
 describe("managed message send service", () => {
+  it.each([" \t\n", "\u00a0\u3000\u2028"])(
+    "sends and persists canonical empty text for whitespace-only input %j with an embed",
+    async (content) => {
+      const payload = { content: "", embed: { title: "Title" } };
+      const fixture = createFixture({
+        sendResult: {
+          outcome: "SENT",
+          message: {
+            messageId: "message-id",
+            guildId: input.guildId,
+            channelId: input.channelId,
+            createdAt,
+            payload: projectManagedMessagePayload({
+              content: "",
+              embeds: [{ data: { type: EmbedType.Rich, title: "Title" } }],
+            } as unknown as Message),
+          },
+        },
+      });
+      await expect(
+        fixture.service.send({ ...input, payload: { content, embed: payload.embed } }),
+      ).resolves.toEqual({ outcome: "SUCCESS", messageId: "message-id" });
+      expect(fixture.discord.sendManagedMessage).toHaveBeenCalledExactlyOnceWith({
+        guildId: input.guildId,
+        channelId: input.channelId,
+        actorUserId: input.actorUserId,
+        payload,
+        nonce: "stable-nonce",
+      });
+      expect(fixture.store.create).toHaveBeenCalledExactlyOnceWith(
+        {
+          auditId: "stable-audit-id",
+          messageId: "message-id",
+          guildId: input.guildId,
+          channelId: input.channelId,
+          creatorUserId: input.actorUserId,
+          createdAt,
+          payload,
+        },
+        expect.objectContaining({ operationId: "stable-audit-id" }),
+      );
+      expect(fixture.store.create.mock.invocationCallOrder[0]).toBeGreaterThan(
+        fixture.discord.sendManagedMessage.mock.invocationCallOrder[0]!,
+      );
+      expect(fixture.discord.deleteManagedMessage).not.toHaveBeenCalled();
+      expect(fixture.store.confirmCreation).not.toHaveBeenCalled();
+      expect(fixture.logger.warn).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([undefined, 0, 1, 2, 4])(
     "persists text and a title-only embed with scan version %s without compensation",
     async (content_scan_version) => {
