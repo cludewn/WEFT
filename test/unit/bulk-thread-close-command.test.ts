@@ -38,7 +38,7 @@ import type { Client } from "discord.js";
 
 const parent = { id: "2", guildId: "1", type: C.GuildText, name: "Parent" };
 const hostile = "😀@everyone <@9> [a](https://host) `_*\\\n";
-function fixture(count = 11) {
+function fixture(count = 11, locale = "en-US") {
   const threads: BulkCloseThread[] = Array.from({ length: count }, (_, i) => ({
     guildId: "1",
     threadId: String(i + 10),
@@ -73,6 +73,7 @@ function fixture(count = 11) {
   });
   const showModal = vi.fn(() => Promise.resolve());
   const slash = {
+    locale,
     showModal,
     memberPermissions: { has: () => true },
     inGuild: () => true,
@@ -92,6 +93,7 @@ function fixture(count = 11) {
   });
   const button = (customId: string, userId = "9") =>
     ({
+      locale,
       isChatInputCommand: () => false,
       isButton: () => true,
       isStringSelectMenu: () => false,
@@ -108,6 +110,7 @@ function fixture(count = 11) {
     showModal,
     modal: (customId: string, values: Record<string, unknown> = {}) =>
       ({
+        locale,
         isChatInputCommand: () => false,
         isButton: () => false,
         isModalSubmit: () => true,
@@ -153,7 +156,7 @@ describe("bulk interaction surface and safe payloads", () => {
     expect(definition.default_member_permissions).toBe(
       PermissionFlagsBits.ManageThreads.toString(),
     );
-    expect(definition.description).toBe("Manage Discord threads");
+    expect(definition.description).toBe("Manage threads");
     expect(definition.options?.find((o) => o.name === "bulk-close")).toMatchObject({ options: [] });
     expect(commandDefinitions.find((c) => c.name === "thread")).toEqual(definition);
     const modal = buildBulkCloseModal("ticket").toJSON();
@@ -183,12 +186,12 @@ describe("bulk interaction surface and safe payloads", () => {
       },
       {
         type: ComponentType.Label,
-        label: "Name contains",
+        label: "Thread name contains",
         component: { type: ComponentType.TextInput, required: false },
       },
       {
         type: ComponentType.Label,
-        label: "Created older than",
+        label: "Minimum time since creation",
         component: { type: ComponentType.TextInput, required: false },
       },
     ]);
@@ -310,17 +313,17 @@ describe("bulk interaction surface and safe payloads", () => {
         ...embed.fields!.flatMap((field) => [field.name, field.value]),
         embed.footer!.text,
       ].join("");
-      const warning = embed.fields!.find((field) => field.name === "Before confirming")!.value;
+      const warning = embed.fields!.find((field) => field.name === "Before closing")!.value;
       expect(warning.split("\n")).toHaveLength(4);
       for (const required of [
-        "closed prefix when enabled",
+        "closed prefix if enabled",
         "archives without locking",
         "cancellation is not reversed if closing fails",
         "skips or failures",
         "Results may be partial",
-        "pending work may finish later",
-        "candidate snapshot is fixed",
-        "New matching threads are never added",
+        "some work may finish later",
+        "Candidates are fixed",
+        "new matching threads are not added",
       ])
         expect(warning).toContain(required);
       expect(warning.length).toBeLessThanOrEqual(1024);
@@ -450,7 +453,7 @@ describe("bulk interaction surface and safe payloads", () => {
     expect(f.closeManually).toHaveBeenCalledOnce();
     expect(f.editReply.mock.calls).toContainEqual([
       {
-        content: "Bulk close confirmed.",
+        content: "Bulk close started. Results will follow in a separate message.",
         embeds: [],
         components: [],
         allowedMentions: { parse: [] },
@@ -672,7 +675,7 @@ it.each([1, 10])(
       handleBulkCloseModal(f.modal(`btc:${ticket}:setup`), f.service),
     ).resolves.toBeUndefined();
     expect(visible).toMatchObject({
-      content: "Select or deselect candidates, then confirm the selected subset.",
+      content: "Select threads, then close them. Selections on other pages are included.",
       components: expect.any(Array) as unknown,
     });
     expect(f.closeManually).not.toHaveBeenCalled();
@@ -965,3 +968,38 @@ it("uses one preparation deadline across discovery and first-page reauthorizatio
   await Promise.allSettled(f.retained);
   expect(f.closeManually).not.toHaveBeenCalled();
 });
+
+it.each(["stale", "expired", "actor"])(
+  "localizes Japanese %s controls without starting any target",
+  async (reason) => {
+    vi.useFakeTimers();
+    const f = fixture(1, "ja");
+    const ticket = f.service.createSetup("1", "9")!;
+    await handleBulkCloseModal(f.modal(`btc:${ticket}:setup`), f.service);
+    const rendered = f.editReply.mock.calls.at(-1)![0] as {
+      content: string;
+      components: APIActionRowComponent<
+        APIButtonComponentWithCustomId | APIStringSelectComponent
+      >[];
+    };
+    expect(rendered.content).toBe(
+      "対象を選択して一括クローズを実行してください。他ページの選択も対象です。",
+    );
+    const select = rendered.components[0]!.components[0] as APIStringSelectComponent;
+    if (reason === "expired") await vi.advanceTimersByTimeAsync(5 * 60_000);
+    const input = f.button(
+      reason === "stale"
+        ? select.custom_id.replace(":select:0:0", ":next:0:1")
+        : `btc:${ticket}:confirm`,
+      reason === "actor" ? "different" : "9",
+    );
+    await handleBulkCloseButton(input, f.service);
+    expect(f.followUp).toHaveBeenCalledExactlyOnceWith({
+      content: "この一括クローズ操作は無効です。/thread bulk-closeを再実行してください。",
+      flags: MessageFlags.Ephemeral,
+      allowedMentions: { parse: [] },
+    });
+    expect(f.closeManually).not.toHaveBeenCalled();
+    expect(f.discord.discover).toHaveBeenCalledOnce();
+  },
+);

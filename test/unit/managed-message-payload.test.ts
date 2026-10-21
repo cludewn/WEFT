@@ -72,6 +72,8 @@ describe("managed message payload", () => {
 
   it.each([
     ["000000", 0],
+    ["#FF0000", 0xff0000],
+    ["FF0000", 0xff0000],
     ["#abcdef", 0xabcdef],
     ["#FFFFFF", 0xffffff],
   ])("normalizes color %s", (input, color) => {

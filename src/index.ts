@@ -1,3 +1,4 @@
+import { resolveGuildLocale } from "./i18n/translate.js";
 import { createScheduledMessageListNavigation } from "./messages/scheduled-message-list.js";
 import { createManagedMessageExecutionRecorder } from "./messages/managed-message-execution-audit.js";
 import { createAdministrativeFailureRecorder } from "./audit/administrative-operation-failure-audit.js";
@@ -150,6 +151,8 @@ async function main(): Promise<void> {
     projection: createAuditNotificationProjection(database.client),
     readDestination: (guildId) => destinationStore.read(guildId),
     discord: createAuditNotificationDiscord(discordRuntime.client),
+    localeForGuild: (guildId) =>
+      resolveGuildLocale(discordRuntime.client.guilds.cache.get(guildId)),
     logger,
   });
   notificationDispatcher.current = auditNotifications;

@@ -116,6 +116,7 @@ describe("Discord client", () => {
     const inGuild = vi.fn(() => true);
 
     const command = {
+      locale: "en-US",
       commandName: "config",
       isChatInputCommand: () => true,
       isModalSubmit: () => false,
@@ -270,6 +271,7 @@ describe("Discord client", () => {
       registerTestCommandHandler(client, logger);
       const reply = vi.fn();
       const interaction = {
+        locale: "en-US",
         commandName,
         isChatInputCommand: () => true,
         reply,
@@ -297,6 +299,7 @@ describe("Discord client", () => {
     registerTestCommandHandler(client, logger);
     const reply = vi.fn(() => Promise.reject(new Error("reply failed")));
     const interaction = {
+      locale: "en-US",
       commandName: "config",
       isChatInputCommand: () => true,
       inGuild: () => true,
@@ -334,6 +337,7 @@ describe("Discord client", () => {
     const client = createDiscordClient(logger, discordDependencies, lifecycle);
     registerTestCommandHandler(client, logger, lifecycle);
     const interaction = {
+      locale: "en-US",
       commandName: "thread",
       isChatInputCommand: () => true,
       inGuild: () => true,
@@ -544,7 +548,7 @@ describe("managed message modal routing", () => {
         f.scheduled.createRecurring.mock.invocationCallOrder[0]!,
       );
       expect(modal.editReply).toHaveBeenCalledWith({
-        content: "Recurring schedule created as `series-id`. First occurrence: <t:1893490200:F>.",
+        content: "Recurring schedule `series-id` saved. First send: <t:1893490200:F>.",
         allowedMentions: { parse: [] },
       });
       expect(f.managed.send).not.toHaveBeenCalled();
@@ -567,7 +571,7 @@ describe("managed message modal routing", () => {
 
       expect(f.ingress.run).toHaveBeenCalledOnce();
       expect(modal.reply).toHaveBeenCalledWith({
-        content: "This recurring-message form is invalid or expired.",
+        content: "This recurring-post form is invalid or expired.",
         flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
@@ -697,7 +701,7 @@ describe("managed message modal routing", () => {
     expect(modal.deferReply).toHaveBeenCalledOnce();
     expect(f.scheduled.createRecurring).toHaveBeenCalledOnce();
     expect(modal.editReply).toHaveBeenCalledWith({
-      content: "WEFT could not verify the current channel or permissions. Please try again later.",
+      content: "Could not verify the current channel or permissions. Try again later.",
       allowedMentions: { parse: [] },
     });
     expect(modal.reply).not.toHaveBeenCalled();
@@ -748,6 +752,7 @@ describe("managed message modal routing", () => {
     expect(previews.preview).toHaveBeenCalledExactlyOnceWith(
       { guildId: "1", channelId: "2", messageId: "3" },
       "actor-id",
+      "en-US",
     );
     expect(f.managed.send).not.toHaveBeenCalled();
     expect(f.managed.edit).not.toHaveBeenCalled();
@@ -1258,6 +1263,7 @@ function createModal(customId: string, content = "managed content") {
   const deferReply = vi.fn(() => Promise.resolve());
   const editReply = vi.fn(() => Promise.resolve());
   const interaction = {
+    locale: "en-US",
     customId,
     isChatInputCommand: () => false,
     isModalSubmit: () => true,
@@ -1456,6 +1462,7 @@ it.each([null, "auto-close", "audit-log"])(
       f.ingress,
     );
     f.client.emit(Events.InteractionCreate, {
+      locale: "en-US",
       commandName: "config",
       isChatInputCommand: () => true,
       isModalSubmit: () => false,
@@ -1517,6 +1524,7 @@ it.each(["success", "rejected", "ambiguous"])(
       timezone: "UTC",
     };
     f.client.emit(Events.InteractionCreate, {
+      locale: "en-US",
       commandName: "message",
       createdTimestamp: Date.now(),
       isChatInputCommand: () => true,
@@ -1591,6 +1599,7 @@ describe("scheduled-list dispatcher ownership", () => {
     function interaction() {
       return {
         createdTimestamp: Date.now(),
+        locale: "en-US",
         commandName: "message",
         customId: "",
         isChatInputCommand: () => true,
@@ -1776,4 +1785,235 @@ describe("scheduled-list dispatcher ownership", () => {
       }
     },
   );
+});
+
+describe("localized config show through the production dispatcher", () => {
+  function fixture() {
+    const owner = createModalApplicationRuntime();
+    const run = vi.spyOn(owner.runtime.ingress, "run");
+    const logger = createLogger();
+    const client = createDiscordClient(logger, discordDependencies);
+    const linkPreview = {
+      show: vi.fn<CommandDependencies["linkPreview"]["show"]>().mockResolvedValue("hybrid"),
+      set: vi.fn(),
+    };
+    const guildSettings = {
+      getOrCreate: vi.fn(),
+      setTimezone: vi.fn(),
+      setClosedPrefix: vi.fn(),
+      disableClosedPrefix: vi.fn(),
+    };
+    registerDiscordCommandHandler(
+      client,
+      {
+        linkPreview,
+        guildSettings,
+        logger,
+      } as unknown as CommandDependencies,
+      owner.runtime.ingress,
+    );
+    function interaction(locale = "en-US", permitted = true, inGuild = true) {
+      return {
+        commandName: "config",
+        locale,
+        guildLocale: locale === "ja" ? "en-US" : "ja",
+        isChatInputCommand: () => true,
+        inGuild: vi.fn(() => inGuild),
+        guildId: inGuild ? "123456789012345678" : null,
+        user: { id: "actor" },
+        memberPermissions: { has: vi.fn(() => permitted) },
+        options: { getSubcommand: () => "show", getSubcommandGroup: () => "link-preview" },
+        deferReply: vi.fn().mockResolvedValue(undefined),
+        editReply: vi.fn().mockResolvedValue(undefined),
+        reply: vi.fn().mockResolvedValue(undefined),
+        followUp: vi.fn().mockResolvedValue(undefined),
+      };
+    }
+    function dispatch(value: ReturnType<typeof interaction>) {
+      client.emit(Events.InteractionCreate, value as unknown as ChatInputCommandInteraction);
+      return run.mock.results.at(-1)!.value as Promise<unknown> | undefined;
+    }
+    return { ...owner, client, logger, linkPreview, guildSettings, interaction, dispatch };
+  }
+
+  it.each([
+    ["en-US", "Link preview mode: Automatic previews + buttons"],
+    ["ja", "リンクプレビューモード: 自動表示＋プレビューボタン"],
+    ["en-GB", "Link preview mode: Automatic previews + buttons"],
+  ])("delivers %s and resolves each new interaction independently", async (locale, content) => {
+    const f = fixture();
+    try {
+      await f.runtime.start();
+      for (const [language, expected] of [
+        [locale, content],
+        ["en-US", "Link preview mode: Automatic previews + buttons"],
+      ] as const) {
+        const interaction = f.interaction(language);
+        await expect(f.dispatch(interaction)).resolves.toBe(true);
+        expect(interaction.deferReply).toHaveBeenCalledExactlyOnceWith({
+          flags: MessageFlags.Ephemeral,
+        });
+        expect(interaction.editReply).toHaveBeenCalledExactlyOnceWith({
+          content: expected,
+          allowedMentions: { parse: [] },
+        });
+        expect(interaction.reply).not.toHaveBeenCalled();
+        expect(interaction.followUp).not.toHaveBeenCalled();
+        expect(interaction.deferReply.mock.invocationCallOrder[0]).toBeLessThan(
+          f.linkPreview.show.mock.invocationCallOrder.at(-1)!,
+        );
+        expect(f.linkPreview.show.mock.invocationCallOrder.at(-1)).toBeLessThan(
+          interaction.editReply.mock.invocationCallOrder[0]!,
+        );
+        expect(expected.length).toBeLessThanOrEqual(2_000);
+      }
+      expect(f.linkPreview.show).toHaveBeenCalledTimes(2);
+      expect(f.linkPreview.show.mock.calls).toEqual([
+        ["123456789012345678"],
+        ["123456789012345678"],
+      ]);
+      expect(f.linkPreview.set).not.toHaveBeenCalled();
+      expect(f.guildSettings.getOrCreate).not.toHaveBeenCalled();
+      expect(f.logger.error).not.toHaveBeenCalled();
+    } finally {
+      await f.runtime.shutdown("test");
+      await f.client.destroy();
+    }
+  });
+
+  it.each(["en-US", "ja"])("delivers one safe %s read failure", async (locale) => {
+    const f = fixture();
+    try {
+      await f.runtime.start();
+      f.linkPreview.show.mockRejectedValue(
+        new Error("private database details, inaccessible channel and content"),
+      );
+      const interaction = f.interaction(locale);
+      await expect(f.dispatch(interaction)).resolves.toBe(true);
+      expect(interaction.deferReply).toHaveBeenCalledExactlyOnceWith({
+        flags: MessageFlags.Ephemeral,
+      });
+      expect(interaction.editReply).toHaveBeenCalledExactlyOnceWith({
+        content:
+          locale === "ja"
+            ? "WEFTはプレビュー設定を取得できませんでした。"
+            : "Could not load the preview configuration.",
+        allowedMentions: { parse: [] },
+      });
+      expect(f.linkPreview.show).toHaveBeenCalledExactlyOnceWith("123456789012345678");
+      expect(f.linkPreview.set).not.toHaveBeenCalled();
+      expect(interaction.reply).not.toHaveBeenCalled();
+      expect(interaction.followUp).not.toHaveBeenCalled();
+      expect(f.logger.error).not.toHaveBeenCalled();
+    } finally {
+      await f.runtime.shutdown("test");
+      await f.client.destroy();
+    }
+  });
+
+  it.each(["en-US", "ja"])(
+    "rejects %s permission and guild failures before ACK/read",
+    async (locale) => {
+      const f = fixture();
+      try {
+        await f.runtime.start();
+        for (const [permitted, guild, content] of [
+          [false, true, "You need the Manage Server permission to use this command."],
+          [true, false, "This command can only be used in a server."],
+        ] as const) {
+          const interaction = f.interaction(locale, permitted, guild);
+          await expect(f.dispatch(interaction)).resolves.toBe(true);
+          expect(interaction.reply).toHaveBeenCalledExactlyOnceWith({
+            content:
+              locale === "ja"
+                ? guild
+                  ? "このコマンドには「サーバーの管理」権限が必要です。"
+                  : "このコマンドはサーバー内でのみ使用できます。"
+                : content,
+            flags: MessageFlags.Ephemeral,
+            allowedMentions: { parse: [] },
+          });
+          expect(interaction.deferReply).not.toHaveBeenCalled();
+          expect(interaction.editReply).not.toHaveBeenCalled();
+          expect(interaction.followUp).not.toHaveBeenCalled();
+        }
+        expect(f.linkPreview.show).not.toHaveBeenCalled();
+        expect(f.linkPreview.set).not.toHaveBeenCalled();
+        expect(f.logger.error).not.toHaveBeenCalled();
+      } finally {
+        await f.runtime.shutdown("test");
+        await f.client.destroy();
+      }
+    },
+  );
+
+  it.each(["ack", "edit"])(
+    "does not retry after %s failure or disclose raw errors",
+    async (stage) => {
+      const f = fixture();
+      try {
+        await f.runtime.start();
+        const interaction = f.interaction("ja");
+        const error = new Error("private response details");
+        if (stage === "ack") interaction.deferReply.mockRejectedValue(error);
+        else interaction.editReply.mockRejectedValue(error);
+        await expect(f.dispatch(interaction)).rejects.toBe(error);
+        expect(interaction.deferReply).toHaveBeenCalledOnce();
+        expect(f.linkPreview.show).toHaveBeenCalledTimes(stage === "ack" ? 0 : 1);
+        expect(interaction.editReply).toHaveBeenCalledTimes(stage === "ack" ? 0 : 1);
+        expect(f.linkPreview.set).not.toHaveBeenCalled();
+        expect(interaction.reply).not.toHaveBeenCalled();
+        expect(interaction.followUp).not.toHaveBeenCalled();
+        expect(f.logger.error).toHaveBeenCalledExactlyOnceWith(
+          { event: "command_failed", commandName: "config", errorName: "Error" },
+          "Discord command failed",
+        );
+        expect(JSON.stringify(vi.mocked(f.logger.error).mock.calls)).not.toContain("private");
+      } finally {
+        await f.runtime.shutdown("test");
+        await f.client.destroy();
+      }
+    },
+  );
+
+  it("keeps ingress closed before READY and during shutdown, draining an admitted localized edit", async () => {
+    const f = fixture();
+    try {
+      const before = f.interaction("ja");
+      expect(f.dispatch(before)).toBeUndefined();
+      expect(before.inGuild).not.toHaveBeenCalled();
+      expect(before.deferReply).not.toHaveBeenCalled();
+      await f.runtime.start();
+      const edit = Promise.withResolvers<unknown>();
+      const active = f.interaction("ja");
+      active.editReply.mockReturnValue(edit.promise);
+      const admitted = f.dispatch(active);
+      await vi.waitFor(() => expect(active.editReply).toHaveBeenCalledOnce());
+      const shutdown = f.runtime.shutdown("test");
+      const after = f.interaction("en-US");
+      expect(f.dispatch(after)).toBeUndefined();
+      expect(after.inGuild).not.toHaveBeenCalled();
+      expect(after.deferReply).not.toHaveBeenCalled();
+      expect(after.editReply).not.toHaveBeenCalled();
+      expect(after.reply).not.toHaveBeenCalled();
+      expect(f.closeDatabase).not.toHaveBeenCalled();
+      expect(f.destroyDiscord).not.toHaveBeenCalled();
+      edit.resolve(undefined);
+      await admitted;
+      await shutdown;
+      expect(f.runtime.getState()).toBe("STOPPED");
+      expect(f.linkPreview.show).toHaveBeenCalledExactlyOnceWith("123456789012345678");
+      expect(f.linkPreview.set).not.toHaveBeenCalled();
+      expect(active.editReply).toHaveBeenCalledExactlyOnceWith({
+        content: "リンクプレビューモード: 自動表示＋プレビューボタン",
+        allowedMentions: { parse: [] },
+      });
+      expect(active.reply).not.toHaveBeenCalled();
+      expect(active.followUp).not.toHaveBeenCalled();
+      expect(f.closeDatabase).toHaveBeenCalledOnce();
+    } finally {
+      await f.runtime.shutdown("test");
+      await f.client.destroy();
+    }
+  });
 });

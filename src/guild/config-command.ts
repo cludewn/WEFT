@@ -14,6 +14,7 @@ import type {
 } from "discord.js";
 
 import { createConfigurationAuditContext } from "./guild-configuration-audit.js";
+import { resolveLocale, translate, type AppLocale } from "../i18n/translate.js";
 import type { LinkPreviewConfiguration } from "../link-previews/link-preview-configuration.js";
 import {
   LINK_PREVIEW_MODES,
@@ -50,68 +51,110 @@ const SUPPORTED_PARENT_CHANNEL_TYPES = [
 export const AUTO_CLOSE_PARENT_DISPLAY_LIMIT = 25;
 
 const LINK_PREVIEW_LABELS: Record<LinkPreviewMode, string> = {
-  hybrid: "Automatic public previews + optional buttons",
-  "public-only": "Automatic public previews only",
-  "button-only": "Preview buttons only",
-  off: "Off",
+  hybrid: translate("en-US", "linkPreview.mode.hybrid"),
+  "public-only": translate("en-US", "linkPreview.mode.public-only"),
+  "button-only": translate("en-US", "linkPreview.mode.button-only"),
+  off: translate("en-US", "linkPreview.mode.off"),
 };
 
 export const configCommandDefinition = new SlashCommandBuilder()
   .setName("config")
-  .setDescription("View or update WEFT settings for this guild")
+  .setDescription(translate("en-US", "command.config.description"))
+  .setDescriptionLocalization("ja", translate("ja", "command.config.description"))
   .setContexts(InteractionContextType.Guild)
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
   .addSubcommand((subcommand) =>
-    subcommand.setName("show").setDescription("Show this guild's WEFT settings"),
+    subcommand
+      .setName("show")
+      .setDescription(translate("en-US", "command.config.show.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.config.show.description")),
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName("timezone")
-      .setDescription("Set this guild's IANA timezone")
+      .setDescription(translate("en-US", "command.config.timezone.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.config.timezone.description"))
       .addStringOption((option) =>
         option
           .setName("value")
-          .setDescription("IANA timezone, e.g. Asia/Tokyo or UTC")
+          .setDescription(translate("en-US", "command.config.timezone.value.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.timezone.value.description"),
+          )
           .setRequired(true),
       ),
   )
   .addSubcommandGroup((group) =>
     group
       .setName("closed-prefix")
-      .setDescription("Configure closed thread title prefixing")
+      .setDescription(translate("en-US", "command.config.closed-prefix.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.config.closed-prefix.description"))
       .addSubcommand((subcommand) =>
         subcommand
           .setName("set")
-          .setDescription("Set the prefix used for closed thread titles")
+          .setDescription(translate("en-US", "command.config.closed-prefix.set.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.closed-prefix.set.description"),
+          )
           .addStringOption((option) =>
             option
               .setName("value")
-              .setDescription("Prefix from 1 to 20 characters")
+              .setDescription(
+                translate("en-US", "command.config.closed-prefix.set.value.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.config.closed-prefix.set.value.description"),
+              )
               .setRequired(true),
           ),
       )
       .addSubcommand((subcommand) =>
-        subcommand.setName("disable").setDescription("Close threads without changing their titles"),
+        subcommand
+          .setName("disable")
+          .setDescription(translate("en-US", "command.config.closed-prefix.disable.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.closed-prefix.disable.description"),
+          ),
       ),
   )
   .addSubcommandGroup((group) =>
     group
       .setName("link-preview")
-      .setDescription("Configure message link previews")
+      .setDescription(translate("en-US", "command.linkPreview.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.linkPreview.description"))
       .addSubcommand((sub) =>
-        sub.setName("show").setDescription("Show the message link preview mode"),
+        sub
+          .setName("show")
+          .setDescription(translate("en-US", "command.linkPreview.show.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.linkPreview.show.description"),
+          ),
       )
       .addSubcommand((sub) =>
         sub
           .setName("mode")
-          .setDescription("Set the message link preview mode")
+          .setDescription(translate("en-US", "command.linkPreview.mode.description"))
+          .setDescriptionLocalization("ja", translate("ja", "command.linkPreview.mode.description"))
           .addStringOption((option) =>
             option
               .setName("value")
-              .setDescription("Automatic previews for public links, access-checked buttons, or Off")
+              .setDescription(translate("en-US", "command.linkPreview.value.description"))
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.linkPreview.value.description"),
+              )
               .setRequired(true)
               .addChoices(
-                ...LINK_PREVIEW_MODES.map((value) => ({ name: LINK_PREVIEW_LABELS[value], value })),
+                ...LINK_PREVIEW_MODES.map((value) => ({
+                  name: LINK_PREVIEW_LABELS[value],
+                  value,
+                  name_localizations: { ja: translate("ja", `linkPreview.mode.${value}`) },
+                })),
               ),
           ),
       ),
@@ -119,20 +162,35 @@ export const configCommandDefinition = new SlashCommandBuilder()
   .addSubcommandGroup((group) =>
     group
       .setName("audit-log")
-      .setDescription("Configure optional Discord audit notifications")
+      .setDescription(translate("en-US", "command.config.audit-log.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.config.audit-log.description"))
       .addSubcommand((subcommand) =>
         subcommand
           .setName("show")
-          .setDescription("Show the Discord audit notification destination"),
+          .setDescription(translate("en-US", "command.config.audit-log.show.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.audit-log.show.description"),
+          ),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("set")
-          .setDescription("Set the Discord audit notification destination")
+          .setDescription(translate("en-US", "command.config.audit-log.set.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.audit-log.set.description"),
+          )
           .addChannelOption((option) =>
             option
               .setName("channel")
-              .setDescription("Text or announcement channel")
+              .setDescription(
+                translate("en-US", "command.config.audit-log.set.channel.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.config.audit-log.set.channel.description"),
+              )
               .setRequired(true)
               .addChannelTypes(...AUDIT_DESTINATION_CHANNEL_TYPES),
           ),
@@ -140,46 +198,87 @@ export const configCommandDefinition = new SlashCommandBuilder()
       .addSubcommand((subcommand) =>
         subcommand
           .setName("disable")
-          .setDescription("Disable Discord audit notifications; keep database auditing"),
+          .setDescription(translate("en-US", "command.config.audit-log.disable.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.audit-log.disable.description"),
+          ),
       ),
   )
   .addSubcommandGroup((group) =>
     group
       .setName("auto-close")
-      .setDescription("Configure automatic closing of inactive threads")
+      .setDescription(translate("en-US", "command.config.auto-close.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.config.auto-close.description"))
       .addSubcommand((subcommand) =>
-        subcommand.setName("show").setDescription("Show this guild's automatic close settings"),
+        subcommand
+          .setName("show")
+          .setDescription(translate("en-US", "command.config.auto-close.show.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.auto-close.show.description"),
+          ),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("inactivity")
-          .setDescription("Set the guild-wide inactivity threshold for all enabled parent channels")
+          .setDescription(translate("en-US", "command.config.auto-close.inactivity.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.auto-close.inactivity.description"),
+          )
           .addStringOption((option) =>
             option
               .setName("value")
-              .setDescription("One duration such as 30m, 12h, or 7d")
+              .setDescription(
+                translate("en-US", "command.config.auto-close.inactivity.value.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.config.auto-close.inactivity.value.description"),
+              )
               .setRequired(true),
           ),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("bot-messages")
-          .setDescription("Set whether bot messages count as thread activity")
+          .setDescription(translate("en-US", "command.config.auto-close.bot-messages.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.auto-close.bot-messages.description"),
+          )
           .addBooleanOption((option) =>
             option
               .setName("value")
-              .setDescription("Count bot messages as activity")
+              .setDescription(
+                translate("en-US", "command.config.auto-close.bot-messages.value.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.config.auto-close.bot-messages.value.description"),
+              )
               .setRequired(true),
           ),
       )
       .addSubcommand((subcommand) =>
         subcommand
           .setName("add-parent")
-          .setDescription("Enable automatic closing for threads under a parent channel")
+          .setDescription(translate("en-US", "command.config.auto-close.add-parent.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.auto-close.add-parent.description"),
+          )
           .addChannelOption((option) =>
             option
               .setName("channel")
-              .setDescription("Text, announcement, or forum channel")
+              .setDescription(
+                translate("en-US", "command.config.auto-close.add-parent.channel.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.config.auto-close.add-parent.channel.description"),
+              )
               .setRequired(true)
               .addChannelTypes(...SUPPORTED_PARENT_CHANNEL_TYPES),
           ),
@@ -187,9 +286,22 @@ export const configCommandDefinition = new SlashCommandBuilder()
       .addSubcommand((subcommand) =>
         subcommand
           .setName("remove-parent")
-          .setDescription("Disable automatic closing for threads under a parent channel")
+          .setDescription(translate("en-US", "command.config.auto-close.remove-parent.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.config.auto-close.remove-parent.description"),
+          )
           .addChannelOption((option) =>
-            option.setName("channel").setDescription("Configured parent channel").setRequired(true),
+            option
+              .setName("channel")
+              .setDescription(
+                translate("en-US", "command.config.auto-close.remove-parent.channel.description"),
+              )
+              .setDescriptionLocalization(
+                "ja",
+                translate("ja", "command.config.auto-close.remove-parent.channel.description"),
+              )
+              .setRequired(true),
           ),
       ),
   );
@@ -209,28 +321,38 @@ function isSupportedParentChannelType(type: ChannelType): boolean {
   return (SUPPORTED_PARENT_CHANNEL_TYPES as readonly ChannelType[]).includes(type);
 }
 
-export function formatAutomaticCloseSummary(view: AutomaticCloseConfigurationView): string {
+export function formatAutomaticCloseSummary(
+  view: AutomaticCloseConfigurationView,
+  locale: AppLocale = "en-US",
+): string {
   if (view.parentChannelIds.length === 0) {
-    return `Automatic close: disabled (no enabled parent channels); guild-wide inactivity threshold: ${formatAutoCloseInactivitySeconds(view.inactivitySeconds)}`;
+    return translate(locale, "config.autoDisabled", {
+      inactivity: formatAutoCloseInactivitySeconds(view.inactivitySeconds),
+    });
   }
 
   const inactivity = formatAutoCloseInactivitySeconds(view.inactivitySeconds);
   const channelCount = view.parentChannelIds.length;
-  const channelLabel = channelCount === 1 ? "parent channel" : "parent channels";
-  const botMessages = view.botMessagesCountAsActivity
-    ? "bot messages counted"
-    : "bot messages ignored";
-  return `Automatic close: guild-wide inactivity threshold ${inactivity}, ${channelCount} enabled ${channelLabel}, ${botMessages}; individual thread exclusions apply`;
+  return translate(locale, "config.autoSummary", {
+    inactivity,
+    count: channelCount,
+    botMessages: view.botMessagesCountAsActivity,
+  });
 }
 
-export function formatAutomaticCloseDetail(view: AutomaticCloseConfigurationView): string {
+export function formatAutomaticCloseDetail(
+  view: AutomaticCloseConfigurationView,
+  locale: AppLocale = "en-US",
+): string {
   const lines = [
-    `Guild-wide inactivity threshold: ${formatAutoCloseInactivitySeconds(view.inactivitySeconds)} (shared by all enabled parents)`,
-    `Bot messages count as activity: ${view.botMessagesCountAsActivity ? "yes" : "no"}`,
+    translate(locale, "config.autoThreshold", {
+      inactivity: formatAutoCloseInactivitySeconds(view.inactivitySeconds),
+    }),
+    translate(locale, "config.botActivity", { enabled: view.botMessagesCountAsActivity }),
   ];
 
   if (view.parentChannelIds.length === 0) {
-    lines.push("Enabled parent channels: none (automatic close disabled)");
+    lines.push(translate(locale, "config.noParents"));
     return lines.join("\n");
   }
 
@@ -238,13 +360,13 @@ export function formatAutomaticCloseDetail(view: AutomaticCloseConfigurationView
   const remaining = view.parentChannelIds.length - shown.length;
   const mentions = shown.map((channelId) => `<#${channelId}>`).join(" ");
   lines.push(
-    `Enabled parent channels (${view.parentChannelIds.length}): ${mentions}${
-      remaining > 0 ? ` ... and ${remaining} more` : ""
-    }`,
+    translate(locale, "config.parents", {
+      count: view.parentChannelIds.length,
+      mentions,
+      remaining,
+    }),
   );
-  lines.push(
-    "Individual thread exclusions apply. The threshold determines eligibility; closing occurs on a later sweep after state and permission checks.",
-  );
+  lines.push(translate(locale, "config.exclusionsApply"));
   return lines.join("\n");
 }
 
@@ -266,15 +388,14 @@ export async function handleConfigCommand(
   auditLogDestination: AuditLogDestinationService,
   linkPreview: LinkPreviewConfiguration,
 ): Promise<void> {
+  const locale = resolveLocale(interaction.locale);
   if (!interaction.inGuild()) {
-    await interaction.reply(ephemeralReply("This command can only be used in a guild."));
+    await interaction.reply(ephemeralReply(translate(locale, "context.guild")));
     return;
   }
 
   if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
-    await interaction.reply(
-      ephemeralReply("You need the Manage Server permission to use this command."),
-    );
+    await interaction.reply(ephemeralReply(translate(locale, "permission.manageGuild")));
     return;
   }
 
@@ -285,19 +406,28 @@ export async function handleConfigCommand(
     let response: string;
     try {
       if (subcommand === "show") {
-        response = `Link preview mode: ${LINK_PREVIEW_LABELS[await linkPreview.show(interaction.guildId)]}`;
+        const mode = await linkPreview.show(interaction.guildId);
+        response = translate(locale, "linkPreview.show", {
+          mode: translate(locale, `linkPreview.mode.${mode}`),
+        });
       } else {
         const value = interaction.options.getString("value", true);
         const result = await linkPreview.set(interaction.guildId, interaction.user.id, value);
         response =
           result.outcome === "INVALID"
-            ? "Choose automatic public previews with buttons, automatic public previews only, preview buttons only, or Off."
+            ? translate(locale, "config.previewInvalid")
             : result.outcome === "UNCONFIRMED"
-              ? "WEFT could not confirm the preview mode change. Check the setting before trying again."
-              : `Link preview mode: ${LINK_PREVIEW_LABELS[value as LinkPreviewMode]}${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+              ? translate(locale, "config.previewUnconfirmed")
+              : translate(locale, "config.previewChanged", {
+                  mode: translate(locale, `linkPreview.mode.${value as LinkPreviewMode}`),
+                  unchanged: result.outcome === "NO_CHANGE",
+                });
       }
     } catch {
-      response = "WEFT could not load the preview configuration.";
+      response = translate(
+        locale,
+        subcommand === "show" ? "linkPreview.loadFailed" : "config.previewUnconfirmed",
+      );
     }
     await interaction.editReply(editReply(response));
     return;
@@ -337,13 +467,24 @@ export async function handleConfigCommand(
     } catch (error) {
       return reportConfigurationReadFailure(
         interaction,
-        "WEFT could not load the configuration. Please try again later.",
+        translate(locale, "config.readFailed"),
         error,
       );
     }
     await interaction.editReply(
       editReply(
-        `Timezone: ${configurationText(settings.timezone)}\nClosed prefix: ${settings.closedPrefix === "" ? "Disabled" : configurationText(settings.closedPrefix)}\n${formatAuditLogDestination(settings.auditLogChannelId)}\n${formatAutomaticCloseSummary(view)}\nLink preview mode: ${isLinkPreviewMode(settings.linkPreviewMode) ? LINK_PREVIEW_LABELS[settings.linkPreviewMode] : "Unknown"}`,
+        translate(locale, "config.show", {
+          timezone: configurationText(settings.timezone),
+          prefix:
+            settings.closedPrefix === ""
+              ? translate(locale, "config.disabled")
+              : configurationText(settings.closedPrefix),
+          audit: formatAuditLogDestination(settings.auditLogChannelId, locale),
+          automaticClose: formatAutomaticCloseSummary(view, locale),
+          mode: isLinkPreviewMode(settings.linkPreviewMode)
+            ? translate(locale, `linkPreview.mode.${settings.linkPreviewMode}`)
+            : translate(locale, "config.unknown"),
+        }),
       ),
     );
     return;
@@ -363,7 +504,16 @@ export async function handleConfigCommand(
         : validateClosedPrefix(interaction.options.getString("value", true));
   } catch (error) {
     if (error instanceof InvalidTimezoneError || error instanceof InvalidClosedPrefixError) {
-      await interaction.reply(ephemeralReply(error.message));
+      await interaction.reply(
+        ephemeralReply(
+          translate(
+            locale,
+            error instanceof InvalidTimezoneError
+              ? "config.invalidTimezone"
+              : "config.invalidPrefix",
+          ),
+        ),
+      );
       return;
     }
     throw error;
@@ -379,30 +529,35 @@ export async function handleConfigCommand(
         : await store.setClosedPrefix(interaction.guildId, normalized, audit);
     response =
       result.outcome === "UNCONFIRMED"
-        ? CONFIGURATION_UNCONFIRMED
+        ? translate(locale, "config.changeUnconfirmed")
         : disabling
           ? result.outcome === "NO_CHANGE"
-            ? "Closed prefix already disabled (unchanged)."
-            : "Closed prefix disabled."
-          : `${subcommand === "timezone" ? "Timezone" : "Closed prefix"} set to ${subcommand === "timezone" ? configurationText(result.settings.timezone) : configurationText(result.settings.closedPrefix)}.${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+            ? translate(locale, "config.prefixDisabledAlready")
+            : translate(locale, "config.prefixDisabled")
+          : translate(locale, "config.valueChanged", {
+              timezone: subcommand === "timezone",
+              value:
+                subcommand === "timezone"
+                  ? configurationText(result.settings.timezone)
+                  : configurationText(result.settings.closedPrefix),
+              unchanged: result.outcome === "NO_CHANGE",
+            });
   } catch {
-    response = CONFIGURATION_UNCONFIRMED;
+    response = translate(locale, "config.changeUnconfirmed");
   }
   // Interaction failure cannot replay or reverse the already completed database operation.
   await interaction.editReply(editReply(response));
 }
-
-const CONFIGURATION_UNCONFIRMED =
-  "WEFT could not confirm the configuration change. Check the setting before trying again.";
 
 async function handleAutomaticCloseSubcommand(
   interaction: ChatInputCommandInteraction,
   automaticClose: AutomaticCloseConfigurationService,
   subcommand: string,
 ): Promise<void> {
+  const locale = resolveLocale(interaction.locale);
   const guildId = interaction.guildId;
   if (guildId === null) {
-    await interaction.reply(ephemeralReply("This command can only be used in a guild."));
+    await interaction.reply(ephemeralReply(translate(locale, "context.guild")));
     return;
   }
 
@@ -414,11 +569,11 @@ async function handleAutomaticCloseSubcommand(
     } catch (error) {
       return reportConfigurationReadFailure(
         interaction,
-        "WEFT could not load the automatic close configuration. Please try again later.",
+        translate(locale, "config.autoReadFailed"),
         error,
       );
     }
-    await interaction.editReply(editReply(formatAutomaticCloseDetail(view)));
+    await interaction.editReply(editReply(formatAutomaticCloseDetail(view, locale)));
     return;
   }
 
@@ -428,11 +583,7 @@ async function handleAutomaticCloseSubcommand(
       seconds = parseAutoCloseInactivityInput(interaction.options.getString("value", true));
     } catch (error) {
       if (error instanceof InvalidAutoCloseInactivityInputError) {
-        await interaction.reply(
-          ephemeralReply(
-            "Use one duration from 5 minutes through 365 days, such as 30m, 12h, or 7d.",
-          ),
-        );
+        await interaction.reply(ephemeralReply(translate(locale, "config.invalidInactivity")));
         return;
       }
       throw error;
@@ -448,10 +599,15 @@ async function handleAutomaticCloseSubcommand(
       );
       response =
         result.outcome === "UNCONFIRMED"
-          ? CONFIGURATION_UNCONFIRMED
-          : `Guild-wide automatic-close inactivity threshold set to ${formatAutoCloseInactivitySeconds(result.settings.autoCloseInactivitySeconds)}.${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+          ? translate(locale, "config.changeUnconfirmed")
+          : translate(locale, "config.inactivityChanged", {
+              inactivity: formatAutoCloseInactivitySeconds(
+                result.settings.autoCloseInactivitySeconds,
+              ),
+              unchanged: result.outcome === "NO_CHANGE",
+            });
     } catch {
-      response = CONFIGURATION_UNCONFIRMED;
+      response = translate(locale, "config.changeUnconfirmed");
     }
     await interaction.editReply(editReply(response));
     return;
@@ -469,10 +625,13 @@ async function handleAutomaticCloseSubcommand(
       );
       response =
         result.outcome === "UNCONFIRMED"
-          ? CONFIGURATION_UNCONFIRMED
-          : `${result.settings.autoCloseBotMessagesCountAsActivity ? "Bot messages now count as thread activity." : "Bot messages no longer count as thread activity."}${result.outcome === "NO_CHANGE" ? " (unchanged)" : ""}`;
+          ? translate(locale, "config.changeUnconfirmed")
+          : translate(locale, "config.botActivityChanged", {
+              enabled: result.settings.autoCloseBotMessagesCountAsActivity,
+              unchanged: result.outcome === "NO_CHANGE",
+            });
     } catch {
-      response = CONFIGURATION_UNCONFIRMED;
+      response = translate(locale, "config.changeUnconfirmed");
     }
     await interaction.editReply(editReply(response));
     return;
@@ -481,15 +640,11 @@ async function handleAutomaticCloseSubcommand(
   if (subcommand === "add-parent") {
     const channel = interaction.options.getChannel("channel", true);
     if (!isSupportedParentChannelType(channel.type)) {
-      await interaction.reply(
-        ephemeralReply(
-          "Automatic close supports text, announcement, and forum channels as parents only.",
-        ),
-      );
+      await interaction.reply(ephemeralReply(translate(locale, "config.invalidParent")));
       return;
     }
 
-    await interaction.reply(ephemeralReply("Enabling automatic close for this channel..."));
+    await interaction.reply(ephemeralReply(translate(locale, "config.enablingParent")));
     let response: string;
     try {
       const result = await automaticClose.addParentChannel(
@@ -497,9 +652,9 @@ async function handleAutomaticCloseSubcommand(
         channel.id,
         interaction.user.id,
       );
-      response = addParentChannelMessage(result, channel.id);
+      response = addParentChannelMessage(result, channel.id, locale);
     } catch {
-      response = CONFIGURATION_UNCONFIRMED;
+      response = translate(locale, "config.changeUnconfirmed");
     }
     await interaction.editReply(editReply(response));
     return;
@@ -517,10 +672,13 @@ async function handleAutomaticCloseSubcommand(
       );
       response =
         result.outcome === "UNCONFIRMED"
-          ? CONFIGURATION_UNCONFIRMED
-          : `Automatic close is not enabled for <#${channel.id}>.${result.outcome === "NOT_CONFIGURED" ? " (unchanged)" : ""}`;
+          ? translate(locale, "config.changeUnconfirmed")
+          : translate(locale, "config.parentRemoved", {
+              channelId: channel.id,
+              unchanged: result.outcome === "NOT_CONFIGURED",
+            });
     } catch {
-      response = CONFIGURATION_UNCONFIRMED;
+      response = translate(locale, "config.changeUnconfirmed");
     }
     await interaction.editReply(editReply(response));
     return;
@@ -532,25 +690,23 @@ async function handleAutomaticCloseSubcommand(
 function addParentChannelMessage(
   result: Awaited<ReturnType<AutomaticCloseConfigurationService["addParentChannel"]>>,
   parentChannelId: string,
+  locale: AppLocale,
 ): string {
-  if (result.outcome === "UNCONFIRMED") return CONFIGURATION_UNCONFIRMED;
+  if (result.outcome === "UNCONFIRMED") return translate(locale, "config.changeUnconfirmed");
   if (result.outcome === "ALREADY_ENABLED") {
-    return `Automatic close is already enabled for <#${parentChannelId}>.`;
+    return translate(locale, "config.parentAlreadyEnabled", { channelId: parentChannelId });
   }
   if (result.outcome === "ENUMERATION_FAILED") {
-    return "WEFT could not read this server's active threads, so the channel was not enabled. Please try again later.";
+    return translate(locale, "config.enumerationFailed");
   }
-  return result.baselinesApplied === 0
-    ? `Automatic close enabled for <#${parentChannelId}>. No active threads needed a new inactivity baseline.`
-    : `Automatic close enabled for <#${parentChannelId}>. ${result.baselinesApplied} active ${
-        result.baselinesApplied === 1 ? "thread" : "threads"
-      } received a new inactivity baseline.`;
+  return translate(locale, "config.parentEnabled", {
+    channelId: parentChannelId,
+    count: result.baselinesApplied,
+  });
 }
 
-function formatAuditLogDestination(channelId: string | null): string {
-  return channelId === null
-    ? "Discord audit notifications: disabled; database auditing and retention remain enabled"
-    : `Discord audit notifications: <#${channelId}>; database auditing and retention remain enabled`;
+function formatAuditLogDestination(channelId: string | null, locale: AppLocale): string {
+  return translate(locale, "config.auditDestination", { channelId });
 }
 
 async function handleAuditLogSubcommand(
@@ -558,9 +714,10 @@ async function handleAuditLogSubcommand(
   service: AuditLogDestinationService,
   subcommand: string,
 ): Promise<void> {
+  const locale = resolveLocale(interaction.locale);
   const guildId = interaction.guildId;
   if (guildId === null) {
-    await interaction.reply(ephemeralReply("This command can only be used in a guild."));
+    await interaction.reply(ephemeralReply(translate(locale, "context.guild")));
     return;
   }
   if (subcommand === "show") {
@@ -571,11 +728,11 @@ async function handleAuditLogSubcommand(
     } catch (error) {
       return reportConfigurationReadFailure(
         interaction,
-        "WEFT could not load the Discord audit notification configuration. Please try again later.",
+        translate(locale, "config.auditReadFailed"),
         error,
       );
     }
-    await interaction.editReply(editReply(formatAuditLogDestination(channelId)));
+    await interaction.editReply(editReply(formatAuditLogDestination(channelId, locale)));
     return;
   }
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -584,12 +741,15 @@ async function handleAuditLogSubcommand(
     const result = await service.set(guildId, interaction.user.id, requestedId);
     const message =
       result.outcome === "VALIDATION_FAILED"
-        ? "WEFT cannot use that channel as a Discord audit notification destination. Check its type and WEFT's View Channel and Send Messages permissions."
+        ? translate(locale, "config.auditInvalid")
         : result.outcome === "UNCONFIRMED"
-          ? "WEFT could not confirm the Discord audit notification configuration result. Check the setting before trying again."
+          ? translate(locale, "config.auditUnconfirmed")
           : result.outcome === "NO_CHANGE"
-            ? `Discord audit notification destination is already <#${requestedId}>.`
-            : `Discord audit notification destination set to <#${requestedId}>.`;
+            ? translate(locale, "config.auditChanged", { channelId: requestedId, unchanged: true })
+            : translate(locale, "config.auditChanged", {
+                channelId: requestedId,
+                unchanged: false,
+              });
     await interaction.editReply(editReply(message));
     return;
   }
@@ -597,10 +757,10 @@ async function handleAuditLogSubcommand(
     const result = await service.disable(guildId, interaction.user.id);
     const message =
       result.outcome === "CHANGED"
-        ? "Discord audit notifications disabled. Database auditing and retention remain enabled."
+        ? translate(locale, "config.auditDisabled")
         : result.outcome === "NO_CHANGE"
-          ? "Discord audit notifications already disabled (unchanged). Database auditing and retention remain enabled."
-          : "WEFT could not confirm the Discord audit notification configuration result. Check the setting before trying again.";
+          ? translate(locale, "config.auditAlreadyDisabled")
+          : translate(locale, "config.auditUnconfirmed");
     await interaction.editReply(editReply(message));
     return;
   }

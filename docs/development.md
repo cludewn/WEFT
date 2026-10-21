@@ -84,6 +84,212 @@ When introducing or changing the structure:
 
 The first implementation must establish only the structure required for the project foundation and the current vertical slice.
 
+## English and Japanese localization (Issue #122)
+
+English (`en-US`) is canonical; Japanese (`ja`) covers the entire implemented MVP interface.
+`src/i18n/en-US.ts` owns stable semantic keys, fixed strings and synchronous functions with typed
+named parameters. `src/i18n/ja.ts` uses `satisfies TranslationCatalog` to require every key and its
+parameter contract. `translate.ts` owns synchronous resolution, translation and English fallback.
+Keep the foundation small; do not introduce an interpolation engine or a language-specific handler.
+
+Resolve `interaction.locale` independently at each slash command, Modal submission, Button and
+Select action. Only exact `ja` selects Japanese; unsupported/missing/invalid values select English.
+A Modal's labels/title use its opening interaction; submitted results use the submit interaction.
+Never persist locale, carry it in custom IDs/session state, or infer it from timezone or guild
+settings. Background previews, audit notifications and Discord audit-log reasons use already available, usable Guild
+`preferredLocale` synchronously, with English for missing/unavailable guilds or unsupported codes.
+No extra REST call, intent or database field is allowed solely for locale selection.
+
+### User-facing text inventory
+
+| Area                    | Presentation owners and coverage                                                                                                                                                                           |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Commands                | `guild/config-command.ts`, `threads/thread-command.ts`, `messages/message-command.ts`: every command/group/subcommand/option description and fixed choice display name                                     |
+| Guild configuration     | All settings, automatic-close summaries/details, audit destination, preview modes, validation, authorization, unchanged and unconfirmed responses                                                          |
+| Threads                 | Lifecycle progress/results, pending/failure certainty, track/untrack/status, scheduled close creation/replacement/cancellation                                                                             |
+| Messages and scheduling | Send/edit, payload validation, form retrieval, all five payload Modals, one-time/recurring administration, DST/timezone guidance, status and compensation results                                          |
+| Scheduled-message list  | Page content, empty/unsafe/error views, Previous/Next, capacity/stale/expired/unauthorized controls; typed displayability, not text comparisons                                                            |
+| Bulk close              | Setup Modal and its Labels/Selects, candidate view, filters, warnings, navigation, selection, confirmation/cancellation, counts and all failure paths                                                      |
+| Link previews           | Preview/Preview N, Open original, overflow, generic failure, empty-content fallback, spoiler marker and neutralized mention placeholders                                                                   |
+| Audit notifications     | All ten sources: title, approved field labels and occurrence time; fixed machine-readable metadata values remain unchanged. Thread rename/close reasons in Discord audit logs also use cached Guild locale |
+| Excluded content        | User text/names/payloads, Discord-rendered standard UI, operational logs, database audit records and stable technical tokens                                                                               |
+
+### Bilingual terminology
+
+| Concept                  | Japanese                                 | Meaning and scope                                                                                                                                             |
+| ------------------------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| close / soft-close       | 閉じる                                   | Apply the configured title prefix when enabled and archive without locking; never imply deletion or lock                                                      |
+| open                     | クローズ用プレフィックスの除去・状態更新 | Accept any supported active thread, including one without a managed record; remove the saved closed prefix only where applicable. WEFT never unarchives it.   |
+| scheduled close          | 予約クローズ                             | Explicit one-time close; distinct from inactivity policy                                                                                                      |
+| automatic close          | 自動クローズ                             | Policy-based closing after inactivity, with fresh state/permission checks                                                                                     |
+| inactivity period        | 無投稿期間                               | The configured eligibility threshold, measured from counted activity or a baseline; distinct from observed elapsed time, creation age and a closing deadline. |
+| tracked / untracked      | 自動クローズ対象からの除外を解除 / 除外  | Track works even when the parent is disabled. Neither operation changes the parent policy; explain final eligibility separately.                              |
+| managed message          | 管理メッセージ                           | A bot-authored message with a confirmed WEFT management record. Explain the record separately when its persistence is unconfirmed.                            |
+| scheduled message / post | 予約投稿                                 | General scheduled posting, including one-time and recurring. Use 予約 when the context clearly means the saved schedule.                                      |
+| one-time                 | 単発                                     | One scheduled send; not an exactly-once guarantee                                                                                                             |
+| recurring posting        | 定期投稿                                 | Daily or weekly posting governed by saved repeat settings. Do not use this term for the repeat settings themselves.                                           |
+| recurrence               | 繰り返し設定                             | Frequency, weekdays, local time and timezone saved for a recurring post; distinct from one occurrence.                                                        |
+| occurrence               | 実行回                                   | One materialized occurrence in a recurring series                                                                                                             |
+| pending                  | 処理継続中                               | WEFT still owns work that may complete later; never imply failure or non-execution                                                                            |
+| unconfirmed              | 結果未確認                               | Evidence cannot confirm success or failure; ask for inspection before retry                                                                                   |
+| partial                  | 一部の処理のみ確認済み                   | Describe established external/DB/compensation effects; never infer current residual state                                                                     |
+| failed                   | 失敗                                     | Use only where the existing result establishes failure; preserve qualified “failed or unconfirmed” as 失敗または結果未確認                                    |
+| unchanged / no change    | 変更なし                                 | Successful no-op; distinct from failure                                                                                                                       |
+| reconciliation           | 確認・調整                               | Explain the pending fact: a saved schedule may still need execution registration confirmed; a cancelled schedule may still need queued execution stopped.     |
+| compensation             | 削除・変更前の内容への復元               | Name the concrete undo operation and its confirmed, rejected or unknown result rather than relying on 補償処理 alone.                                         |
+| link preview             | リンクプレビュー                         | Access-aware message-link preview                                                                                                                             |
+| bulk close               | スレッドの一括クローズ                   | Selected subset only; partial completion and later settlement remain possible                                                                                 |
+
+The closed prefix is クローズ用プレフィックス (text added at the start of a スレッド名).
+Use スレッド名 for a thread name; reserve タイトル for an embed title. A server timezone setting
+is WEFTの既定タイムゾーン in the current server context; a recurring post has its own saved timezone.
+
+### UI writing and information placement
+
+Evaluate copy as both an accurate translation and a usable interface. Review the complete rendered
+message, including parameter branches, rather than judging isolated keys. English and Japanese may
+use different sentence structures while communicating the same action, conditions and certainty.
+
+- Command descriptions state the action briefly. Do not restate the command name, list all choices,
+  or explain implementation mechanisms.
+- Option descriptions state the input, required format and important omission behavior. Keep an
+  example when it helps someone enter a valid value. Distinguish creation defaults from edit defaults.
+- Buttons and choices name the action or selection. Put consequences in the confirmation view,
+  rather than making the control label an explanation.
+- Runtime responses lead with the result. Add the next action when one is necessary. Use compact
+  label/value displays for settings and status, with semantic values such as 有効/無効,
+  対象/対象外 and 含める/含めない rather than translating every boolean as はい/いいえ.
+- Keep authorization requirements, destructive effects, uncertainty, partial effects and retry risks
+  in the UI. A shorter message must not imply that an unconfirmed operation failed or is safe to repeat.
+- Move general mechanisms, exceptions and extended examples to future user documentation. Necessary
+  input syntax, saved-timezone behavior and immediate consequences remain available at the point of use.
+- Avoid redundant parentheses, repeated definitions, stacked qualifiers and phrases such as
+  すでに設定済み. Prefer one direct sentence to repeated paraphrases of the same fact.
+
+Use 管理メッセージ / “managed message” for messages that WEFT records and manages after sending.
+Use the term in send/edit descriptions, Modal titles and confirmed results. Do not use WEFT投稿,
+“WEFT message” or repeat “a message managed by WEFT”. A bot-authored message alone does not
+establish edit eligibility. Where registration is unconfirmed or a record is absent, describe the
+message and record separately without claiming confirmed management. Contextual references such as
+“this message” may remain short. Shared payload fields, general Discord messages, audit fields and
+scheduled posts retain their own wording; they do not all identify an existing managed message.
+
+予約投稿 covers scheduled posting; 単発予約, 定期投稿, 繰り返し設定 and 実行回 keep their distinct
+meanings. 予約クローズ is the feature name for a scheduled thread close, alongside 自動クローズ and
+一括クローズ. Use 予約クローズを設定します, 予約クローズを変更しました and 予約クローズを取り消します
+for its administration, adjusting tense to the result. Use クローズまでの時間 for its delay input. A bulk setup command selects targets; the execution Button names 一括クローズ.
+
+Use 閉じる for thread actions and 自動クローズ, 一括クローズ and 予約クローズ for named features.
+Do not alternate with クローズする. Do not label `/thread open` as 開く or オープン: it accepts an
+already active thread and does not unarchive it. Describe removing the closed prefix in the command
+and the WEFT state update in its response; document the full behavior separately. Opening a link
+still uses 開く. 無投稿期間 is the configured inactivity threshold, not thread creation age or an
+exact execution deadline. Explain baseline qualifications where a recorded activity time is shown.
+
+### Japanese style and notation
+
+Use polite Japanese (`です`/`ます`) in complete guidance, success and error sentences. Use short
+noun or action phrases without a final period in titles, field labels, Select options and Buttons. Use `。`
+and `、` for Japanese prose, ASCII colon plus a space for metadata label/value presentation, and
+`…` for ongoing progress. Avoid unnecessary spaces between Japanese and Latin text; retain spaces
+inside commands, timestamps, identifiers and input formats exactly.
+
+Keep numbers as ASCII decimal digits and use natural counters (`件`, `分`, `日`). Do not locale-format
+IDs, revisions, durations used as input, or technical values. Preserve Discord `<t:...>` timestamps,
+IANA zones (`Asia/Tokyo`, `UTC`), `YYYY-MM-DD HH:mm`, `HH:MM`, weekday tokens, `m/h/d`, hex colors,
+URLs and command syntax. Translate their explanations rather than their syntax. Discord renders
+timestamps in each viewer's timezone; distinguish that from the timezone used to establish a
+schedule. Use サーバー for user-facing guild, チャンネル, スレッド, メッセージ, ボタン and フォーム;
+retain WEFT, Discord, ID, URL and technical tokens where translating would obscure identity.
+
+Use メッセージの管理, スレッドの管理 and サーバーの管理 for the respective human permissions;
+never imply Administrator is required. Use “埋め込み” for embed presentation. User names and authored
+content remain verbatim except for existing context-specific safety transformations. Keep titles,
+Buttons and Select text concise within the existing component limits. Preserve legitimate Markdown
+and timestamp/mention syntax; escape only dynamic values at their existing boundary. Do not apply
+escapeMarkdown to the entire translated sentence. Preserve required bold uppercase status tokens
+(`ACTIVE`, `EXECUTING`, `PENDING`, `UNCONFIRMED`, etc.); translate adjacent labels and explanations.
+
+Use クローズ用プレフィックス for the closed prefix. Define it in user documentation rather than
+repeating its position in every command and response. Disabling it changes future policy, not existing names or saved CLOSED
+records. Use 閉じる in operation sentences and 自動クローズ / 一括クローズ as feature names.
+Keep locking details in necessary safety warnings; the general lifecycle explanation belongs in
+future user documentation rather than every command description.
+
+WEFT's server default timezone is an application setting, not a Discord server setting. Creating a
+recurring post without an explicit timezone captures that default; editing its repeat settings
+without a timezone preserves the value saved in that post. Relative days are elapsed 24-hour units.
+An inactivity period measures time without counted activity from a recorded post or measurement
+baseline; it is not an exact close deadline. PENDING includes WEFT processing and confirmation,
+including audit finalization, rather than only a Discord mutation waiting to finish.
+
+Use 予約クローズ consistently for a scheduled thread close, including command descriptions and status.
+Navigation labels 開く and 元のメッセージを開く mean opening a Discord link, not executing the
+thread lifecycle open operation. Preview mode `off` is displayed as オフ; policy/state disabled
+is 無効. Keep these contextual distinctions instead of mechanically replacing every occurrence.
+
+### Input guidance and failure wording
+
+Use the same exclusion rule in one-time create and reschedule options:
+`（afterとatのいずれかを指定）` / “(specify either after or at)”. A conflict error also states that
+both cannot be supplied. Keep stable option names and values in input guidance: frequency, time,
+weekdays, timezone, daily and weekly. Translate human explanations and Choice display names, not
+the syntax someone must enter. In weekdays guidance, explicitly name `frequency=daily` as the
+omission condition. `frequency=weekly` requires one or more unique supported weekday tokens.
+Status displays may use 毎日/毎週 because they describe a saved rule rather than invalid input.
+
+Use カラーコード / “Color code” with one example in the Modal. Explain the six hexadecimal digits
+in the validation error; the accepted optional `#` and input constraints remain unchanged.
+For EMPTY_CONTENT, explain the alternatives: content may be empty if an embed has a title,
+description or image URL, but whitespace-only content is rejected even with such an embed. A
+shared error must tell the user to leave omitted content truly empty rather than implying it is
+required. Color alone cannot create a visible embed, even when message text is present.
+
+Use 監査通知 / “audit notifications” throughout its settings. On disabling, state that database
+auditing continues. Use 除外設定 for a thread exclusion in status and error messages; distinguish it
+from the parent channel's enablement. Avoid その予約投稿 when the command's selected schedule is
+already clear; naming 予約投稿 directly is often sufficient.
+
+A shared component rejection covers invalid IDs, stale/expired sessions, ownership/permission
+checks and unavailable reads. State that the operation or controls are invalid and name the exact
+command to restart. Do not assert “expired” as the sole cause when no such evidence is returned, or
+reveal a private authorization detail to make the message more specific. Preserve existing guards,
+response ownership and business classifications.
+
+### Adding translations and verifying coverage
+
+Add the English key and named parameter type, Japanese entry, typed argument fixture and independent
+English/Japanese expectations together. Translate a complete sentence or display unit; pass dynamic
+values explicitly. Catalog functions may express grammatical plurality and outcome qualifications
+from typed parameters, but must perform no I/O or business operations. Never route/classify using
+translated output. Keep error codes as the translation lookup boundary rather than returning
+internal `error.message` to users. Missing/empty/invalid/throwing Japanese entries use the same English
+key and arguments; broken canonical rendering throws. Fallback is a safeguard, not accepted debt.
+
+Review every English and Japanese catalog entry afresh after a writing-policy change; a previous
+key-count audit is not a copy-quality review. Check zero counts, singular/plural, unchanged values,
+null timestamps and each pending/unconfirmed branch as complete messages.
+
+Coverage combines catalog completeness and typed fixtures, recursive command JSON tests, an audit
+of visible English literals in presentation paths, handler tests and production InteractionCreate
+dispatch tests. Follow all payload-bearing paths, including errors, maximum pages and components;
+matching catalog keys alone proves no UI coverage. Audit all Japanese entries against the glossary
+and certainty rules after feature tests. Keep independent expected sentences for important outcomes.
+Test both locales at Discord limits, with Unicode/Markdown and unchanged IDs, and control locale
+changes across Modals and components. Background tests assert no new REST lookup and unchanged
+notification nonce, destination, permissions, best-effort delivery and drain. Validate raw audit
+values with `safeIdentifier` before translating labels; private fields stay excluded for all sources.
+
+Keep command identities, option ordering/requirements, permissions and contexts. Update independent
+English text fixtures when approved wording changes; do not replace them with translator-generated
+expected values. Preserve meanings across zero-count, unchanged, null, failure and unconfirmed cases.
+Add Japanese descriptions and fixed choice names with installed builder APIs. Check every field
+and the 8,000-character command budget using each field's longest default/localized variant.
+Redeploy with the existing Guild/Global deployment paths for every scope actually used; runtime
+startup does not register commands. Maintainers own external PostgreSQL integration, Live Discord
+verification and the independent final review. Codex does not access integration credentials,
+`weft-integration`, Docker, live Discord or command deployment for this task.
+
 ## Responsibility boundaries
 
 ### Discord handlers

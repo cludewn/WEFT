@@ -94,7 +94,7 @@ describe("message command", () => {
     });
     expect(definition.options?.[2]).toMatchObject({
       name: "schedule",
-      description: "Manage scheduled messages",
+      description: "Manage scheduled posts",
       options: [
         {
           name: "create",
@@ -156,7 +156,7 @@ describe("message command", () => {
     const modal = createManagedMessageSendModal().toJSON();
     expect(modal).toMatchObject({
       custom_id: MANAGED_MESSAGE_SEND_MODAL_ID,
-      title: "Send managed message",
+      title: "Send a managed message",
     });
     expect(modal.components).toHaveLength(5);
     expect(modal.components[0]).toMatchObject({
@@ -506,12 +506,12 @@ describe("managed message modal submit", () => {
   });
 
   it.each([
-    [{ outcome: "UNCONFIRMED", messageId: "999999999999999999" }, "did not attempt removal"],
+    [{ outcome: "UNCONFIRMED", messageId: "999999999999999999" }, "No deletion was attempted"],
     [
       { outcome: "PARTIAL_FAILURE", messageId: "999999999999999999", deletionOutcome: "REJECTED" },
-      "Discord rejected removal",
+      "Discord rejected the deletion",
     ],
-    [{ outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED_ALREADY_ABSENT" }, "already absent"],
+    [{ outcome: "FAILURE", code: "PERSISTENCE_UNCONFIRMED_ALREADY_ABSENT" }, "absent when checked"],
   ] as const)(
     "renders send uncertainty or compensation truthfully %#",
     async (result, expected) => {
@@ -524,6 +524,10 @@ describe("managed message modal submit", () => {
       expect(rendered).toContain(expected);
       expect(rendered).not.toContain("sensitive content");
       expect(rendered).not.toContain("Managed message sent.");
+      expect(rendered).not.toMatch(/WEFT message .*sent\./);
+      expect(fixture.editReply.mock.calls[0]).not.toMatchObject([
+        { content: "Managed message `999999999999999999` sent." },
+      ]);
       expect(fixture.service.send).toHaveBeenCalledOnce();
     },
   );
@@ -759,7 +763,7 @@ describe("managed edit bounded Modal preparation", () => {
       });
       await vi.advanceTimersByTimeAsync(2_000);
       expect(f.reply).toHaveBeenCalledExactlyOnceWith({
-        content: "WEFT could not load the managed message. Please try again later.",
+        content: "Could not load the managed message. Try again later.",
         flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });
@@ -959,11 +963,14 @@ it.each(["send", "edit", "scheduled-create", "scheduled-edit", "recurring-create
       return label;
     });
     expect(labels.map(({ label, description }) => ({ label, description }))).toEqual([
-      { label: "Message content", description: "Enter text or provide a visible embed." },
+      {
+        label: "Message content",
+        description: "Enter text or an embed title, description or image URL.",
+      },
       { label: "Embed title", description: undefined },
       { label: "Embed description", description: undefined },
-      { label: "Embed color", description: "Hex color: RRGGBB or #RRGGBB." },
-      { label: "Embed image URL", description: "Absolute HTTP or HTTPS URL." },
+      { label: "Color code", description: "e.g. #FF0000 or FF0000" },
+      { label: "Embed image URL", description: "Image URL starting with http:// or https://." },
     ]);
     expect(Object.hasOwn(labels[1]!, "description")).toBe(false);
     expect(Object.hasOwn(labels[2]!, "description")).toBe(false);
@@ -1033,7 +1040,7 @@ it("identifies confirmed send, edit and unchanged results while retaining manage
     );
     await handleManagedMessageModalSubmit(edit.interaction, edit.service);
     expect(edit.editReply).toHaveBeenCalledWith({
-      content: `Managed message \`${messageId}\` ${outcome === "SUCCESS" ? "edited" : "unchanged"}.`,
+      content: `Managed message \`${messageId}\` ${outcome === "SUCCESS" ? "updated" : "is unchanged"}.`,
       allowedMentions: { parse: [] },
     });
     expect(edit.service.send).not.toHaveBeenCalled();
@@ -1043,7 +1050,7 @@ it("identifies confirmed send, edit and unchanged results while retaining manage
   });
   await handleManagedMessageModalSubmit(uncertain.interaction, uncertain.service);
   expect(uncertain.editReply).toHaveBeenCalledWith({
-    content: `WEFT sent message \`${messageId}\`, but could not confirm whether it is managed. WEFT did not attempt removal. Check its state before retrying or deleting it.`,
+    content: `Message \`${messageId}\` was sent, but WEFT registration is unconfirmed. No deletion was attempted. Check its state before retrying or deleting it.`,
     allowedMentions: { parse: [] },
   });
 });
@@ -1056,15 +1063,13 @@ it("distinguishes configured scheduling timezones from preserved recurring timez
   const descriptions = new Map(
     group.options?.map((command) => [command.name, JSON.stringify(command)]),
   );
-  expect(descriptions.get("create")).toContain("configured guild timezone");
-  expect(descriptions.get("reschedule")).toContain("configured guild timezone");
-  expect(descriptions.get("recurring-create")).toContain("defaults to current guild timezone");
-  expect(descriptions.get("recurrence-edit")).toContain(
-    "omitted keeps the existing series timezone",
-  );
+  expect(descriptions.get("create")).toContain("WEFT's default timezone");
+  expect(descriptions.get("reschedule")).toContain("WEFT's default timezone");
+  expect(descriptions.get("recurring-create")).toContain("defaults to WEFT's setting");
+  expect(descriptions.get("recurrence-edit")).toContain("omit to keep this schedule's timezone");
   for (const name of ["recurring-create", "recurrence-edit"]) {
     expect(descriptions.get(name)).toContain("Asia/Tokyo or UTC");
     expect(descriptions.get(name)).toContain("HH:MM");
-    expect(descriptions.get(name)).toContain("mon,tue,wed,thu,fri,sat,sun");
+    expect(descriptions.get(name)).toContain("mon,wed,fri");
   }
 });

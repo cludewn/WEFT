@@ -1,3 +1,4 @@
+import { resolveLocale, translate, type AppLocale } from "../i18n/translate.js";
 import {
   InteractionContextType,
   MessageFlags,
@@ -28,44 +29,67 @@ import type { ThreadFailureCode, ThreadLifecycleService } from "./thread-lifecyc
 
 export const threadCommandDefinition = new SlashCommandBuilder()
   .setName("thread")
-  .setDescription("Manage Discord threads")
+  .setDescription(translate("en-US", "command.thread.description"))
+  .setDescriptionLocalization("ja", translate("ja", "command.thread.description"))
   .setContexts(InteractionContextType.Guild)
   .setDefaultMemberPermissions(PermissionFlagsBits.ManageThreads)
   .addSubcommand((subcommand) =>
-    subcommand.setName("bulk-close").setDescription("Select and confirm closing active threads"),
+    subcommand
+      .setName("bulk-close")
+      .setDescription(translate("en-US", "command.thread.bulk-close.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.thread.bulk-close.description")),
   )
   .addSubcommand((subcommand) =>
-    subcommand.setName("close").setDescription("Soft-close the current thread"),
+    subcommand
+      .setName("close")
+      .setDescription(translate("en-US", "command.thread.close.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.thread.close.description")),
   )
   .addSubcommand((subcommand) =>
-    subcommand.setName("open").setDescription("Reconcile the current thread as open"),
+    subcommand
+      .setName("open")
+      .setDescription(translate("en-US", "command.thread.open.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.thread.open.description")),
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName("close-after")
-      .setDescription("Schedule a soft-close for the current thread")
+      .setDescription(translate("en-US", "command.thread.close-after.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.thread.close-after.description"))
       .addStringOption((option) =>
         option
           .setName("after")
-          .setDescription("Relative duration such as 30m, 2h, or 7d")
+          .setDescription(translate("en-US", "command.thread.close-after.after.description"))
+          .setDescriptionLocalization(
+            "ja",
+            translate("ja", "command.thread.close-after.after.description"),
+          )
           .setRequired(true),
       ),
   )
   .addSubcommand((subcommand) =>
-    subcommand.setName("cancel-close").setDescription("Cancel the scheduled thread close"),
+    subcommand
+      .setName("cancel-close")
+      .setDescription(translate("en-US", "command.thread.cancel-close.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.thread.cancel-close.description")),
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName("track")
-      .setDescription("Remove this thread's exclusion; parent must already be enabled"),
+      .setDescription(translate("en-US", "command.thread.track.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.thread.track.description")),
   )
   .addSubcommand((subcommand) =>
     subcommand
       .setName("untrack")
-      .setDescription("Exclude only this thread; keep parent automatic-close settings"),
+      .setDescription(translate("en-US", "command.thread.untrack.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.thread.untrack.description")),
   )
   .addSubcommand((subcommand) =>
-    subcommand.setName("status").setDescription("Show this thread's automatic close status"),
+    subcommand
+      .setName("status")
+      .setDescription(translate("en-US", "command.thread.status.description"))
+      .setDescriptionLocalization("ja", translate("ja", "command.thread.status.description")),
   );
 
 export const DEFAULT_INTERACTION_IO_TIMEOUT_MS = 2_500;
@@ -81,30 +105,30 @@ const editReply = (content: string): InteractionEditReplyOptions => ({
   allowedMentions: { parse: [] },
 });
 
-function failureMessage(code: ThreadFailureCode): string {
+function failureMessage(code: ThreadFailureCode, locale: AppLocale = "en-US"): string {
   if (
     code === "STATE_WRITE_OUTCOME_UNKNOWN" ||
     code === "AUDIT_WRITE_OUTCOME_UNKNOWN" ||
     code === "DISCORD_RECONCILIATION_UNCONFIRMED"
   ) {
-    return "WEFT could not confirm the final outcome. Check the current thread state before retrying.";
+    return translate(locale, "thread.unconfirmed");
   }
   if (code === "ACTOR_PERMISSION_MISSING") {
-    return "You need the Manage Threads permission to use this command.";
+    return translate(locale, "thread.actorPermission");
   }
   if (code === "BOT_PERMISSION_MISSING") {
-    return "WEFT cannot manage this thread with its current permissions.";
+    return translate(locale, "thread.botPermission");
   }
   if (code === "UNSUPPORTED_CONTEXT" || code === "THREAD_NOT_ACTIVE") {
-    return "This command can only be used in a supported active thread.";
+    return translate(locale, "thread.activeContext");
   }
   if (code === "THREAD_LOCKED") {
-    return "A locked thread cannot be soft-closed. Unlock it manually before retrying.";
+    return translate(locale, "thread.locked");
   }
   if (code === "INVALID_THREAD_NAME") {
-    return "The applied closed prefix cannot form a valid thread name.";
+    return translate(locale, "thread.invalidName");
   }
-  return "WEFT could not complete this thread operation. Check the current thread state before retrying.";
+  return translate(locale, "thread.failed");
 }
 
 type ThreadCommandOperation =
@@ -178,12 +202,13 @@ export async function handleThreadCommand(
   logger: Pick<Logger, "debug" | "warn">,
   timeoutMs = DEFAULT_INTERACTION_IO_TIMEOUT_MS,
 ): Promise<void> {
+  const locale = resolveLocale(interaction.locale);
   if (!interaction.inGuild() || interaction.channelId === null) {
     const subcommand = interaction.options.getSubcommand();
     const response =
       subcommand === "track" || subcommand === "untrack" || subcommand === "status"
-        ? "This command can only be used in a supported thread."
-        : "This command can only be used in a supported active thread.";
+        ? translate(locale, "thread.context")
+        : translate(locale, "thread.activeContext");
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(editReply(response));
     } else {
@@ -220,18 +245,18 @@ export async function handleThreadCommand(
                 : "STATUS";
   const initialContent =
     operation === "CLOSE"
-      ? "Closing thread…"
+      ? translate(locale, "thread.closing")
       : operation === "OPEN"
-        ? "Opening thread…"
+        ? translate(locale, "thread.opening")
         : operation === "CLOSE_AFTER"
-          ? "Scheduling thread close…"
+          ? translate(locale, "thread.scheduling")
           : operation === "CANCEL_CLOSE"
-            ? "Cancelling scheduled thread close…"
+            ? translate(locale, "thread.cancelling")
             : operation === "TRACK"
-              ? "Tracking thread…"
+              ? translate(locale, "thread.tracking")
               : operation === "UNTRACK"
-                ? "Excluding thread from automatic close…"
-                : "Loading thread status…";
+                ? translate(locale, "thread.untracking")
+                : translate(locale, "thread.loadingStatus");
   await runInteractionBoundary(
     interaction,
     logger,
@@ -255,20 +280,18 @@ export async function handleThreadCommand(
       interaction.user.id,
     );
     if (manualClose.outcome === "EXECUTION_IN_PROGRESS") {
-      finalContent =
-        "A scheduled close is already executing for this thread. The manual close was not started.";
+      finalContent = translate(locale, "thread.manualExecuting");
     } else if (manualClose.outcome === "PERSISTENCE_FAILURE") {
-      finalContent =
-        "WEFT could not confirm cancellation of the scheduled close, so no new thread update was started. Check the thread status before retrying.";
+      finalContent = translate(locale, "thread.manualCancellationUnknown");
     } else {
       const result = manualClose.result;
       finalContent = result.ok
         ? result.changed
-          ? "Thread closed."
-          : "Thread is already closed."
+          ? translate(locale, "thread.closed")
+          : translate(locale, "thread.alreadyClosed")
         : result.pending
-          ? "Discord is still processing this thread update. This can happen when Discord rate-limits thread name changes, and completion may take several minutes."
-          : failureMessage(result.code);
+          ? translate(locale, "thread.pending")
+          : failureMessage(result.code, locale);
     }
   } else if (subcommand === "open") {
     const result = await lifecycle.open(
@@ -278,11 +301,11 @@ export async function handleThreadCommand(
     );
     finalContent = result.ok
       ? result.changed
-        ? "Thread opened."
-        : "Thread is already open."
+        ? translate(locale, "thread.opened")
+        : translate(locale, "thread.alreadyOpen")
       : result.pending
-        ? "Discord is still processing this thread update. This can happen when Discord rate-limits thread name changes, and completion may take several minutes."
-        : failureMessage(result.code);
+        ? translate(locale, "thread.pending")
+        : failureMessage(result.code, locale);
   } else if (subcommand === "close-after") {
     const scheduleResult = await scheduledThreadClose.schedule(
       interaction.guildId,
@@ -290,21 +313,21 @@ export async function handleThreadCommand(
       interaction.user.id,
       interaction.options.getString("after", true),
     );
-    finalContent = scheduledThreadCloseMessage(scheduleResult);
+    finalContent = scheduledThreadCloseMessage(scheduleResult, locale);
   } else if (subcommand === "cancel-close") {
     const cancellationResult = await scheduledThreadClose.cancel(
       interaction.guildId,
       interaction.channelId,
       interaction.user.id,
     );
-    finalContent = scheduledThreadCloseCancellationMessage(cancellationResult);
+    finalContent = scheduledThreadCloseCancellationMessage(cancellationResult, locale);
   } else if (subcommand === "track") {
     const result = await automaticCloseMaintenance.track(
       interaction.guildId,
       interaction.channelId,
       interaction.user.id,
     );
-    finalContent = trackAutomaticCloseMessage(result);
+    finalContent = trackAutomaticCloseMessage(result, locale);
   } else if (subcommand === "untrack") {
     const result = await automaticCloseMaintenance.untrack(
       interaction.guildId,
@@ -313,9 +336,9 @@ export async function handleThreadCommand(
     );
     finalContent = result.ok
       ? result.outcome === "EXCLUDED"
-        ? "Thread excluded from automatic close. Parent-channel settings are unchanged."
-        : "Thread is already excluded from automatic close (unchanged). Parent-channel settings are unchanged."
-      : automaticCloseMaintenanceFailureMessage(result.code, "UNTRACK");
+        ? translate(locale, "thread.excluded")
+        : translate(locale, "thread.alreadyExcluded")
+      : automaticCloseMaintenanceFailureMessage(result.code, "UNTRACK", locale);
   } else {
     const result = await automaticCloseMaintenance.status(
       interaction.guildId,
@@ -323,8 +346,8 @@ export async function handleThreadCommand(
       interaction.user.id,
     );
     finalContent = result.ok
-      ? formatAutomaticCloseThreadStatus(result.status)
-      : automaticCloseMaintenanceFailureMessage(result.code, "STATUS");
+      ? formatAutomaticCloseThreadStatus(result.status, locale)
+      : automaticCloseMaintenanceFailureMessage(result.code, "STATUS", locale);
   }
 
   await runInteractionBoundary(interaction, logger, operation, "final_response", timeoutMs, () =>
@@ -332,115 +355,139 @@ export async function handleThreadCommand(
   );
 }
 
-function trackAutomaticCloseMessage(result: TrackAutomaticCloseThreadCommandResult): string {
+function trackAutomaticCloseMessage(
+  result: TrackAutomaticCloseThreadCommandResult,
+  locale: AppLocale = "en-US",
+): string {
   if (!result.ok) {
-    return automaticCloseMaintenanceFailureMessage(result.code, "TRACK");
+    return automaticCloseMaintenanceFailureMessage(result.code, "TRACK", locale);
   }
   if (result.outcome === "TRACKED") {
     return result.parentEnabled
-      ? "Individual thread exclusion removed. Automatic-close participation is enabled under the enabled parent."
-      : "Individual thread exclusion removed. Automatic-close participation remains disabled because the parent is not enabled. Track does not enable the parent.";
+      ? translate(locale, "thread.trackedEnabled")
+      : translate(locale, "thread.trackedDisabled");
   }
   return result.parentEnabled
-    ? "No individual thread exclusion to remove (unchanged). Automatic-close participation is enabled under the enabled parent."
-    : "No individual thread exclusion to remove (unchanged). Automatic-close participation remains disabled because the parent is not enabled. Track does not enable the parent.";
+    ? translate(locale, "thread.alreadyTrackedEnabled")
+    : translate(locale, "thread.alreadyTrackedDisabled");
 }
 
 function automaticCloseMaintenanceFailureMessage(
   code: AutomaticCloseThreadMaintenanceFailureCode,
   operation: Extract<ThreadCommandOperation, "TRACK" | "UNTRACK" | "STATUS">,
+  locale: AppLocale = "en-US",
 ): string {
   switch (code) {
     case "UNSUPPORTED_CONTEXT":
-      return "This command can only be used in a supported thread.";
+      return translate(locale, "thread.context");
     case "USER_MISSING_PERMISSION":
-      return "You need the Manage Threads permission to use this command.";
+      return translate(locale, "thread.actorPermission");
     case "CONTEXT_VALIDATION_FAILURE":
-      return "WEFT could not verify the current thread or your permissions. Please try again later.";
+      return translate(locale, "thread.verifyFailed");
     case "UNCONFIRMED":
-      return "WEFT could not confirm the tracking change. Check the thread status before trying again.";
+      return translate(locale, "thread.trackingUnknown");
     case "PERSISTENCE_FAILURE":
       return operation === "STATUS"
-        ? "WEFT could not load this thread's status. Please try again later."
-        : "WEFT could not update automatic close tracking. Please try again later.";
+        ? translate(locale, "thread.statusFailed")
+        : translate(locale, "thread.trackingFailed");
   }
 }
 
-export function formatAutomaticCloseThreadStatus(status: AutomaticCloseThreadStatusView): string {
+export function formatAutomaticCloseThreadStatus(
+  status: AutomaticCloseThreadStatusView,
+  locale: AppLocale = "en-US",
+): string {
   const lastActivity =
-    status.lastActivityAt === null ? "not recorded" : discordTimestamp(status.lastActivityAt);
+    status.lastActivityAt === null
+      ? translate(locale, "thread.notRecorded")
+      : discordTimestamp(status.lastActivityAt);
   const scheduledClose =
     status.scheduledClose === undefined
-      ? "none"
+      ? translate(locale, "thread.none")
       : status.scheduledClose.status === "EXECUTING"
-        ? "executing"
+        ? translate(locale, "thread.executing")
         : discordTimestamp(status.scheduledClose.executeAt);
 
   return [
-    `Effective automatic-close participation: ${status.effectiveEnabled ? "enabled" : "disabled"}`,
-    `Parent automatic-close policy: ${status.parentEnabled ? "enabled" : "disabled"}`,
-    `Individual thread exclusion: ${status.excluded ? "excluded" : "none"}`,
-    `Guild-wide inactivity threshold: ${formatAutoCloseInactivitySeconds(status.inactivitySeconds)}`,
-    `Recorded activity or baseline: ${lastActivity}`,
-    `Explicit scheduled close: ${scheduledClose}`,
-    "The recorded timestamp may be an established baseline, not the most recent message. The threshold determines eligibility, not an exact close time.",
+    translate(locale, "thread.status.effective", { enabled: status.effectiveEnabled }),
+    translate(locale, "thread.status.parentPolicy", { enabled: status.parentEnabled }),
+    translate(locale, "thread.status.exclusion", { enabled: status.excluded }),
+    translate(locale, "thread.status.inactivity", {
+      inactivity: formatAutoCloseInactivitySeconds(status.inactivitySeconds),
+    }),
+    translate(locale, "thread.status.activity", { when: lastActivity }),
+    translate(locale, "thread.status.scheduledClose", { when: scheduledClose }),
+    translate(locale, "thread.baselineWarning"),
   ].join("\n");
 }
 
 function scheduledThreadCloseCancellationMessage(
   result: Awaited<ReturnType<ScheduledThreadCloseCommandService["cancel"]>>,
+  locale: AppLocale = "en-US",
 ): string {
   if (result.ok) {
     return result.outcome === "CANCELLED"
-      ? `Thread close schedule \`${result.action.id}\` cancelled.`
-      : "No scheduled close is active for this thread.";
+      ? translate(locale, "thread.schedule.cancelled", { id: result.action.id })
+      : translate(locale, "thread.noSchedule");
   }
 
   switch (result.code) {
     case "EXECUTION_IN_PROGRESS":
-      return "The scheduled close is already executing and can no longer be cancelled.";
+      return translate(locale, "thread.cannotCancel");
     case "UNSUPPORTED_CONTEXT":
-      return "This command can only be used in a supported thread.";
+      return translate(locale, "thread.context");
     case "USER_MISSING_PERMISSION":
-      return "You need the Manage Threads permission to use this command.";
+      return translate(locale, "thread.actorPermission");
     case "CONTEXT_VALIDATION_FAILURE":
-      return "WEFT could not verify the current thread or your permissions. Please try again later.";
+      return translate(locale, "thread.verifyFailed");
     case "PERSISTENCE_FAILURE":
-      return "WEFT could not confirm cancellation of the scheduled close. Check the thread status before retrying.";
+      return translate(locale, "thread.cancelUnknown");
   }
 }
 
-function scheduledThreadCloseMessage(result: ScheduledThreadCloseCommandResult): string {
+function scheduledThreadCloseMessage(
+  result: ScheduledThreadCloseCommandResult,
+  locale: AppLocale = "en-US",
+): string {
   if (result.ok) {
     const timestamp = discordTimestamp(result.action.executeAt);
     if (result.outcome === "CREATED") {
-      return `Thread close schedule \`${result.action.id}\` created for ${timestamp}.`;
+      return translate(locale, "thread.schedule.created", {
+        id: result.action.id,
+        when: timestamp,
+      });
     }
     if (result.outcome === "REPLACED") {
-      return `Thread close schedule \`${result.action.id}\` replaced. New close time: ${timestamp}.`;
+      return translate(locale, "thread.schedule.replaced", {
+        id: result.action.id,
+        when: timestamp,
+      });
     }
-    return `Thread close schedule \`${result.action.id}\` for ${timestamp} was saved, but WEFT could not confirm its delivery yet. WEFT will reconcile it automatically.`;
+    return translate(locale, "thread.schedule.savedPending", {
+      id: result.action.id,
+      when: timestamp,
+    });
   }
 
   switch (result.code) {
     case "INVALID_DURATION":
-      return "Use one duration from 1 minute through 365 days, such as 30m, 2h, or 7d.";
+      return translate(locale, "thread.invalidDuration");
     case "UNSUPPORTED_CONTEXT":
-      return "This command can only be used in a supported active thread.";
+      return translate(locale, "thread.activeContext");
     case "THREAD_NOT_ACTIVE":
-      return "A close can only be scheduled for an active thread.";
+      return translate(locale, "thread.scheduleActiveOnly");
     case "THREAD_LOCKED":
-      return "A close cannot be scheduled while this thread is locked.";
+      return translate(locale, "thread.scheduleLocked");
     case "USER_MISSING_PERMISSION":
-      return "You need the Manage Threads permission to use this command.";
+      return translate(locale, "thread.actorPermission");
     case "BOT_MISSING_PERMISSION":
-      return "WEFT cannot manage this thread with its current permissions.";
+      return translate(locale, "thread.botPermission");
     case "EXECUTION_IN_PROGRESS":
-      return "A scheduled close is already executing for this thread. Try again after it finishes.";
+      return translate(locale, "thread.scheduleExecuting");
     case "CONTEXT_VALIDATION_FAILURE":
-      return "WEFT could not verify the current thread state. Please try again later.";
+      return translate(locale, "thread.scheduleVerifyFailed");
     case "PERSISTENCE_FAILURE":
-      return "WEFT could not confirm that the scheduled close was saved. Check the thread status before retrying.";
+      return translate(locale, "thread.scheduleUnknown");
   }
 }
 

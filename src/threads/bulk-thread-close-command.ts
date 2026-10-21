@@ -1,3 +1,4 @@
+import { resolveLocale, translate, type AppLocale } from "../i18n/translate.js";
 import {
   ButtonStyle,
   ChannelType,
@@ -40,10 +41,8 @@ import type {
 } from "./bulk-thread-close.js";
 
 export const BULK_COMPONENT_PREFIX = "btc:";
-export const BULK_CONTROL_FAILURE =
-  "This bulk-close preview is unavailable. Run the command again if needed.";
-export const BULK_PREPARATION_FAILURE =
-  "Bulk-close preview preparation could not be completed. Run the command again.";
+export const BULK_CONTROL_FAILURE = translate("en-US", "bulk.controlFailure");
+export const BULK_PREPARATION_FAILURE = translate("en-US", "bulk.preparationFailure");
 export const BULK_PREPARATION_MS = DEFAULT_THREAD_LIFECYCLE_DEADLINE_MS;
 type PreviewPreparationOptions = {
   logger?: Pick<Logger, "debug" | "warn">;
@@ -104,6 +103,7 @@ function safeText(value: string, limit: number): string {
 }
 export function renderBulkClosePage(
   view: NonNullable<Awaited<ReturnType<BulkCloseService["page"]>>>,
+  locale: AppLocale = "en-US",
 ): InteractionEditReplyOptions {
   const { session, parent, threads, page, revision } = view;
   const pageCount = Math.ceil(session.candidateIds.length / BULK_PAGE_SIZE);
@@ -111,13 +111,20 @@ export function renderBulkClosePage(
     ...(session.filters.nameContains === undefined
       ? []
       : [
-          `Name contains (literal, case-sensitive): ${safeText(session.filters.nameContains, 160)}`,
+          translate(locale, "bulk.nameFilter", {
+            name: safeText(session.filters.nameContains, 160),
+          }),
         ]),
-    ...(session.filters.ownerId === undefined ? [] : [`Owner ID: ${session.filters.ownerId}`]),
+    ...(session.filters.ownerId === undefined
+      ? []
+      : [translate(locale, "bulk.ownerFilter", { id: session.filters.ownerId })]),
     ...(session.filters.creationAgeMs === undefined
       ? []
       : [
-          `Created at least ${session.filters.creationAgeMs / 60_000} minutes ago; creation age, not inactivity.\nFixed cutoff: <t:${Math.floor(session.filters.creationCutoff! / 1000)}:F>`,
+          translate(locale, "bulk.ageFilter", {
+            minutes: session.filters.creationAgeMs / 60_000,
+            cutoff: Math.floor(session.filters.creationCutoff! / 1000),
+          }),
         ]),
   ];
   const button = (
@@ -140,14 +147,17 @@ export function renderBulkClosePage(
         {
           type: ComponentType.StringSelect,
           custom_id: `${BULK_COMPONENT_PREFIX}${session.id}:select:${page}:${revision}`,
-          placeholder: "Select threads on this page",
+          placeholder: translate(locale, "bulk.selectPlaceholder"),
           min_values: 0,
           max_values: pageIds.length,
           options: pageIds.map((id, index) => ({
             label: threads[index]
-              ? plainText(threads[index].name, 100) || "Unnamed thread"
-              : "Target unavailable",
-            description: plainText(`Candidate ${page * BULK_PAGE_SIZE + index + 1}`, 100),
+              ? plainText(threads[index].name, 100) || translate(locale, "bulk.unnamedThread")
+              : translate(locale, "bulk.targetUnavailable"),
+            description: plainText(
+              translate(locale, "bulk.candidate", { ordinal: page * BULK_PAGE_SIZE + index + 1 }),
+              100,
+            ),
             value: id,
             default: session.selectedIds.has(id),
           })),
@@ -159,96 +169,103 @@ export function renderBulkClosePage(
       components: [
         button(
           `previous:${Math.max(0, page - 1)}:${revision}`,
-          "Previous",
+          translate(locale, "bulk.previous"),
           ButtonStyle.Secondary,
           page === 0,
         ),
         button(
           `next:${Math.min(pageCount - 1, page + 1)}:${revision}`,
-          "Next",
+          translate(locale, "bulk.next"),
           ButtonStyle.Secondary,
           page === pageCount - 1,
         ),
-        button(`clear:${page}:${revision}`, "Clear page", ButtonStyle.Secondary),
+        button(
+          `clear:${page}:${revision}`,
+          translate(locale, "bulk.clearPage"),
+          ButtonStyle.Secondary,
+        ),
         button(
           "confirm",
-          "Confirm selected threads",
+          translate(locale, "bulk.confirm"),
           ButtonStyle.Danger,
           session.selectedIds.size === 0,
         ),
-        button("cancel", "Cancel", ButtonStyle.Secondary),
+        button("cancel", translate(locale, "bulk.cancel"), ButtonStyle.Secondary),
       ],
     },
   ];
   return {
-    content: "Select or deselect candidates, then confirm the selected subset.",
+    content: translate(locale, "bulk.selectionGuidance"),
     allowedMentions: { parse: [] },
     components,
     embeds: [
       {
-        title: "Bulk thread close",
+        title: translate(locale, "bulk.title"),
         description: threads
           .map((thread, index) => {
             const ordinal = page * BULK_PAGE_SIZE + index + 1;
             return thread && isSnowflake(session.guildId) && isSnowflake(thread.threadId)
-              ? `${ordinal}. ${safeText(thread.name, 180)} • [Open](https://discord.com/channels/${session.guildId}/${thread.threadId})`
-              : `${ordinal}. Target unavailable.`;
+              ? translate(locale, "bulk.threadLink", {
+                  ordinal,
+                  name: safeText(thread.name, 180),
+                  guildId: session.guildId,
+                  threadId: thread.threadId,
+                })
+              : translate(locale, "bulk.unavailableThread", { ordinal });
           })
           .join("\n"),
         fields: [
-          { name: "Parent", value: safeText(parent.name, 160) },
+          { name: translate(locale, "bulk.parent"), value: safeText(parent.name, 160) },
           {
-            name: "Conditions (AND)",
-            value:
-              filterLines.join("\n") || "None — manual picking; no candidates initially selected.",
+            name: translate(locale, "bulk.conditions"),
+            value: filterLines.join("\n") || translate(locale, "bulk.noFilters"),
           },
           {
-            name: "Before confirming",
+            name: translate(locale, "bulk.beforeConfirm"),
             value: [
-              "• Soft-close adds a closed prefix when enabled and archives without locking.",
-              "• Active scheduled closes may be cancelled; cancellation is not reversed if closing fails.",
-              "• State, filters or permission changes can cause skips or failures. Results may be partial; pending work may finish later.",
-              "• The candidate snapshot is fixed. New matching threads are never added.",
+              translate(locale, "bulk.closeWarning"),
+              translate(locale, "bulk.cancelWarning"),
+              translate(locale, "bulk.partialWarning"),
+              translate(locale, "bulk.snapshotWarning"),
             ].join("\n"),
           },
-          { name: "Expires", value: `<t:${Math.floor(session.expiresAt / 1000)}:F>` },
+          {
+            name: translate(locale, "bulk.expires"),
+            value: `<t:${Math.floor(session.expiresAt / 1000)}:F>`,
+          },
         ],
         footer: {
-          text: `Page ${page + 1}/${pageCount} • Candidates: ${session.candidateIds.length} • Selected: ${session.selectedIds.size}`,
+          text: translate(locale, "bulk.footer", {
+            page: page + 1,
+            pages: pageCount,
+            candidates: session.candidateIds.length,
+            selected: session.selectedIds.size,
+          }),
         },
       },
     ],
   };
 }
-export function renderBulkCloseCounts(counts: BulkCloseCounts): string {
-  return [
-    "Bulk thread close result",
-    `Selected: ${counts.selected}`,
-    `Attempted: ${counts.attempted}`,
-    `Closed: ${counts.closed}`,
-    `Already closed: ${counts.alreadyClosed}`,
-    `Pending: ${counts.pending}`,
-    `Failed or unconfirmed: ${counts.failed}`,
-    `Skipped: ${counts.skipped}`,
-    "Pending operations remain owned by WEFT and may complete later. Failed or unconfirmed does not prove Discord remained unchanged. Skipped targets were not started.",
-  ].join("\n");
+export function renderBulkCloseCounts(
+  counts: BulkCloseCounts,
+  locale: AppLocale = "en-US",
+): string {
+  return translate(locale, "bulk.result", counts);
 }
-const failureMessages: Record<Extract<BulkClosePreviewResult, { ok: false }>["reason"], string> = {
-  INVALID_FILTER:
-    "Invalid optional filter. Creation age uses one duration from 1 minute through 365 days, such as 30m, 2h or 7d.",
-  UNAVAILABLE: "WEFT could not verify the selected parent or current management permissions.",
-  EMPTY: "No eligible active threads match these conditions.",
-  TOO_MANY: "More than 50 eligible threads match. Narrow the conditions and try again.",
-  CAPACITY:
-    "WEFT has too many active bulk-close previews. Try again after existing previews expire.",
-};
-export function buildBulkCloseModal(ticket: string): ModalBuilder {
+const failureMessageKeys = {
+  INVALID_FILTER: "bulk.invalidFilter",
+  UNAVAILABLE: "bulk.unavailable",
+  EMPTY: "bulk.empty",
+  TOO_MANY: "bulk.tooMany",
+  CAPACITY: "bulk.capacity",
+} as const satisfies Record<Extract<BulkClosePreviewResult, { ok: false }>["reason"], string>;
+export function buildBulkCloseModal(ticket: string, locale: AppLocale = "en-US"): ModalBuilder {
   return new ModalBuilder()
     .setCustomId(`${BULK_COMPONENT_PREFIX}${ticket}:setup`)
-    .setTitle("Bulk thread close setup")
+    .setTitle(translate(locale, "bulk.setupTitle"))
     .addLabelComponents(
       new LabelBuilder()
-        .setLabel("Parent")
+        .setLabel(translate(locale, "bulk.parent"))
         .setChannelSelectMenuComponent(
           new ChannelSelectMenuBuilder()
             .setCustomId("parent")
@@ -262,7 +279,7 @@ export function buildBulkCloseModal(ticket: string): ModalBuilder {
             ),
         ),
       new LabelBuilder()
-        .setLabel("Owner")
+        .setLabel(translate(locale, "bulk.owner"))
         .setUserSelectMenuComponent(
           new UserSelectMenuBuilder()
             .setCustomId("owner")
@@ -271,8 +288,8 @@ export function buildBulkCloseModal(ticket: string): ModalBuilder {
             .setMaxValues(1),
         ),
       new LabelBuilder()
-        .setLabel("Name contains")
-        .setDescription("Optional literal, case-sensitive substring")
+        .setLabel(translate(locale, "bulk.nameContains"))
+        .setDescription(translate(locale, "bulk.nameDescription"))
         .setTextInputComponent(
           new TextInputBuilder()
             .setCustomId("name")
@@ -281,8 +298,8 @@ export function buildBulkCloseModal(ticket: string): ModalBuilder {
             .setMaxLength(100),
         ),
       new LabelBuilder()
-        .setLabel("Created older than")
-        .setDescription("Creation age, not inactivity; e.g. 30m, 2h, 7d")
+        .setLabel(translate(locale, "bulk.createdOlder"))
+        .setDescription(translate(locale, "bulk.ageDescription"))
         .setTextInputComponent(
           new TextInputBuilder()
             .setCustomId("age")
@@ -296,19 +313,20 @@ export async function handleBulkCloseCommand(
   interaction: ChatInputCommandInteraction,
   service: BulkCloseService,
 ): Promise<void> {
+  const locale = resolveLocale(interaction.locale);
   const ticket =
     interaction.inGuild() && interaction.memberPermissions?.has(PermissionFlagsBits.ManageThreads)
       ? service.createSetup(interaction.guildId, interaction.user.id)
       : undefined;
   if (!ticket) {
     await interaction.reply({
-      content: BULK_CONTROL_FAILURE,
+      content: translate(locale, "bulk.controlFailure"),
       flags: MessageFlags.Ephemeral,
       allowedMentions: { parse: [] },
     });
     return;
   }
-  await interaction.showModal(buildBulkCloseModal(ticket));
+  await interaction.showModal(buildBulkCloseModal(ticket, locale));
 }
 function selectedModalIds(value: unknown, minimum: number, maximum: number): string[] {
   if (!Array.isArray(value) || value.length < minimum || value.length > maximum)
@@ -350,6 +368,7 @@ export async function handleBulkCloseModal(
   service: BulkCloseService,
   { logger, retain }: PreviewPreparationOptions = {},
 ): Promise<void> {
+  const locale = resolveLocale(interaction.locale);
   const controller = new AbortController();
   let session: BulkCloseSession | undefined;
   let acknowledged = false;
@@ -418,7 +437,10 @@ export async function handleBulkCloseModal(
       await boundary(
         "validation_response",
         () =>
-          interaction.editReply({ content: BULK_CONTROL_FAILURE, allowedMentions: { parse: [] } }),
+          interaction.editReply({
+            content: translate(locale, "bulk.controlFailure"),
+            allowedMentions: { parse: [] },
+          }),
         true,
       );
       return;
@@ -431,8 +453,7 @@ export async function handleBulkCloseModal(
         "validation_response",
         () =>
           interaction.editReply({
-            content:
-              "Invalid setup fields. Select one supported parent and valid optional filters.",
+            content: translate(locale, "bulk.invalidSetup"),
             allowedMentions: { parse: [] },
           }),
         true,
@@ -449,7 +470,7 @@ export async function handleBulkCloseModal(
         "validation_response",
         () =>
           interaction.editReply({
-            content: failureMessages[result.reason],
+            content: translate(locale, failureMessageKeys[result.reason]),
             allowedMentions: { parse: [] },
           }),
         true,
@@ -461,7 +482,7 @@ export async function handleBulkCloseModal(
       "preparing_response",
       () =>
         interaction.editReply({
-          content: "Preparing bulk-close preview…",
+          content: translate(locale, "bulk.preparing"),
           allowedMentions: { parse: [] },
         }),
       true,
@@ -482,7 +503,7 @@ export async function handleBulkCloseModal(
         );
         if (!view) throw new Error("Bulk preview page unavailable");
         const rendered = await boundary("candidate_render", () =>
-          Promise.resolve(renderBulkClosePage(view)),
+          Promise.resolve(renderBulkClosePage(view, locale)),
         );
         await boundary(
           "candidate_update",
@@ -513,7 +534,7 @@ export async function handleBulkCloseModal(
           "failure_response",
           () =>
             interaction.editReply({
-              content: BULK_PREPARATION_FAILURE,
+              content: translate(locale, "bulk.preparationFailure"),
               embeds: [],
               components: [],
               allowedMentions: { parse: [] },
@@ -532,10 +553,11 @@ export async function handleBulkCloseButton(
   service: BulkCloseService,
 ): Promise<void> {
   await interaction.deferUpdate(); // Acknowledge before any current REST authorization.
+  const locale = resolveLocale(interaction.locale);
   const parsed = parseBulkCloseCustomId(interaction.customId);
   const fail = () =>
     interaction.followUp({
-      content: BULK_CONTROL_FAILURE,
+      content: translate(locale, "bulk.controlFailure"),
       flags: MessageFlags.Ephemeral,
       allowedMentions: { parse: [] },
     });
@@ -578,7 +600,7 @@ export async function handleBulkCloseButton(
     const revision = navigation ? parsed.revision : session.revision;
     await service.updatePreview(session, async () => {
       const view = await service.page(parsed.id, identity, page, revision);
-      if (view) await interaction.editReply(renderBulkClosePage(view));
+      if (view) await interaction.editReply(renderBulkClosePage(view, locale));
       else await fail();
     });
     return;
@@ -600,7 +622,9 @@ export async function handleBulkCloseButton(
     session,
     () =>
       interaction.editReply({
-        content: confirmed ? "Bulk close confirmed." : "Bulk close cancelled.",
+        content: confirmed
+          ? translate(locale, "bulk.confirmed")
+          : translate(locale, "bulk.cancelled"),
         embeds: [],
         components: [],
         allowedMentions: { parse: [] },
@@ -611,8 +635,8 @@ export async function handleBulkCloseButton(
   // behind a raw page edit or cancellation-preparation/finalization that remains unresolved.
   const response = (async () => {
     const content = confirmed
-      ? renderBulkCloseCounts(await confirmed.result)
-      : "Bulk close cancelled. No target operations were started.";
+      ? renderBulkCloseCounts(await confirmed.result, locale)
+      : translate(locale, "bulk.cancelledNoWork");
     await interaction.followUp({
       content,
       flags: MessageFlags.Ephemeral,

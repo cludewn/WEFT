@@ -183,7 +183,7 @@ describe("scheduled list sessions", () => {
     f.list.mockResolvedValueOnce(found(false, true));
     await f.click(f.button());
     expect(f.editReply.mock.calls.at(-1)![0].content).toContain(
-      "No active or executing scheduled messages were found on page 2",
+      "No active or executing posts on page 2.",
     );
     expect(f.ids().map((b) => b.disabled)).toEqual([false, true]);
   });
@@ -507,7 +507,7 @@ describe("scheduled list raw operation ownership and single flight", () => {
       else await vi.advanceTimersByTimeAsync(2501);
       await flush();
       expect(f.editReply).toHaveBeenCalledExactlyOnceWith({
-        content: "WEFT could not load scheduled messages. Please try again later.",
+        content: "Could not load scheduled posts. Try again later.",
         components: [],
         allowedMentions: { parse: [] },
       });

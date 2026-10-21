@@ -456,7 +456,7 @@ describe("bounded pure renderer", () => {
     ).toBe("[spoiler omitted] after");
     expect(renderPreview({ ...secret, content: "" }, location).description).toBeUndefined();
     expect(renderPreview({ ...secret, content: "", attachments: [] }, location).description).toBe(
-      "No preview available.",
+      "No supported content is available for this preview.",
     );
   });
 });

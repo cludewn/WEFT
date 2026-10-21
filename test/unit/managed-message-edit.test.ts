@@ -477,7 +477,7 @@ describe("managed edit lookup ownership", () => {
       );
       await vi.advanceTimersByTimeAsync(2_001);
       expect(reply).toHaveBeenCalledExactlyOnceWith({
-        content: "WEFT could not load the managed message. Please try again later.",
+        content: "Could not load the managed message. Try again later.",
         flags: MessageFlags.Ephemeral,
         allowedMentions: { parse: [] },
       });

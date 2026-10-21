@@ -1,3 +1,4 @@
+import { resolveLocale } from "../i18n/translate.js";
 import type { Logger } from "pino";
 
 import { formatAuditNotification, type AuditReference } from "./audit-notification-format.js";
@@ -20,6 +21,7 @@ export function createAuditNotificationDispatcher(dependencies: {
       nonce: string;
     }) => Promise<AuditNotificationSendResult>;
   };
+  localeForGuild?: (guildId: string) => unknown;
   logger: Pick<Logger, "warn">;
 }) {
   const tasks = new Set<Promise<void>>();
@@ -66,7 +68,10 @@ export function createAuditNotificationDispatcher(dependencies: {
             warn(reference, "PROJECTION_MISSING");
             return;
           }
-          const formatted = formatAuditNotification(record);
+          const formatted = formatAuditNotification(
+            record,
+            resolveLocale(dependencies.localeForGuild?.(record.guildId)),
+          );
           if (formatted === undefined) {
             warn(reference, "FORMAT_INVALID");
             return;

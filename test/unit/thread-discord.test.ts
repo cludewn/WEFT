@@ -73,22 +73,58 @@ describe("Discord thread support", () => {
     expect(isSupportedThreadType(ChannelType.GuildForum)).toBe(false);
   });
 
-  it("renames and archives with direct channel mutations", async () => {
-    const patch = vi.fn(() => Promise.resolve({}));
-    const discord = createThreadLifecycleDiscord({ rest: { patch } } as unknown as Client);
+  it.each([
+    [
+      { available: true, preferredLocale: "ja" },
+      "WEFTによるスレッド名の更新",
+      "WEFTによるスレッドのクローズ",
+    ],
+    [
+      { available: true, preferredLocale: "en-US" },
+      "WEFT thread name update",
+      "WEFT thread close (without locking)",
+    ],
+    [
+      { available: true, preferredLocale: "en-GB" },
+      "WEFT thread name update",
+      "WEFT thread close (without locking)",
+    ],
+    [
+      { available: false, preferredLocale: "ja" },
+      "WEFT thread name update",
+      "WEFT thread close (without locking)",
+    ],
+    [undefined, "WEFT thread name update", "WEFT thread close (without locking)"],
+  ])(
+    "renames and archives directly using cached guild locale %j",
+    async (guild, renameReason, closeReason) => {
+      const patch = vi.fn(() => Promise.resolve({}));
+      const get = vi.fn(() => guild);
+      const fetch = vi.fn();
+      const discord = createThreadLifecycleDiscord({
+        rest: { patch },
+        guilds: { cache: { get }, fetch },
+      } as unknown as Client);
 
-    await discord.renameThread("guild-id", "thread-id", "Renamed thread");
-    await discord.archiveThread("guild-id", "thread-id", "Closed thread");
+      await discord.renameThread("guild-id", "thread-id", "Renamed thread");
+      await discord.archiveThread("guild-id", "thread-id", "Closed thread");
 
-    expect(patch).toHaveBeenNthCalledWith(1, Routes.channel("thread-id"), {
-      body: { name: "Renamed thread" },
-      reason: "WEFT thread lifecycle update",
-    });
-    expect(patch).toHaveBeenNthCalledWith(2, Routes.channel("thread-id"), {
-      body: { name: "Closed thread", archived: true },
-      reason: "WEFT soft close",
-    });
-  });
+      expect(patch).toHaveBeenNthCalledWith(1, Routes.channel("thread-id"), {
+        body: { name: "Renamed thread" },
+        reason: renameReason,
+      });
+      expect(patch).toHaveBeenNthCalledWith(2, Routes.channel("thread-id"), {
+        body: { name: "Closed thread", archived: true },
+        reason: closeReason,
+      });
+      expect(patch).toHaveBeenCalledTimes(2);
+      expect(get).toHaveBeenNthCalledWith(1, "guild-id");
+      expect(get).toHaveBeenNthCalledWith(2, "guild-id");
+      expect(fetch).not.toHaveBeenCalled();
+      expect(renameReason.length).toBeLessThanOrEqual(512);
+      expect(closeReason.length).toBeLessThanOrEqual(512);
+    },
+  );
 
   it.each([
     ["channel", 10_003, 404, "CONFIRMED_UNAVAILABLE"],
