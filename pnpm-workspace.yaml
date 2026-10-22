@@ -1,2 +1,6 @@
 allowBuilds:
   esbuild: true
+
+overrides:
+  # The deprecated loader pins vulnerable esbuild ~0.18.20; reuse Drizzle Kit's tested version.
+  "@esbuild-kit/core-utils@3.3.2>esbuild": "0.25.12"
