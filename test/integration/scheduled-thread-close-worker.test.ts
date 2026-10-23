@@ -169,7 +169,11 @@ describe("scheduled thread close pg-boss delivery", () => {
     await fixture.controller.enqueueScheduledThreadClose(action.id, action.executeAt);
     await fixture.controller.start();
 
-    await waitFor(async () => (await store.findById(action.id))?.status === "FAILED");
+    await waitFor(async () => {
+      const current = await store.findById(action.id);
+      const job = await findJob(action.id);
+      return current?.status === "FAILED" && job?.state === "completed";
+    });
 
     expect(fixture.closeAsSystem).toHaveBeenCalledOnce();
     await expect(findJob(action.id)).resolves.toMatchObject({

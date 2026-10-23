@@ -13,6 +13,8 @@ import {
   ScheduledThreadCloseDeliveryRetryError,
 } from "../../src/threads/scheduled-thread-close-worker.js";
 
+import { jobQuery, storedJob } from "./pg-boss-jobs-fixture.js";
+
 type WorkerHandler = (jobs: JobWithMetadata<unknown>[]) => Promise<unknown>;
 
 const requiredQueue = {
@@ -56,6 +58,9 @@ function createJob(
   return {
     id: "pg-boss-job-id",
     name: SCHEDULED_THREAD_CLOSE_QUEUE,
+    singletonKey: "scheduled-action-id",
+    createdOn: new Date("2020-01-01T00:00:00Z"),
+    startAfter: new Date("2030-01-01T00:00:00Z"),
     data,
     signal: new AbortController().signal,
     retryCount: 0,
@@ -203,6 +208,8 @@ describe("scheduled thread close pg-boss worker", () => {
         createJob(undefined, { id: "active-job-one", state: "active" }),
         createJob(undefined, { id: "active-job-two", state: "active" }),
       ])
+      .mockResolvedValueOnce([createJob(undefined, { id: "active-job-one", state: "cancelled" })])
+      .mockResolvedValueOnce([createJob(undefined, { id: "active-job-two", state: "cancelled" })])
       .mockResolvedValueOnce([
         createJob(undefined, { id: "completed-job", state: "completed" }),
         createJob(undefined, { id: "active-job-one", state: "cancelled" }),
@@ -219,9 +226,11 @@ describe("scheduled thread close pg-boss worker", () => {
     ]);
     expect(fixture.boss.findJobs).toHaveBeenNthCalledWith(1, SCHEDULED_THREAD_CLOSE_QUEUE, {
       key: "scheduled-action-id",
+      limit: 1000,
     });
-    expect(fixture.boss.findJobs).toHaveBeenNthCalledWith(2, SCHEDULED_THREAD_CLOSE_QUEUE, {
+    expect(fixture.boss.findJobs).toHaveBeenNthCalledWith(4, SCHEDULED_THREAD_CLOSE_QUEUE, {
       key: "scheduled-action-id",
+      limit: 1000,
     });
   });
 
@@ -565,5 +574,29 @@ describe("scheduled thread close pg-boss worker", () => {
     expect(executedAuditIds.attemptAuditId).toMatch(UUID_PATTERN);
     expect(executedAuditIds.executionAuditId).toMatch(UUID_PATTERN);
     expect(fixture.execute.mock.calls[0]).toHaveLength(2);
+  });
+  it.each(["created", "retry"] as const)("finds %s beyond terminal history", async (state) => {
+    const f = createFixture();
+    const jobs = Array.from({ length: 2001 }, (_, i) =>
+      storedJob(SCHEDULED_THREAD_CLOSE_QUEUE, "scheduled-action-id", i),
+    );
+    jobs.push(storedJob(SCHEDULED_THREAD_CLOSE_QUEUE, "scheduled-action-id", 2001, { state }));
+    vi.mocked(f.boss.findJobs).mockImplementation(jobQuery(jobs));
+    expect(await f.controller.hasCreatedOrRetryDelivery("scheduled-action-id")).toBe(true);
+    jobs.pop();
+    expect(await f.controller.hasCreatedOrRetryDelivery("scheduled-action-id")).toBe(false);
+  });
+
+  it("throws rather than confirming absence or stale cleanup on continuation failure", async () => {
+    const f = createFixture();
+    const jobs = Array.from({ length: 1000 }, (_, i) =>
+      storedJob(SCHEDULED_THREAD_CLOSE_QUEUE, "scheduled-action-id", i),
+    );
+    const query = jobQuery(jobs);
+    vi.mocked(f.boss.findJobs).mockImplementation((name, options) =>
+      options?.after ? Promise.reject(new Error("anchor lost")) : query(name, options),
+    );
+    await expect(f.controller.hasCreatedOrRetryDelivery("scheduled-action-id")).rejects.toThrow();
+    await expect(f.controller.cancelStaleActiveDeliveries("scheduled-action-id")).rejects.toThrow();
   });
 });

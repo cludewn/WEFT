@@ -2,6 +2,12 @@ import type { JobWithMetadata, PgBoss, QueueResult } from "pg-boss";
 import type { Logger } from "pino";
 import { z } from "zod";
 
+import {
+  cancelJobsByKey,
+  findJobById,
+  findJobPagesByKey,
+  isEffectiveJob,
+} from "../pg-boss-jobs.js";
 import type { ScheduledActionStore } from "../scheduled-action-persistence.js";
 import type { ScheduledMessageExecutor } from "./scheduled-message-execution.js";
 
@@ -110,18 +116,21 @@ export function createScheduledMessageWorkerController({
   const inspectDetails = async (
     projection: ScheduledMessageDeliveryProjection,
   ): Promise<DeliveryDetails> => {
-    let jobs: JobWithMetadata<unknown>[];
+    const effective: EffectiveJob[] = [];
     try {
-      jobs = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, {
-        key: projection.scheduledActionId,
-      });
+      for await (const page of findJobPagesByKey(
+        boss,
+        SCHEDULED_MESSAGE_QUEUE,
+        projection.scheduledActionId,
+      )) {
+        for (const job of page) {
+          if (isEffectiveJob(job)) effective.push(job as EffectiveJob);
+          if (effective.length > 1) return { outcome: "UNCONFIRMED" };
+        }
+      }
     } catch {
       return { outcome: "UNCONFIRMED" };
     }
-    const effective = jobs.filter(
-      (job): job is EffectiveJob =>
-        job.state === "created" || job.state === "retry" || job.state === "active",
-    );
     if (effective.length === 0) return { outcome: "MISSING" };
     if (effective.length !== 1) return { outcome: "UNCONFIRMED" };
 
@@ -382,73 +391,39 @@ export function createScheduledMessageWorkerController({
       } catch {
         // Confirm ineffectiveness below before any replacement is attempted.
       }
-      let afterCancellation: JobWithMetadata<unknown>[];
       try {
-        afterCancellation = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, {
-          key: projection.scheduledActionId,
-        });
+        const cancelled = await findJobById(
+          boss,
+          SCHEDULED_MESSAGE_QUEUE,
+          projection.scheduledActionId,
+          inspected.job.id,
+        );
+        if (cancelled !== undefined && isEffectiveJob(cancelled)) return "PENDING_RECONCILIATION";
+        for await (const page of findJobPagesByKey(
+          boss,
+          SCHEDULED_MESSAGE_QUEUE,
+          projection.scheduledActionId,
+        )) {
+          if (page.some(isEffectiveJob)) return "PENDING_RECONCILIATION";
+        }
       } catch {
-        return "PENDING_RECONCILIATION";
-      }
-      if (
-        afterCancellation.some(
-          (job) =>
-            job.id === inspected.job.id &&
-            (job.state === "created" || job.state === "retry" || job.state === "active"),
-        )
-      ) {
         return "PENDING_RECONCILIATION";
       }
       return upsertProjection(projection, true);
     },
     async cancelStaleActiveDeliveries(scheduledActionId) {
-      const jobs = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, { key: scheduledActionId });
-      const activeIds = jobs.filter((job) => job.state === "active").map((job) => job.id);
-      if (activeIds.length === 0) return 0;
-      try {
-        await boss.cancel(SCHEDULED_MESSAGE_QUEUE, activeIds);
-      } catch {
-        /* confirm below */
-      }
-      const confirmed = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, { key: scheduledActionId });
-      if (confirmed.some((job) => job.state === "active"))
+      const result = await cancelJobsByKey(
+        boss,
+        SCHEDULED_MESSAGE_QUEUE,
+        scheduledActionId,
+        (job) => job.state === "active",
+      );
+      if (result.outcome !== "CONFIRMED")
         throw new Error("Scheduled message stale delivery cleanup could not be confirmed");
-      return activeIds.length;
+      return result.matchedDeliveryCount;
     },
-    async cancelScheduledMessageDeliveries(scheduledActionId) {
-      let cancellableIds: string[];
-      try {
-        const jobs = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, { key: scheduledActionId });
-        cancellableIds = jobs
-          .filter(
-            (job) => job.state === "created" || job.state === "retry" || job.state === "active",
-          )
-          .map((job) => job.id);
-      } catch {
-        return { outcome: "UNCONFIRMED", matchedDeliveryCount: 0 };
-      }
-
-      if (cancellableIds.length > 0) {
-        try {
-          await boss.cancel(SCHEDULED_MESSAGE_QUEUE, cancellableIds);
-        } catch {
-          /* confirm below */
-        }
-      }
-      try {
-        const confirmed = await boss.findJobs(SCHEDULED_MESSAGE_QUEUE, {
-          key: scheduledActionId,
-        });
-        const remaining = confirmed.some(
-          (job) => job.state === "created" || job.state === "retry" || job.state === "active",
-        );
-        return {
-          outcome: remaining ? "UNCONFIRMED" : "CONFIRMED",
-          matchedDeliveryCount: cancellableIds.length,
-        };
-      } catch {
-        return { outcome: "UNCONFIRMED", matchedDeliveryCount: cancellableIds.length };
-      }
+    cancelScheduledMessageDeliveries(scheduledActionId) {
+      return cancelJobsByKey(boss, SCHEDULED_MESSAGE_QUEUE, scheduledActionId, isEffectiveJob);
     },
     start() {
       startPromise ??= (async () => {
