@@ -1,0 +1,79 @@
+name: Bug report
+description: Report a problem with WEFT.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not share private or sensitive information.**
+        Never post:
+        - Discord bot tokens
+        - Passwords or API keys
+        - Database credentials or connection strings
+        - Webhook URLs containing credentials
+        - `.env` file contents
+        - Other private or sensitive information
+
+        Remove sensitive information from logs and screenshots before attaching them.
+        Before submitting, [search existing issues](https://github.com/cludewn/WEFT/issues?q=is%3Aissue) for the same problem and choose a specific issue title.
+  - type: textarea
+    id: bug-description
+    attributes:
+      label: Bug description
+      description: Briefly describe the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: steps-to-reproduce
+    attributes:
+      label: Steps to reproduce
+      description: |
+        List the steps, including relevant commands or settings.
+        If the steps are unknown, say so or leave this blank.
+    validations:
+      required: false
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected behavior
+      description: What did you expect WEFT to do?
+    validations:
+      required: true
+  - type: textarea
+    id: actual-behavior
+    attributes:
+      label: Actual behavior
+      description: What actually happened?
+    validations:
+      required: true
+  - type: input
+    id: weft-version
+    attributes:
+      label: WEFT version
+      description: Enter the version, Git commit SHA, or image tag you used, if known.
+    validations:
+      required: false
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        Include your OS and how you run WEFT (for example, Docker Compose or directly with Node.js).
+        Add Node.js and PostgreSQL versions, if relevant, and any other details that may help reproduce the problem.
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Paste relevant errors or log excerpts after removing sensitive information. Code formatting is applied automatically.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional context
+      description: Add any other details or attach screenshots after removing sensitive information.
+    validations:
+      required: false
