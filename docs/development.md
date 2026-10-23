@@ -782,6 +782,13 @@ folder must stay coupled to its application image.
 Normal `docker compose up` runs `node dist/index.js` and does not apply WEFT migrations. pg-boss
 creates or updates only its own internal `pgboss` schema during normal pg-boss startup.
 
+The pg-boss 12.27.0 to 12.38.0 upgrade advances its internal schema from 37 to 46. Stop the
+application and take a verified full database backup before starting the new release; preserve
+existing queues and jobs. The explicit Drizzle migration command does not perform this internal
+upgrade. Do not assume that restarting an older application image against the upgraded database
+is a safe rollback. Restore the matching pre-upgrade database backup and application release
+together if rollback is necessary, following the backup/restore procedure below.
+
 ## Production backup and restore operations
 
 This procedure runs from the source checkout root against the intended Compose project. It supports
@@ -1938,13 +1945,23 @@ delivery requires both projected time and effective start time to match. Retry a
 use projected time only because retry `startAfter` is its next wake time. Revision-only drift after
 a payload edit is current when projected time still matches.
 
-The scheduled-message delivery boundary uses public pg-boss 12.27.0 inspection, `upsert()`, and
+The scheduled-message delivery boundary uses public pg-boss 12.38.0 inspection, `upsert()`, and
 cancellation APIs. Created and retry jobs are updated in place, preserving job identity and retry
 metadata. Missing or terminal-only delivery uses the upsert insert path. Stale active delivery is
 cancelled and read-confirmed ineffective before current delivery is upserted; a current active job
 is not replaced. Ambiguous mutations receive read-only confirmation and otherwise remain pending
 for reconciliation. PostgreSQL reschedule state is never rolled back or restored because delivery
 repair failed.
+
+All three delivery workers use bounded `findJobs()` pages with `limit: 1000` and the previous
+page's last job ID as `after`, following the [official API](https://github.com/timgit/pg-boss/blob/12.38.0/docs/api/jobs.md#findjobsname-options).
+Terminal history is discarded page by page. Absence requires a complete scan; query failure,
+missing cursor anchors, malformed metadata, overlapping pages, or non-advancing cursors leave
+confirmation unresolved. Inspection retains at most one effective job and rejects conflicting
+effective delivery. Cancellation confirms each known target by ID and then rescans the same key
+for remaining relevant delivery. Response loss is resolved by reads, never by assuming the cancel
+failed or succeeded. These reads are observations during concurrent changes, not a database
+snapshot or execution authority; PostgreSQL action state and execution claims remain authoritative.
 
 Startup and runtime scheduled-message reconciliation now load each authoritative active definition
 and classify delivery as current, stale, missing, or unconfirmed by execution time. Legacy created

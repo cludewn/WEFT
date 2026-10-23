@@ -2,6 +2,7 @@ import type { JobWithMetadata, PgBoss, QueueResult } from "pg-boss";
 import type { Logger } from "pino";
 import { z } from "zod";
 
+import { findJobPagesByKey, isEffectiveJob } from "../pg-boss-jobs.js";
 import type { RecurringMessageExecutor, RecurringDelivery } from "./recurring-message-execution.js";
 import type { RecurringMessageStore } from "./recurring-message-persistence.js";
 import type { RecurringRuntimeStore } from "./recurring-message-runtime-persistence.js";
@@ -46,23 +47,34 @@ export function createRecurringMessageWorker({
   const inFlight = new Set<Promise<void>>();
   const key = (delivery: RecurringDelivery) => `${delivery.occurrenceId}:${delivery.retryCount}`;
   const matches = async (projection: RecurringProjection): Promise<boolean> => {
-    const jobs = await boss.findJobs(RECURRING_MESSAGE_QUEUE, { key: key(projection.delivery) });
-    return jobs.some((job) => {
-      if (job.state !== "created" && job.state !== "active") return false;
-      const parsed = schema.safeParse(job.data);
-      if (!parsed.success) return false;
-      const data = parsed.data;
-      const expected = projection.delivery;
-      return (
-        data.kind === expected.kind &&
-        data.scheduledActionId === expected.scheduledActionId &&
-        data.occurrenceId === expected.occurrenceId &&
-        data.scheduledFor === expected.scheduledFor &&
-        data.seriesRevision === expected.seriesRevision &&
-        data.retryCount === expected.retryCount &&
-        (job.state !== "created" || job.startAfter.getTime() === projection.wakeAt.getTime())
-      );
-    });
+    let effective: JobWithMetadata<unknown> | undefined;
+    for await (const page of findJobPagesByKey(
+      boss,
+      RECURRING_MESSAGE_QUEUE,
+      key(projection.delivery),
+    )) {
+      for (const job of page) {
+        if (!isEffectiveJob(job)) continue;
+        if (effective !== undefined) throw new Error("Conflicting recurring deliveries");
+        effective = job;
+      }
+    }
+    if (effective === undefined) return false;
+    const job = effective;
+    if (job.state !== "created" && job.state !== "active") return false;
+    const parsed = schema.safeParse(job.data);
+    if (!parsed.success) return false;
+    const data = parsed.data;
+    const expected = projection.delivery;
+    return (
+      data.kind === expected.kind &&
+      data.scheduledActionId === expected.scheduledActionId &&
+      data.occurrenceId === expected.occurrenceId &&
+      data.scheduledFor === expected.scheduledFor &&
+      data.seriesRevision === expected.seriesRevision &&
+      data.retryCount === expected.retryCount &&
+      (job.state !== "created" || job.startAfter.getTime() === projection.wakeAt.getTime())
+    );
   };
   const project = async (projection: RecurringProjection): Promise<"CURRENT" | "UNCONFIRMED"> => {
     try {

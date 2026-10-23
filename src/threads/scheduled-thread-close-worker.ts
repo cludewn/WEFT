@@ -4,6 +4,7 @@ import type { JobWithMetadata, PgBoss, QueueResult } from "pg-boss";
 import type { Logger } from "pino";
 import { z } from "zod";
 
+import { cancelJobsByKey, findJobPagesByKey } from "../pg-boss-jobs.js";
 import type { ScheduledActionStore } from "../scheduled-action-persistence.js";
 import type {
   ScheduledThreadCloseExecutionAuditIds,
@@ -321,34 +322,26 @@ export function createScheduledThreadCloseWorkerController({
     },
 
     async cancelStaleActiveDeliveries(scheduledActionId) {
-      const jobs = await boss.findJobs(SCHEDULED_THREAD_CLOSE_QUEUE, {
-        key: scheduledActionId,
-      });
-      const activeJobIds = jobs.filter((job) => job.state === "active").map((job) => job.id);
-      if (activeJobIds.length === 0) {
-        return 0;
-      }
-
-      try {
-        await boss.cancel(SCHEDULED_THREAD_CLOSE_QUEUE, activeJobIds);
-      } catch {
-        // A rejected client promise may have applied the cancellation. Confirmation below is final.
-      }
-
-      const confirmedJobs = await boss.findJobs(SCHEDULED_THREAD_CLOSE_QUEUE, {
-        key: scheduledActionId,
-      });
-      if (confirmedJobs.some((job) => job.state === "active")) {
+      const result = await cancelJobsByKey(
+        boss,
+        SCHEDULED_THREAD_CLOSE_QUEUE,
+        scheduledActionId,
+        (job) => job.state === "active",
+      );
+      if (result.outcome !== "CONFIRMED")
         throw new Error("Scheduled thread close stale delivery cleanup could not be confirmed");
-      }
-      return activeJobIds.length;
+      return result.matchedDeliveryCount;
     },
 
     async hasCreatedOrRetryDelivery(scheduledActionId) {
-      const jobs = await boss.findJobs(SCHEDULED_THREAD_CLOSE_QUEUE, {
-        key: scheduledActionId,
-      });
-      return jobs.some((job) => job.state === "created" || job.state === "retry");
+      for await (const page of findJobPagesByKey(
+        boss,
+        SCHEDULED_THREAD_CLOSE_QUEUE,
+        scheduledActionId,
+      )) {
+        if (page.some((job) => job.state === "created" || job.state === "retry")) return true;
+      }
+      return false;
     },
 
     start(): Promise<void> {

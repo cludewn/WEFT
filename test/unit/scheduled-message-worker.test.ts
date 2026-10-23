@@ -10,6 +10,8 @@ import {
   ScheduledMessageDeliveryRetryError,
 } from "../../src/messages/scheduled-message-worker.js";
 
+import { jobQuery, storedJob } from "./pg-boss-jobs-fixture.js";
+
 type Handler = (jobs: JobWithMetadata<unknown>[]) => Promise<unknown>;
 const requiredQueue = {
   policy: "exclusive",
@@ -39,6 +41,9 @@ function job(data: unknown = { scheduledActionId: "action-id" }): JobWithMetadat
   return {
     id: "job-id",
     name: SCHEDULED_MESSAGE_QUEUE,
+    singletonKey: "action-id",
+    createdOn: new Date("2020-01-01T00:00:00Z"),
+    startAfter: new Date("2030-01-01T00:00:00Z"),
     data,
     signal: new AbortController().signal,
     retryCount: 0,
@@ -353,19 +358,26 @@ describe("scheduled message pg-boss worker", () => {
   it("cancels only created, retry, and active delivery while preserving terminal history", async () => {
     const f = fixture();
     vi.mocked(f.boss.findJobs)
-      .mockResolvedValueOnce([
-        { id: "created-id", state: "created" },
-        { id: "retry-id", state: "retry" },
-        { id: "active-id", state: "active" },
-        { id: "completed-id", state: "completed" },
-        { id: "cancelled-id", state: "cancelled" },
-        { id: "failed-id", state: "failed" },
-      ] as never)
-      .mockResolvedValueOnce([
-        { id: "completed-id", state: "completed" },
-        { id: "cancelled-id", state: "cancelled" },
-        { id: "failed-id", state: "failed" },
-      ] as never);
+      .mockResolvedValueOnce(
+        [
+          { id: "created-id", state: "created" },
+          { id: "retry-id", state: "retry" },
+          { id: "active-id", state: "active" },
+          { id: "completed-id", state: "completed" },
+          { id: "cancelled-id", state: "cancelled" },
+          { id: "failed-id", state: "failed" },
+        ].map((entry) => ({ ...job(), ...entry })) as never,
+      )
+      .mockResolvedValueOnce([{ ...job(), id: "created-id", state: "cancelled" }] as never)
+      .mockResolvedValueOnce([{ ...job(), id: "retry-id", state: "cancelled" }] as never)
+      .mockResolvedValueOnce([{ ...job(), id: "active-id", state: "cancelled" }] as never)
+      .mockResolvedValueOnce(
+        [
+          { id: "completed-id", state: "completed" },
+          { id: "cancelled-id", state: "cancelled" },
+          { id: "failed-id", state: "failed" },
+        ].map((entry) => ({ ...job(), ...entry })) as never,
+      );
 
     await expect(f.controller.cancelScheduledMessageDeliveries("action-id")).resolves.toEqual({
       outcome: "CONFIRMED",
@@ -381,7 +393,7 @@ describe("scheduled message pg-boss worker", () => {
   it("confirms cleanup by rereading even when cancel throws", async () => {
     const f = fixture();
     vi.mocked(f.boss.findJobs)
-      .mockResolvedValueOnce([{ id: "created-id", state: "created" }] as never)
+      .mockResolvedValueOnce([{ ...job(), id: "created-id", state: "created" }] as never)
       .mockResolvedValueOnce([]);
     vi.mocked(f.boss.cancel).mockRejectedValue(new Error("response lost"));
     await expect(f.controller.cancelScheduledMessageDeliveries("action-id")).resolves.toEqual({
@@ -392,10 +404,112 @@ describe("scheduled message pg-boss worker", () => {
 
   it("reports cleanup unconfirmed while cancellable delivery remains", async () => {
     const f = fixture();
-    vi.mocked(f.boss.findJobs).mockResolvedValue([{ id: "active-id", state: "active" }] as never);
+    vi.mocked(f.boss.findJobs).mockResolvedValue([
+      { ...job(), id: "active-id", state: "active" },
+    ] as never);
     await expect(f.controller.cancelScheduledMessageDeliveries("action-id")).resolves.toEqual({
       outcome: "UNCONFIRMED",
       matchedDeliveryCount: 1,
     });
+  });
+  it.each(["created", "retry", "active"] as const)(
+    "finds %s after more than 1000 terminal jobs",
+    async (state) => {
+      const f = fixture();
+      const executeAt = new Date("2030-01-01Z");
+      const projection = { scheduledActionId: "action-id", executeAt, revision: 0 };
+      const jobs = Array.from({ length: 2001 }, (_, i) =>
+        storedJob(SCHEDULED_MESSAGE_QUEUE, "action-id", i),
+      );
+      jobs.push(
+        storedJob(SCHEDULED_MESSAGE_QUEUE, "action-id", 2001, {
+          state,
+          startAfter: executeAt,
+          data: {
+            scheduledActionId: "action-id",
+            scheduledExecuteAt: executeAt.toISOString(),
+            scheduleRevision: 0,
+          },
+        }),
+      );
+      vi.mocked(f.boss.findJobs).mockImplementation(jobQuery(jobs));
+      expect(await f.controller.inspectScheduledMessageDelivery(projection)).toBe("CURRENT");
+      expect(await f.controller.ensureScheduledMessageDelivery(projection)).toBe("CURRENT");
+      expect(f.boss.upsert).not.toHaveBeenCalled();
+      expect(f.boss.cancel).not.toHaveBeenCalled();
+    },
+  );
+
+  it("requires a complete scan for absence and rejects duplicates across pages", async () => {
+    const f = fixture();
+    const projection = {
+      scheduledActionId: "action-id",
+      executeAt: new Date("2030-01-01Z"),
+      revision: 0,
+    };
+    const jobs = Array.from({ length: 2001 }, (_, i) =>
+      storedJob(SCHEDULED_MESSAGE_QUEUE, "action-id", i),
+    );
+    vi.mocked(f.boss.findJobs).mockImplementation(jobQuery(jobs));
+    expect(await f.controller.inspectScheduledMessageDelivery(projection)).toBe("MISSING");
+    jobs[0]!.state = "active";
+    jobs[2000]!.state = "created";
+    expect(await f.controller.inspectScheduledMessageDelivery(projection)).toBe("UNCONFIRMED");
+  });
+
+  it("keeps all delivery and cleanup contracts conservative on a continuation error", async () => {
+    const f = fixture();
+    const projection = {
+      scheduledActionId: "action-id",
+      executeAt: new Date("2030-01-01Z"),
+      revision: 0,
+    };
+    const jobs = Array.from({ length: 2001 }, (_, i) =>
+      storedJob(SCHEDULED_MESSAGE_QUEUE, "action-id", i),
+    );
+    const query = jobQuery(jobs);
+    vi.mocked(f.boss.findJobs).mockImplementation((name, options) =>
+      options?.after ? Promise.reject(new Error("anchor lost")) : query(name, options),
+    );
+    expect(await f.controller.inspectScheduledMessageDelivery(projection)).toBe("UNCONFIRMED");
+    expect(await f.controller.ensureScheduledMessageDelivery(projection)).toBe(
+      "PENDING_RECONCILIATION",
+    );
+    expect(await f.controller.cancelScheduledMessageDeliveries("action-id")).toEqual({
+      outcome: "UNCONFIRMED",
+      matchedDeliveryCount: 0,
+    });
+    await expect(f.controller.cancelStaleActiveDeliveries("action-id")).rejects.toThrow(
+      "cleanup could not be confirmed",
+    );
+    expect(f.boss.upsert).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a stale active job when a different effective job appears after cancellation", async () => {
+    const f = fixture();
+    const projection = {
+      scheduledActionId: "action-id",
+      executeAt: new Date("2030-01-01Z"),
+      revision: 0,
+    };
+    const jobs = Array.from({ length: 2001 }, (_, i) =>
+      storedJob(SCHEDULED_MESSAGE_QUEUE, "action-id", i),
+    );
+    jobs.push(
+      storedJob(SCHEDULED_MESSAGE_QUEUE, "action-id", 2001, {
+        state: "active",
+        data: { scheduledActionId: "action-id" },
+      }),
+    );
+    vi.mocked(f.boss.findJobs).mockImplementation(jobQuery(jobs));
+    vi.mocked(f.boss.cancel).mockImplementation(() => {
+      jobs[2001]!.state = "cancelled";
+      jobs.push(storedJob(SCHEDULED_MESSAGE_QUEUE, "action-id", 2002, { state: "created" }));
+      return Promise.reject(new Error("response lost"));
+    });
+    expect(await f.controller.ensureScheduledMessageDelivery(projection)).toBe(
+      "PENDING_RECONCILIATION",
+    );
+    expect(f.boss.upsert).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,4 @@
-import type { JobWithMetadata } from "pg-boss";
+import type { FindJobsOptions, JobWithMetadata } from "pg-boss";
 import { describe, expect, it, vi } from "vitest";
 
 import type { RecurringDelivery } from "../../src/messages/recurring-message-execution.js";
@@ -7,9 +7,10 @@ import {
   RECURRING_MESSAGE_QUEUE,
 } from "../../src/messages/recurring-message-worker.js";
 
+import { jobQuery, storedJob } from "./pg-boss-jobs-fixture.js";
+
 function fixture() {
-  const jobs: Array<{ data: RecurringDelivery; state: "created" | "active"; startAfter: Date }> =
-    [];
+  const jobs: JobWithMetadata<RecurringDelivery>[] = [];
   let handler: ((jobs: JobWithMetadata<unknown>[]) => Promise<void>) | undefined;
   const boss = {
     createQueue: vi.fn().mockResolvedValue(undefined),
@@ -27,7 +28,15 @@ function fixture() {
       .fn()
       .mockImplementation(
         (_name: string, data: RecurringDelivery, options: { startAfter: Date }) => {
-          jobs.push({ data, state: "created", startAfter: options.startAfter });
+          jobs.push({
+            id: `job-${jobs.length}`,
+            name: RECURRING_MESSAGE_QUEUE,
+            singletonKey: `${data.occurrenceId}:${data.retryCount}`,
+            createdOn: new Date(),
+            data,
+            state: "created",
+            startAfter: options.startAfter,
+          } as JobWithMetadata<RecurringDelivery>);
           return Promise.resolve("job");
         },
       ),
@@ -132,5 +141,45 @@ describe("recurring delivery worker", () => {
     } finally {
       process.off("unhandledRejection", unhandled);
     }
+  });
+  it.each(["created", "active"] as const)(
+    "recognizes %s beyond terminal history without another upsert",
+    async (state) => {
+      const { worker, boss, delivery } = fixture();
+      const jobs = Array.from({ length: 2001 }, (_, i) =>
+        storedJob(RECURRING_MESSAGE_QUEUE, "occurrence:0", i),
+      );
+      jobs.push(
+        storedJob(RECURRING_MESSAGE_QUEUE, "occurrence:0", 2001, {
+          state,
+          data: delivery,
+          startAfter: new Date(delivery.scheduledFor),
+        }),
+      );
+      boss.findJobs.mockImplementation(jobQuery(jobs));
+      expect(await worker.project({ delivery, wakeAt: new Date(delivery.scheduledFor) })).toBe(
+        "CURRENT",
+      );
+      expect(boss.upsert).not.toHaveBeenCalled();
+      jobs[0]!.state = "active";
+      expect(await worker.project({ delivery, wakeAt: new Date(delivery.scheduledFor) })).toBe(
+        "UNCONFIRMED",
+      );
+    },
+  );
+
+  it("does not upsert after an incomplete history scan", async () => {
+    const { worker, boss, delivery } = fixture();
+    const jobs = Array.from({ length: 1000 }, (_, i) =>
+      storedJob(RECURRING_MESSAGE_QUEUE, "occurrence:0", i),
+    );
+    const query = jobQuery(jobs);
+    boss.findJobs.mockImplementation((name: string, options?: FindJobsOptions) =>
+      options?.after ? Promise.reject(new Error("anchor lost")) : query(name, options),
+    );
+    expect(await worker.project({ delivery, wakeAt: new Date(delivery.scheduledFor) })).toBe(
+      "UNCONFIRMED",
+    );
+    expect(boss.upsert).not.toHaveBeenCalled();
   });
 });
