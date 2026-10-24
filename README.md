@@ -6,6 +6,11 @@ The project is in its initial development phase and is not ready for production 
 
 Product behavior is defined in [`docs/specification.md`](./docs/specification.md). Architecture and development workflow are documented in [`docs/development.md`](./docs/development.md).
 
+Canonical user-guide sources are available in [English](docs/wiki/Home.md) and
+[Japanese](docs/wiki/Home-ja.md). Their navigation uses Wiki page links intended for the
+[GitHub Wiki](https://github.com/cludewn/WEFT/wiki) publication target. See
+[Wiki publishing](docs/wiki-publishing.md) for setup and staged publication acceptance.
+
 ## Requirements
 
 - Node.js 24
@@ -76,7 +81,7 @@ corepack pnpm commands:deploy
 Global deployment must be selected explicitly:
 
 ```sh
-corepack pnpm commands:deploy -- --global
+corepack pnpm run commands:deploy --global
 ```
 
 After updating WEFT, deploy the updated definitions to each scope where its commands were registered.
@@ -270,8 +275,10 @@ configured; PostgreSQL remains the authoritative audit history.
 
 ## Audit notifications
 
-WEFT sends metadata-only, plain-text notifications for newly committed thread, scheduled thread-close,
-managed-message, scheduled-message, recurring-message, audit-destination, and link-preview mode audits. Message content,
+WEFT sends metadata-only, plain-text notifications for newly committed audits from ten sources:
+thread, scheduled thread-close, managed-message success, managed-message execution failure,
+scheduled-message, recurring-message, audit-destination, link-preview mode, guild-configuration,
+and administrative-operation-failure audits. Message content,
 embed fields, names, raw errors, and arbitrary before/after values are excluded. Mentions are
 suppressed. Before each send, WEFT reads the current destination from PostgreSQL, force-fetches the
 Discord channel and bot member, and checks the bot's current `ViewChannel` and `SendMessages`
@@ -285,7 +292,7 @@ existing process-wide deadline before Discord and PostgreSQL close.
 
 ## Audit retention
 
-WEFT retains audit history for a fixed global period of 90 * 24 hours. Cleanup covers the seven thread, scheduled thread-close, managed-message, scheduled-message, recurring-message, audit-log-destination, and link-preview mode audit tables. An initial sweep is scheduled shortly after runtime startup without blocking readiness; later sweeps start 24 hours after the previous sweep settles. Deletion uses bounded batches, so expiration is periodic rather than an exact TTL.
+WEFT retains audit history for a fixed global period of 90 * 24 hours. Cleanup covers the ten sources listed above. An initial sweep is scheduled shortly after runtime startup without blocking readiness; later sweeps start 24 hours after the previous sweep settles. Each batch removes at most 500 rows strictly older than the cutoff; equal-cutoff rows remain. Expiration is periodic rather than an exact TTL. See [Audit and privacy](docs/wiki/Audit-and-Privacy.md) for scope and limitations.
 
 Cleanup removes audit rows only. Active schedules, managed-resource state, configuration, and recovery state remain intact. Audit deletion creates no audit notification. A cleanup failure does not invalidate application operations; the next sweep retries remaining work. Shutdown drains in-flight cleanup before PostgreSQL closes under the existing process-wide deadline. Per-guild retention configuration is not implemented and remains unresolved.
 

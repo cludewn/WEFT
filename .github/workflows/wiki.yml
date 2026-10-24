@@ -1,0 +1,87 @@
+name: Publish Wiki
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/wiki/**
+      - docs/wiki-publishing.md
+      - scripts/wiki/**
+      - test/unit/wiki-*.test.ts
+      - .github/workflows/wiki.yml
+      - package.json
+      - pnpm-lock.yaml
+      - tsconfig.json
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: weft-wiki-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Check out current main
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve and check out authoritative main revision
+        id: source
+        env:
+          WIKI_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_ASKPASS: ${{ github.workspace }}/scripts/wiki/askpass.sh
+          GIT_TERMINAL_PROMPT: "0"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: "1"
+        run: |
+          chmod 700 "$GIT_ASKPASS"
+          git -c credential.helper= fetch --no-tags origin refs/heads/main
+          source_sha=$(git rev-parse FETCH_HEAD)
+          [[ "$source_sha" =~ ^[0-9a-f]{40}$ ]]
+          git -c core.hooksPath=/dev/null checkout --detach "$source_sha"
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "Resolved main revision: $source_sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Install source verification tools
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Validate bilingual guide against registration and limits
+        run: corepack pnpm wiki:check
+
+      - name: Verify local publication fixtures and workflow contract
+        run: corepack pnpm exec vitest run test/unit/wiki-content.test.ts test/unit/wiki-publish.test.ts test/unit/wiki-workflow.test.ts
+
+      - name: Synchronize and confirm Wiki publication
+        id: publication
+        env:
+          WIKI_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_ASKPASS: ${{ github.workspace }}/scripts/wiki/askpass.sh
+          GIT_TERMINAL_PROMPT: "0"
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          chmod 700 "$GIT_ASKPASS"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          corepack pnpm wiki:publish
+
+      - name: Record incomplete publication
+        if: always() && steps.publication.outcome != 'success'
+        run: |
+          echo "Wiki publication did not complete successfully. No confirmed publication is claimed by this run." >> "$GITHUB_STEP_SUMMARY"
+          echo "Inspect the failed step and follow docs/wiki-publishing.md. Authentication, connectivity and initialization are separate possible causes." >> "$GITHUB_STEP_SUMMARY"
