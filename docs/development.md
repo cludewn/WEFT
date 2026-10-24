@@ -2419,7 +2419,7 @@ Maintainer verification and release order:
    production migration runner above. Require successful exit before starting the new runtime;
    normal startup does not apply migrations. Keep the release coupled to its SQL and journal.
 3. Redeploy application commands with `corepack pnpm commands:deploy` for the configured Guild
-   scope and `corepack pnpm commands:deploy -- --global` for Global if previously used. Bulk
+   scope and `corepack pnpm run commands:deploy --global` for Global if previously used. Bulk
    overwrite updates only the selected scope. Confirm exactly set/disable and removal of the old
    flat syntax. Registration infrastructure and scope selection remain unchanged.
 4. In the designated development guild, check Manage Server rejection, disable success, repeated
