@@ -2,9 +2,9 @@
 
 [Home](Home) · [Command reference](Command-Reference) · [Troubleshooting](Troubleshooting) · [日本語](Home-ja)
 
-WEFT is a self-hosted Discord bot that helps server administrators close finished discussions and publish messages on a schedule. You operate it through Discord slash commands and forms.
+WEFT is a self-hosted Discord bot for managing threads, collaboratively editing bot messages, scheduling one-time and recurring posts, and previewing message links. It checks user and bot permissions for administrative operations and records operation outcomes and configuration changes in audit logs. You can use it through Discord slash commands and forms.
 
-Use it to archive resolved support threads, close discussions after inactivity, review a batch before closing it, or publish a one-time reminder or daily/weekly announcement. Messages sent and recorded by WEFT can be edited through its commands.
+For example, you can close resolved threads, automatically close threads after a period of inactivity, or close multiple threads at once. You can also schedule one-time and recurring messages, and multiple authorized administrators can collaboratively edit messages sent and recorded by WEFT.
 
 <a id="start-here"></a>
 
@@ -30,7 +30,7 @@ Self-hosting means you provide and maintain the machine running WEFT and its Pos
 | ------------------------------------------------- | ------------------------------------------------ |
 | Close at a chosen future time                     | [Scheduled thread close](Scheduled-Thread-Close) |
 | Select and close several threads                  | [Bulk thread close](Bulk-Thread-Close)           |
-| Create or edit a bot announcement                 | [Managed messages](Managed-Messages)             |
+| Create or edit a bot message                      | [Managed messages](Managed-Messages)             |
 | Configure how message-link previews are displayed | [Link previews](Link-Previews)                   |
 | Understand stored information and audit notices   | [Audit and privacy](Audit-and-Privacy)           |
 | Check health, stop or upgrade WEFT                | [Operations](Operations)                         |
