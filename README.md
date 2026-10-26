@@ -1,355 +1,127 @@
 # WEFT
 
-WEFT is a self-hosted Discord bot focused on thread management and persistent scheduled actions.
+<p align="center">
+  <strong>English</strong> | <a href="./README-ja.md">日本語</a>
+</p>
 
-The project is in its initial development phase and is not ready for production use.
+WEFT is a self-hosted Discord bot for managing threads, collaboratively editing bot messages, and scheduling one-time and recurring posts.
 
-Product behavior is defined in [`docs/specification.md`](./docs/specification.md). Architecture and development workflow are documented in [`docs/development.md`](./docs/development.md).
+## Features
 
-Canonical user-guide sources are available in [English](docs/wiki/Home.md) and
-[Japanese](docs/wiki/Home-ja.md). Their navigation uses Wiki page links intended for the
-[GitHub Wiki](https://github.com/cludewn/WEFT/wiki) publication target. See
-[Wiki publishing](docs/wiki-publishing.md) for setup and staged publication acceptance.
+### Thread management
 
-## Requirements
+Close threads manually or configure automatic closing after a period of inactivity. Schedule threads to close after a delay, or filter candidates by thread name, creator, and other criteria, then close the selected threads together.
 
-- Node.js 24
-- Corepack
-- PostgreSQL 18
-- Docker and Docker Compose for the provided development database
+### Shared editing of bot messages
 
-## Setup
+Multiple authorized administrators can collaboratively edit messages posted by the bot.
 
-Install dependencies through the pnpm version pinned in `package.json`:
+### Scheduled and recurring messages
+
+Schedule messages for a specific date and time or after a delay. Daily and weekly recurring posts are also available, with options to change message content or timing and cancel schedules.
+
+### Message link previews
+
+Preview messages linked from within the same server. Content confirmed to be publicly readable is displayed automatically; other content is shown only to users whose access has been verified.
+
+### Permission checks and audit logs
+
+WEFT checks user and bot permissions for administrative operations and records operation outcomes and configuration changes. Audit events can also be sent to a designated Discord channel.
+
+## Documentation
+
+For feature guides, commands, configuration, updates, backup, and recovery, see the [official Wiki](https://github.com/cludewn/WEFT/wiki/Home).
+
+## Getting started
+
+Deploy WEFT from a complete source checkout using Docker Compose, with one active application instance and PostgreSQL 18.
+
+Requirements:
+
+- Git, Docker, and Docker Compose.
+- Node.js 24 and Corepack on the host. Use the pnpm version pinned in `package.json`.
+- Permission to manage a Discord application and install it into the target server.
+
+These steps are for a first installation. Run commands in order and confirm that each succeeds before continuing. Detailed setup and maintenance instructions are available in the [Wiki guides](#documentation).
+
+### 1. Set up the Discord application
+
+1. Create an application in the [Discord Developer Portal](https://discord.com/developers/applications). Record its Application ID and obtain the bot token through the Bot settings.
+2. Configure Guild Install and use the Discord Provided Link with the `bot` and `applications.commands` scopes in Default Install Settings.
+3. Grant View Channels, Manage Threads, Send Messages, Send Messages in Threads, Read Message History, and Embed Links. Do not grant Administrator.
+4. Enable Message Content Intent under Bot → Privileged Gateway Intents, then install the application into the target server.
+
+### 2. Obtain the source and configure WEFT
+
+Clone the repository and install the host-side dependencies:
 
 ```sh
+git clone https://github.com/cludewn/WEFT.git
+cd WEFT
 corepack pnpm install --frozen-lockfile
 ```
 
-1. Create or select a Discord application and bot in the Developer Portal. Record the **Discord
-   Application ID** (not the Bot User ID) and obtain the bot token securely.
-2. Under **Installation**, support **Guild Install** only; User Install is unsupported. Use the
-   **Discord Provided Link** and set **Default Install Settings** for Guild Install to the `bot`
-   and `applications.commands` scopes. Although bot authorization includes application commands,
-   select both scopes to make the intended installation explicit.
-3. Select these bot permissions for full WEFT functionality: **View Channels**, **Manage Threads**,
-   **Send Messages**, **Send Messages in Threads**, **Read Message History**, and **Embed Links**.
-   Do not grant Administrator. Enable **Message Content Intent** under **Bot → Privileged Gateway
-   Intents** in the Developer Portal for message-link detection. **Server Members Intent** and
-   **Presence Intent** remain unnecessary and should stay disabled.
-4. Install the application into each target guild using the generated link. Installation grants a
-   maximum permission set; channel and thread overwrites can reduce WEFT's effective permissions,
-   causing runtime checks to reject an operation. Private thread access also depends on Discord
-   visibility rules: WEFT does not automatically join private threads. Sending to an archived
-   thread does not automatically unarchive it.
-5. Configure WEFT from `.env.example`, prepare PostgreSQL, and run the explicit production migration
-   described below before startup. Deploy application commands separately as described below.
-6. Start WEFT and verify `GET /health/live` and `GET /health/ready`. To verify Discord command
-   interactions, run the read-only `/config audit-log show` in the guild as a member with
-   **Manage Server** (`ManageGuild`) permission.
-
-Copy `.env.example` to `.env` for local Docker Compose use, then replace the example passwords and Discord placeholders. Normal application startup requires the bot token and Discord Application ID. `DISCORD_GUILD_ID` selects only the default guild command deployment target; it does not restrict runtime to one guild and is unnecessary for global command deployment or normal startup. Do not commit `.env` files.
-
-Commands run directly on the host do not load `.env` automatically. Provide the same variables through the local shell or environment-management tool before running the application, Drizzle Kit, or PostgreSQL integration tests.
-
-## Environment variables
-
-| Name                     | Required                             | Description                                                                    |
-| ------------------------ | ------------------------------------ | ------------------------------------------------------------------------------ |
-| `DATABASE_HOST`          | Yes                                  | PostgreSQL host                                                                |
-| `DATABASE_PORT`          | Yes                                  | PostgreSQL port between 1 and 65535                                            |
-| `DATABASE_NAME`          | Yes                                  | PostgreSQL database name                                                       |
-| `DATABASE_USER`          | Yes                                  | PostgreSQL user                                                                |
-| `DATABASE_PASSWORD`      | Yes                                  | PostgreSQL password                                                            |
-| `DATABASE_SSL`           | No                                   | Set to `true` to require certificate-verified TLS; defaults to `false`         |
-| `LOG_LEVEL`              | No                                   | Pino log level; defaults to `info`                                             |
-| `HEALTH_PORT`            | No                                   | Local health listener port; defaults to `3000`                                 |
-| `DISCORD_TOKEN`          | Yes                                  | Discord bot token; never logged or format-validated                            |
-| `DISCORD_APPLICATION_ID` | Yes                                  | Discord application ID                                                         |
-| `DISCORD_GUILD_ID`       | For default guild command deployment | Guild targeted by the default deployment mode; not a runtime guild restriction |
-
-## Discord commands
-
-Guild installation, application-command registration, and runtime startup are separate operations.
-Normal runtime startup (`node dist/index.js`) does not register application commands. Deploy commands
-explicitly to the configured development guild:
+Run subsequent commands from the checkout root. Create private settings from [`.env.example`](.env.example):
 
 ```sh
-corepack pnpm commands:deploy
+umask 077
+cp -n .env.example .env
+chmod 600 .env
 ```
 
-Global deployment must be selected explicitly:
+`cp -n` preserves an existing `.env`. Edit the file to set `DATABASE_NAME`, `DATABASE_USER`, a strong `DATABASE_PASSWORD`, `DISCORD_TOKEN`, and `DISCORD_APPLICATION_ID`. For server-specific command registration, set `DISCORD_GUILD_ID` to the target server ID. Keep the file private and do not commit it.
+
+Optional settings and environment configuration details are covered in the [configuration reference](https://github.com/cludewn/WEFT/wiki/Installation-and-Setup#configuration-reference).
+
+### 3. Build the image and run database migrations
 
 ```sh
-corepack pnpm run commands:deploy --global
-```
-
-After updating WEFT, deploy the updated definitions to each scope where its commands were registered.
-Deployment bulk overwrites only the selected scope, removing obsolete commands such as `/ping`.
-Guild and global registrations are independent: the default targets `DISCORD_GUILD_ID`, while
-`--global` targets global commands. Updating one does not update the other.
-
-PostgreSQL integration tests use a separate set of required variables and never fall back to the application database settings:
-
-| Name                     | Required | Description                                        |
-| ------------------------ | -------- | -------------------------------------------------- |
-| `TEST_DATABASE_HOST`     | Yes      | Dedicated test PostgreSQL host                     |
-| `TEST_DATABASE_PORT`     | Yes      | Dedicated test PostgreSQL port between 1 and 65535 |
-| `TEST_DATABASE_NAME`     | Yes      | Dedicated test database name                       |
-| `TEST_DATABASE_USER`     | Yes      | Dedicated test database user                       |
-| `TEST_DATABASE_PASSWORD` | Yes      | Dedicated test database password                   |
-| `TEST_DATABASE_SSL`      | Yes      | Set to `true` to require certificate-verified TLS  |
-
-## Closed-thread title prefix
-
-The default closed prefix is `[CLOSED]`. Administrators with Manage Server can use:
-
-```text
-/config closed-prefix set value:[DONE]
-/config closed-prefix disable
-/config closed-prefix set value:[CLOSED]
-```
-
-`set` requires 1–20 Unicode code points after trimming and rejects empty, whitespace-only, and
-control-character input. `disable` takes no options and stores an empty string. `/config show`
-explicitly displays `Closed prefix: Disabled`. The previous flat `/config closed-prefix value:...`
-syntax is removed; redeploy commands to every previously used Guild/Global scope as described above.
-
-Manual, automatic, scheduled, and bulk closes with an empty applied prefix archive without
-locking or changing the title. Opening reconciles a thread already active on Discord; WEFT does not add
-an unarchive operation. A managed CLOSED thread keeps its saved applied prefix across guild setting
-changes: an older `[CLOSED]` marker is still removed on open after disabling, while a thread closed
-with an empty prefix keeps its title after a new prefix is enabled. Repeated closes retain that
-saved prefix until OPEN; the next close then uses current guild settings. Manual title edits outside
-the saved leading marker are preserved. Settings changes never rename existing threads.
-
-Before running this release, apply migration 0023 after 0000–0022 using the explicit
-[production migration procedure](docs/development.md#production-migration-operations), then start
-WEFT and redeploy commands. It removes the managed-thread nonempty-prefix CHECK and permits
-0–20 code points in both closed-prefix audit values, preserving NOT NULL, the default, other
-constraints, existing rows, and audit history. See the
-[verification procedure](docs/development.md#prefix-free-thread-closing-issue-120) for upgrade,
-clean-install, and development-guild checks.
-
-## PostgreSQL
-
-Start the PostgreSQL development service:
-
-```sh
+docker compose build app
 docker compose up -d postgres
+docker compose run --rm app node dist/migrate.js
 ```
 
-PostgreSQL is published only on `127.0.0.1` at `DATABASE_PORT`. Its data is stored in the `postgres-data` named volume.
+**Confirm that the migration succeeds before continuing.** If it fails, do not start the application; investigate the failure first.
 
-## Operational health
+### 4. Register Discord commands
 
-WEFT serves `GET /health/live` and `GET /health/ready` on `127.0.0.1:HEALTH_PORT` (default
-`3000`). Liveness returns `200` with `{"status":"alive"}` when the local listener responds.
-Readiness returns `200` with `{"status":"ready"}` only after application startup is complete,
-Discord currently reports ready, and a read-only PostgreSQL query succeeds. Otherwise it returns
-`503` with `{"status":"unavailable"}`. Readiness is an observation of those three conditions;
-it does not guarantee that a later Discord or database operation will succeed or trigger recovery.
-
-Docker Compose checks readiness inside the app container every 30 seconds, with a 5-second timeout,
-three retries, and a 60-second startup grace period. The health port is not published to the host.
-A timed-out readiness request leaves any unfinished database query owned by the process until it
-settles or the shared shutdown deadline expires; no second physical health query starts meanwhile.
-
-## One-time scheduled messages
-
-Use exactly one of the relative `after` or absolute `at` options:
-
-```text
-/message schedule create after:2h
-/message schedule create at:"2026-10-10 19:30"
-/message schedule reschedule id:<schedule-id> after:2h
-/message schedule reschedule id:<schedule-id> at:"2026-10-10 19:30"
-```
-
-`after` retains the single `m`, `h`, or `d` duration grammar from `1m` through `365d`. Create opens
-the existing message/embed modal; its full delay begins after submission and fresh service
-preflight. `at` requires exactly `YYYY-MM-DD HH:mm`, with ASCII digits, zero-padded fields, one
-space and a 24-hour clock. Extra whitespace, `T`, seconds, offsets, `Z`, timezone annotations and
-invalid calendar dates are rejected. Missing or conflicting selectors are rejected. Empty supplied
-values are invalid input, not omitted selectors.
-
-`at` uses the current configured guild timezone (`UTC` by default). Create loads it during modal
-submission processing, so a timezone change while the modal is open takes effect on submission.
-Reschedule loads it during that operation. Invalid or numeric-offset saved zones are rejected
-without fallback. Both nonexistent DST gap times and ambiguous DST overlap times are rejected;
-choose another time or use `after`.
-
-The service establishes one clock after preflight and required timezone lookup. The canonical
-instant must be at least one minute and at most 365 elapsed 24-hour days ahead, both inclusive.
-The maximum is not a local calendar year. PostgreSQL persists only that instant, so later guild
-timezone changes never move an existing one-time schedule. Success uses `<t:unix:F> (<t:unix:R>)`,
-which Discord displays in each viewer's client timezone; that can differ from the guild-local
-input. Existing persistence, audits, pg-boss delivery, recovery, reconciliation and concurrency
-protection are reused. This adds no migration, dependency, intent, bot permission or exactly-once
-guarantee.
-
-## Confirmed interactive bulk thread closing
-
-Run `/thread bulk-close` to open the setup Modal. Select one text, announcement or forum parent,
-then optionally select an Owner, enter Name contains, or enter Created older than. Submit the Modal,
-review the ephemeral candidate selection, select or deselect threads, then Confirm selected threads.
-
-Filtered example: choose the help parent and Name contains `resolved`; matching candidates initially
-start selected, so you can deselect exceptions. Combine Owner, Name contains and Created older than
-with AND. Names use literal, case-sensitive substring matching, including nonblank edge spaces.
-Owner means the current Discord thread creator. Empty or whitespace-only text leaves a filter unset.
-Created older than `30d` means **created at least 30 days ago, not inactive for 30 days**. It accepts
-one positive `m`, `h` or `d` duration from one minute through 365 days. Threads without a usable
-Discord creation timestamp cannot match that filter.
-
-Unfiltered example: choose the questions parent and leave every optional filter blank. All otherwise
-eligible candidates appear, but **none starts selected**. Explicitly pick the threads to close.
-Zero selected threads cannot be confirmed.
-
-Active, unlocked public/announcement/forum threads are supported, including unmanaged threads.
-Private and archived threads are excluded. More than 50 candidates rejects the whole operation;
-configure or narrow filters. The String Select shows ten candidates per page, with at most five pages.
-Selections persist across Previous/Next navigation. Clear page removes only that page's selections.
-Review every candidate as needed; Confirm is required even for one thread. Only the initiator can
-use the controls. The session expires after five minutes; selection and navigation do not extend it.
-
-The candidate snapshot never gains threads. Confirm freezes exactly the current selected subset;
-deselected candidates never execute. Current state, filters or permissions can still cause skips.
-Closing adds a closed prefix when enabled and archives without locking. It may cancel an active scheduled
-close; cancellation is not restored if the later close fails or remains Pending. Execution uses a
-shared maximum of three unresolved bulk operations and stops starting new targets five minutes after
-confirmation. The aggregate distinguishes selected, attempted, closed, already closed, pending,
-failed/unconfirmed and skipped. Selected counts the frozen subset, not all candidates. Pending work
-can finish later; failed/unconfirmed does not prove Discord remained unchanged. This is a partial
-batch, not an all-or-nothing transaction. Restart invalidates setup/selection sessions and never
-resumes unstarted targets.
-
-## Message-link previews
-
-WEFT displays up to three preview/button items from distinct same-guild Discord message links in
-new human messages, examining a bounded set of candidates.
-Configure the persistent mode with `/config link-preview show` and `/config link-preview mode
-value:<hybrid|public-only|button-only|off>`. These commands require Manage Server; `/config show`
-also displays the mode. The default is `hybrid`.
-
-- `hybrid`: automatically preview conservatively proven public targets; otherwise show a generic
-  Preview button. Confirmed age-restricted targets are omitted.
-- `public-only`: preview only proven public targets.
-- `button-only`: post generic buttons without looking up targets until clicked.
-- `off`: disable detection output and existing buttons. Existing buttons also fail in `public-only`.
-
-Buttons check the clicking user's current access and return previews ephemerally. Age-restricted
-channels and threads with age-restricted direct parents are unsupported, including for owners and
-administrators. Unconfirmed access or age state returns the same generic failure as a missing message.
-Previews are point-in-time copies; subsequent permission changes, message edits and deletions do not
-update or remove them. There is no preview history or monitoring. Source messages receive at most one
-reply containing public AUTO embeds followed by Secondary Preview buttons, without helper explanation
-text. A single distinct supported link uses `Preview`; multiple links use `Preview N` according to
-their source appearance order, including public and omitted links in the count.
-In public-only, non-public candidates do not consume visible slots. `+N more` counts eligible items
-beyond the three visible slots plus supported-looking links beyond the examination budget. Examined
-non-public candidates in public-only and confirmed age-restricted candidates are excluded from this
-count. Unexamined links are counted locally without confirming target existence or access.
-Buttons and overflow text disclose no protected target metadata. Authorized previews show
-actual channel or parent/thread names and a timestamp, without preview labels or omission counts.
-AUTO embeds have no Open original button; every successful button-triggered ephemeral preview has
-one. Mentions are suppressed, text spoilers are omitted and only the first eligible image is shown.
-WEFT never explicitly joins, leaves, modifies, unlocks or unarchives source threads to create a
-preview. Archived or locked sources receive no preview reply. Sending to an active public,
-announcement or forum-post thread may add WEFT as a member through Discord's normal send behavior.
-Private source threads require fresh existing bot membership, even with ManageThreads or Administrator.
-
-Message Content Intent is a separate Developer Portal requirement; the existing six bot permissions
-are unchanged. Selecting `off` does not dynamically remove the Client's Gateway intent.
-
-## Audit-log destination
-
-The optional per-guild destination is disabled by default. An administrator with `ManageGuild`
-can use `/config audit-log show`, `/config audit-log set channel:<channel>`, and `/config audit-log
-disable`. The destination must be a guild text or announcement channel where WEFT currently has
-`ViewChannel` and `SendMessages`. `show` reads the stored ID without changing settings or checking
-Discord; `disable` also works if the channel has been deleted. Discord validation during `set` is
-point-in-time. PostgreSQL stores the authoritative configuration and change audits. Newly committed
-audits are also projected as best-effort Discord notifications when a current destination is
-configured; PostgreSQL remains the authoritative audit history.
-
-## Audit notifications
-
-WEFT sends metadata-only, plain-text notifications for newly committed audits from ten sources:
-thread, scheduled thread-close, managed-message success, managed-message execution failure,
-scheduled-message, recurring-message, audit-destination, link-preview mode, guild-configuration,
-and administrative-operation-failure audits. Message content,
-embed fields, names, raw errors, and arbitrary before/after values are excluded. Mentions are
-suppressed. Before each send, WEFT reads the current destination from PostgreSQL, force-fetches the
-Discord channel and bot member, and checks the bot's current `ViewChannel` and `SendMessages`
-permissions. Disabling the destination normally sends no notification.
-
-Delivery is best effort and process local. A stable source-and-audit-ID nonce reduces duplicates,
-but ordering and exactly-once delivery are not guaranteed. Failed or ambiguous sends are not retried.
-There is no startup replay or historical backfill; a crash may lose a notification while its
-PostgreSQL audit remains committed. Graceful shutdown drains accepted notification work within the
-existing process-wide deadline before Discord and PostgreSQL close.
-
-## Audit retention
-
-WEFT retains audit history for a fixed global period of 90 * 24 hours. Cleanup covers the ten sources listed above. An initial sweep is scheduled shortly after runtime startup without blocking readiness; later sweeps start 24 hours after the previous sweep settles. Each batch removes at most 500 rows strictly older than the cutoff; equal-cutoff rows remain. Expiration is periodic rather than an exact TTL. See [Audit and privacy](docs/wiki/Audit-and-Privacy.md) for scope and limitations.
-
-Cleanup removes audit rows only. Active schedules, managed-resource state, configuration, and recovery state remain intact. Audit deletion creates no audit notification. A cleanup failure does not invalidate application operations; the next sweep retries remaining work. Shutdown drains in-flight cleanup before PostgreSQL closes under the existing process-wide deadline. Per-guild retention configuration is not implemented and remains unresolved.
-
-## Migrations
-
-`corepack pnpm db:generate` creates migration files during development. `corepack pnpm db:check`
-validates them, and `corepack pnpm db:migrate` applies them from a source checkout with development
-dependencies. Production releases include the committed migration history and use the explicit
-`docker compose run --rm app node dist/migrate.js` operation before starting or upgrading WEFT.
-Normal application startup does not apply WEFT migrations. See the
-[production migration procedure](docs/development.md#production-migration-operations).
-
-pg-boss owns a separate `pgboss` schema in the same PostgreSQL database. Its internal schema is
-created and migrated automatically when pg-boss starts; it is not managed by Drizzle. The
-configured database user must have the `CREATE` privilege on the database for this purpose.
-pg-boss uses the existing `DATABASE_*` settings and owns a connection pool separate from WEFT's
-application database pool.
-
-## Backup and restore
-
-See the [PostgreSQL 18 backup and restore procedure](docs/development.md#production-backup-and-restore-operations)
-for the supported archive format, safe restore order, and disposable restore drill.
-
-## Development
-
-Start the application from TypeScript:
+Run this command on the host to register commands for `DISCORD_GUILD_ID` (Guild scope). Host commands do not load `.env` automatically, so it is loaded explicitly:
 
 ```sh
-corepack pnpm dev
+node --env-file=.env --import tsx src/deploy-commands.ts
 ```
 
-Build and start the compiled application:
+For Global registration instead, use the following command; `DISCORD_GUILD_ID` is not required:
 
 ```sh
-corepack pnpm build
-corepack pnpm start
+node --env-file=.env --import tsx src/deploy-commands.ts --global
 ```
 
-## Verification
+Application startup does not register commands, so complete this step before starting WEFT.
+
+### 5. Start WEFT and verify operation
 
 ```sh
-corepack pnpm format:check
-corepack pnpm lint
-corepack pnpm typecheck
-corepack pnpm test
-corepack pnpm build
+docker compose up -d app
+docker compose ps
 ```
 
-Run PostgreSQL integration tests only after creating a dedicated test database and setting every required `TEST_DATABASE_*` variable. Missing test variables cause validation to fail before any connection is attempted.
+The health port is not published to the host. Check readiness inside the app container:
 
 ```sh
-corepack pnpm test:integration
+docker compose exec -T app node -e "
+  fetch('http://127.0.0.1:' + (process.env.HEALTH_PORT ?? '3000') + '/health/ready')
+    .then(r => process.exit(r.status === 200 ? 0 : 1))
+    .catch(() => process.exit(1))
+"
 ```
+
+Confirm exit code 0, then run `/config show` in Discord as a member with Manage Server and check that the bot responds.
+
+## Security
+
+Follow [SECURITY.md](SECURITY.md) to report vulnerabilities privately. Do not include vulnerability details in public Issues.
 
 ## License
 
-WEFT is licensed under the [MIT License](./LICENSE).
-
-The [third-party license document](./THIRD_PARTY_LICENSES.md) supplements the license material
-required in distribution artifacts.
+WEFT is distributed under the [MIT License](LICENSE). [THIRD_PARTY_LICENSES.md](THIRD_PARTY_LICENSES.md) supplements the dependency license material included in distribution artifacts.
