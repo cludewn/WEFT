@@ -53,11 +53,23 @@ These steps are for a first installation. Run commands in order and confirm that
 
 ### 2. Obtain the source and configure WEFT
 
-Clone the repository and install the host-side dependencies:
+Clone the repository's development branch, `main`:
 
 ```sh
-git clone https://github.com/cludewn/WEFT.git
+git clone --branch main https://github.com/cludewn/WEFT.git
 cd WEFT
+```
+
+For a published release, choose its Git tag from [Releases](https://github.com/cludewn/WEFT/releases) and check it out **before installing dependencies**. Replace `REPLACE_WITH_PUBLISHED_TAG` below with that exact tag. Use only a tag from an existing published release; if none is available, `main` is available for development.
+
+```sh
+git fetch --tags origin
+git checkout --detach 'refs/tags/REPLACE_WITH_PUBLISHED_TAG'
+```
+
+To use development `main`, skip the tag checkout. Once you have selected the source version, install the host-side dependencies:
+
+```sh
 corepack pnpm install --frozen-lockfile
 ```
 

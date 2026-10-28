@@ -3,8 +3,9 @@
 ## Supported versions
 
 WEFT is in active development and does not currently provide stable releases or long-term support.
-We accept vulnerability reports concerning the current development version. Security fixes for
-older versions and ongoing security support are not guaranteed.
+We accept vulnerability reports concerning the current development branch (`main`) and the latest
+publicly released development version, when one exists. Accepting reports for a release does not
+guarantee security fixes, backports, or ongoing security support.
 
 ## Reporting a vulnerability
 

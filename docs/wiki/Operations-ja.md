@@ -135,3 +135,5 @@ WEFTのマイグレーションは明示実行で追記専用です。通常起�
 DB確認の待機は最大2秒です。readinessはキュー確認・修復・Discordとの整合性・次の操作の成功を保証しません。
 
 Composeはコンテナ内で30秒ごとに確認し、1回5秒、3回失敗でunhealthy、起動猶予は60秒です。ヘルスポートは公開しません。unhealthyの場合は不成立の条件を調査してください。その結果だけでは、それ以前のDiscord操作の成否は判断できません。
+
+同梱のCompose設定では、`postgres`と`app`のどちらにも`restart`ポリシーを指定していません。ヘルスチェックで`unhealthy`と判定されても、コンテナは再起動しません。`depends_on: condition: service_healthy`は起動時に依存先の健全性を確認する条件であり、稼働中の復旧機構ではありません。そのため、自動復帰は保証されません。[原因を調査・解消](Troubleshooting-ja#startup-migration-or-readiness-failure)してから手動で復帰させます。アプリがまだ動いている場合は[停止確認の手順](#stop-and-verify)で停止し、PostgreSQLが稼働している状態で[起動手順](Installation-and-Setup-ja#start-application)に従って再び起動してください。[readiness](Installation-and-Setup-ja#verify-the-first-run)と[再起動後の遅延処理](#restart-and-delayed-work)も確認します。
