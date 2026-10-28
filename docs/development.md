@@ -1118,9 +1118,11 @@ new findings; an unresolved Critical or High finding blocks release unless a tec
 exception covers the current execution path. Do not suppress findings with audit ignore settings,
 severity filtering, overrides, or package patches.
 
-### Current undici technical exception
+<a id="current-undici-technical-exception"></a>
 
-Review date: **2026-09-30**. The locked runtime contains **undici 6.28.0**, **discord.js 14.27.0**,
+### Historical undici technical exception (2026-09-30)
+
+Review date: **2026-09-30**. At that review, the locked runtime contained **undici 6.28.0**, **discord.js 14.27.0**,
 **@discordjs/ws 1.2.3**, **@discordjs/util 1.2.0**, and **@discordjs/rest 2.6.3**. The final image's
 observed Node.js version was **24.21.0**. The production audit reported the following three
 advisories and exited with status **1**:
@@ -1131,18 +1133,18 @@ advisories and exited with status **1**:
 | [GHSA-3wwx-pv8p-q78v](https://github.com/advisories/GHSA-3wwx-pv8p-q78v) | Moderate | WebSocket permessage-deflate DoS      |
 | [GHSA-r53p-7pc4-xj5r](https://github.com/advisories/GHSA-r53p-7pc4-xj5r) | Low      | Retry interceptor response splitting  |
 
-The advisories exist, and installed undici 6.28.0 is within their affected ranges. Undici 6.28.1
-contains the fixes. Issue #85 retains the locked version under the following execution-path
-exception; it does not declare the package unaffected or the audit clean:
+The advisories existed, and installed undici 6.28.0 was within their affected ranges. Undici 6.28.1
+contains the fixes. Issue #85 retained the locked version under the following execution-path
+exception; it did not declare the package unaffected or the audit clean:
 
-- On the observed Node.js runtime, `@discordjs/util.shouldUseGlobalFetchAndWebSocket()` returns
-  `false`. `@discordjs/ws` therefore uses `ws` for the Discord Gateway, without exercising Undici
+- On the observed Node.js runtime, `@discordjs/util.shouldUseGlobalFetchAndWebSocket()` returned
+  `false`. `@discordjs/ws` therefore used `ws` for the Discord Gateway, without exercising Undici
   WebSocket or the global WebSocket implementation implicated by the two WebSocket advisories.
-- `@discordjs/rest` uses the Undici HTTP request path. The response-splitting advisory requires
-  Undici `interceptors.retry()`, which the current Discord.js and WEFT paths do not use. Discord.js
+- `@discordjs/rest` used the Undici HTTP request path. The response-splitting advisory requires
+  Undici `interceptors.retry()`, which the then-observed Discord.js and WEFT paths did not use. Discord.js
   REST retries and WEFT application retries are separate from this Undici interceptor.
 
-Re-evaluate the exception whenever the lockfile, discord.js, @discordjs/ws, @discordjs/util, undici,
+Re-evaluate any execution-path exception whenever the lockfile, discord.js, @discordjs/ws, @discordjs/util, undici,
 Node base image/runtime behavior, Gateway WebSocket implementation path, or Undici retry-interceptor
 usage changes. Re-run the audit, inspect the installed transport implementation and WEFT callers,
 and test the global-transport selector on the actual final Node runtime. The selector can be checked
@@ -1157,6 +1159,19 @@ console.log(process.version);
 console.log(discordRequire("@discordjs/util").shouldUseGlobalFetchAndWebSocket());
 '
 ```
+
+Subsequent remediation superseded this exception for WEFT's application dependency:
+[Issue #136](https://github.com/cludewn/WEFT/issues/136) / [PR #137](https://github.com/cludewn/WEFT/pull/137)
+updated undici to **6.28.1**, and
+[Issue #151](https://github.com/cludewn/WEFT/issues/151) / [PR #152](https://github.com/cludewn/WEFT/pull/152)
+updated it to **6.29.1**. The current lockfile resolves WEFT's application dependency paths to
+**undici 6.29.1**, with the application dependency findings addressed by those updates.
+
+PR #152 separately accepted the residual risk of a vulnerable undici copy bundled with npm in the
+Node.js base image, which WEFT's normal execution paths do not use. That verification observed
+npm-bundled **undici 6.28.0**; this is a historical observation, not a guarantee about later images.
+The application dependency remediation does not establish that the entire production image is
+free of vulnerabilities.
 
 ### License material and Docker verification
 

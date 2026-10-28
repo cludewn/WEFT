@@ -53,11 +53,23 @@ WEFTのソースコードを取得し、Docker Composeを使って導入しま�
 
 ### 2. ソースを取得し、環境変数を設定する
 
-リポジトリを取得し、ホスト側の依存関係をインストールします。
+リポジトリの開発用ブランチ`main`を取得します。
 
 ```sh
-git clone https://github.com/cludewn/WEFT.git
+git clone --branch main https://github.com/cludewn/WEFT.git
 cd WEFT
+```
+
+公開版を導入する場合は、[Releases](https://github.com/cludewn/WEFT/releases)から対象のGitタグを選び、**依存関係をインストールする前に**チェックアウトしてください。次の`REPLACE_WITH_PUBLISHED_TAG`を、そのタグ名に置き換えます。実際に公開済みのReleaseのタグだけを使用してください。公開版がまだない場合は、開発用の`main`を利用できます。
+
+```sh
+git fetch --tags origin
+git checkout --detach 'refs/tags/REPLACE_WITH_PUBLISHED_TAG'
+```
+
+開発用の`main`を使う場合は、タグのチェックアウトを省略します。使用するソースの版を選んでから、ホスト側の依存関係をインストールしてください。
+
+```sh
 corepack pnpm install --frozen-lockfile
 ```
 

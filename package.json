@@ -1,6 +1,6 @@
 {
   "name": "weft",
-  "version": "1.0.0",
+  "version": "0.9.0",
   "description": "A self-hosted Discord bot for thread management and persistent scheduled actions.",
   "private": true,
   "type": "module",
