@@ -657,6 +657,23 @@ Discord may unarchive an unlocked thread when a user creates an interaction in i
 reconcile an unlocked archived-to-active transition with its managed state. This reconciliation
 must be serialized with explicit thread lifecycle commands for the same thread.
 
+While WEFT is running, an active thread update may arrive without a known previous Discord state,
+including for a previously archived thread absent from the client cache. Limited automatic
+reconciliation then requires an existing managed `CLOSED` record at lifecycle execution, after
+same-thread serialization and pending-operation checks. Missing and `OPEN` records are not eligible
+for this unknown-state recovery. A confirmed archived-to-active transition retains the normal
+automatic-open contract, including reconciliation of a saved prefix on an `OPEN` record.
+
+Automatic opening revalidates a supported thread in the expected guild, active and unlocked state,
+and current Bot `ViewChannel` / `ManageThreads` permissions before modifying it. A saved `CLOSED`
+record is management metadata, not proof that a past Discord archive succeeded; recovery must not
+create a historical close-success audit. Saved-prefix and normal `AUTO_OPEN` / `SYSTEM` audit rules
+apply. Automatic-close allowlist and individual exclusion policy do not restrict automatic opening.
+
+This is event-based reconciliation, not a startup or periodic scan of closed records. Reopening
+that occurs entirely while WEFT is offline is not guaranteed to be recovered automatically. Use
+`/thread open` on an already-active thread when manual reconciliation is needed.
+
 An empty saved applied prefix makes opening a title no-op while preserving OPEN persistence and
 normal OPEN/AUTO_OPEN audit rules. WEFT does not itself unarchive threads. Existing nonempty saved
 prefixes remain compatible: closing with `[CLOSED]`, disabling the guild prefix, then opening removes

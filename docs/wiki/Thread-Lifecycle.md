@@ -44,6 +44,13 @@ If the response is `PENDING` (WEFT is still processing or confirming the operati
 2. Check whether WEFT has already removed the saved prefix after detecting the unarchive.
 3. If needed, run `/thread open` with no options inside the already-active target thread and read its result.
 
+While WEFT is running, it can also reconcile an eligible previously archived thread that was not
+in its cache when Discord reopened it. When the previous state is unknown, this requires a saved
+closed management record and current access, permissions, and an active, unlocked thread. This is
+not a scan of all saved threads: reopening entirely while WEFT is offline is not guaranteed to be
+recovered automatically. If the saved prefix remains, use `/thread open` on the already-active
+thread and follow the delay and unresolved-result guidance below.
+
 WEFT removes one applicable saved leading prefix and updates its record when needed. It may update only WEFT state or report no changes. A supported active thread without a management record is accepted as a no-op. This command does not cancel a scheduled close or change automatic-close exclusions.
 
 <a id="saved-prefixes-and-manual-names"></a>

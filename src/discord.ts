@@ -162,17 +162,35 @@ export function registerThreadLifecycleEventHandler(
   logger: Pick<Logger, "error">,
   ingress: ApplicationIngress = openIngress,
 ): void {
-  client.on(Events.ThreadUpdate, (oldThread, newThread) => {
+  client.on(Events.Raw, (packet: unknown) => {
+    const update = parseActiveRawThreadUpdate(packet);
     if (
-      oldThread.archived !== true ||
-      newThread.archived !== false ||
-      newThread.locked === true ||
-      !isSupportedThreadType(newThread.type)
+      update === undefined ||
+      !isRecord(packet) ||
+      !isRecord(packet.d) ||
+      !isRecord(packet.d.thread_metadata) ||
+      packet.d.thread_metadata.locked !== false
     ) {
       return;
     }
 
-    const invocation = ingress.run(() => threadLifecycle.autoOpen(newThread.guildId, newThread.id));
+    // Raw dispatch is synchronous and precedes discord.js's ChannelUpdate action. Capture
+    // primitive facts now; the cached ThreadChannel itself is mutated after these listeners run.
+    const cached = client.channels.cache.get(update.threadId);
+    if (
+      cached !== undefined &&
+      (!cached.isThread() ||
+        !isSupportedThreadType(cached.type) ||
+        cached.guildId !== update.guildId)
+    ) {
+      return;
+    }
+    const wasArchived = cached?.isThread() ? cached.archived : undefined;
+    if (wasArchived === false) return;
+    if (wasArchived !== undefined && wasArchived !== null && wasArchived !== true) return;
+    const trigger = wasArchived === true ? "CONFIRMED_UNARCHIVE" : "UNKNOWN_PREVIOUS_STATE";
+    const { guildId, threadId } = update;
+    const invocation = ingress.run(() => threadLifecycle.autoOpen(guildId, threadId, trigger));
     if (invocation === undefined) return;
     void invocation.then(
       (result) => {
@@ -180,8 +198,8 @@ export function registerThreadLifecycleEventHandler(
           logger.error(
             {
               event: "automatic_thread_open_failed",
-              guildId: newThread.guildId,
-              threadId: newThread.id,
+              guildId,
+              threadId,
               failureCode: result.code,
             },
             "Automatic thread open reconciliation failed",
@@ -192,8 +210,8 @@ export function registerThreadLifecycleEventHandler(
         logger.error(
           {
             event: "automatic_thread_open_rejected",
-            guildId: newThread.guildId,
-            threadId: newThread.id,
+            guildId,
+            threadId,
             errorName: safeErrorName(error),
           },
           "Automatic thread open reconciliation rejected",
