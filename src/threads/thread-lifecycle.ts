@@ -197,6 +197,8 @@ type CloseMutationIntent = CloseIntent & {
   auditId: string;
   completionMode: OperationContext["completionMode"];
 };
+export type AutoOpenTrigger = "CONFIRMED_UNARCHIVE" | "UNKNOWN_PREVIOUS_STATE";
+
 type OpenIntent =
   | {
       operation: "OPEN";
@@ -205,6 +207,7 @@ type OpenIntent =
   | {
       operation: "AUTO_OPEN";
       actor: { type: "SYSTEM" };
+      trigger: AutoOpenTrigger;
     };
 type OpenMutationIntent = OpenIntent & {
   appliedPrefix: string;
@@ -233,6 +236,7 @@ type FinalizationJob = {
 };
 
 type DeferredAutoOpen = {
+  trigger: AutoOpenTrigger;
   completion: Promise<void>;
   resolve: () => void;
 };
@@ -311,7 +315,11 @@ export type ThreadLifecycleService = {
     auditId: string,
   ) => Promise<SystemThreadCloseResult>;
   open: (guildId: string, threadId: string, actorId: string) => Promise<ThreadLifecycleResult>;
-  autoOpen: (guildId: string, threadId: string) => Promise<ThreadLifecycleResult>;
+  autoOpen: (
+    guildId: string,
+    threadId: string,
+    trigger?: AutoOpenTrigger,
+  ) => Promise<ThreadLifecycleResult>;
   drain: () => Promise<void>;
 };
 
@@ -709,7 +717,10 @@ export function createThreadLifecycleService(
     }
   }
 
-  async function requireNoPendingMutation(context: OperationContext): Promise<void> {
+  async function requireNoPendingMutation(
+    context: OperationContext,
+    trigger: AutoOpenTrigger = "CONFIRMED_UNARCHIVE",
+  ): Promise<void> {
     if (context.completionMode === "FINAL") {
       let waited = false;
       while (await pendingMutations.waitForRelease(context.guildId, context.threadId)) {
@@ -731,7 +742,7 @@ export function createThreadLifecycleService(
       });
       const key = threadKey(context.guildId, context.threadId);
       const deferred = deferredAutoOpen.get(key) ?? [];
-      deferred.push({ completion, resolve });
+      deferred.push({ trigger, completion, resolve });
       deferredAutoOpen.set(key, deferred);
       context.retain(completion);
     }
@@ -1085,6 +1096,12 @@ export function createThreadLifecycleService(
       return;
     }
     deferredAutoOpen.delete(key);
+    // Coalescing may retain the confirmed contract only if such an intent was admitted.
+    const trigger: AutoOpenTrigger = deferred.some(
+      (entry) => entry.trigger === "CONFIRMED_UNARCHIVE",
+    )
+      ? "CONFIRMED_UNARCHIVE"
+      : "UNKNOWN_PREVIOUS_STATE";
     void serialize(
       guildId,
       threadId,
@@ -1093,7 +1110,7 @@ export function createThreadLifecycleService(
       (context, precedingChangedSameTarget) =>
         reconcileOpen(
           context,
-          { operation: "AUTO_OPEN", actor: { type: "SYSTEM" } },
+          { operation: "AUTO_OPEN", actor: { type: "SYSTEM" }, trigger },
           precedingChangedSameTarget,
           true,
         ),
@@ -1436,15 +1453,23 @@ export function createThreadLifecycleService(
   ): Promise<ThreadLifecycleResult> {
     const { guildId, threadId } = context;
     const { operation: action, actor } = intent;
+    const recovery = action === "AUTO_OPEN" && intent.trigger === "UNKNOWN_PREVIOUS_STATE";
     let fallback: ThreadFailureCode = "DISCORD_FETCH_FAILED";
     try {
-      await requireNoPendingMutation(context);
+      await requireNoPendingMutation(
+        context,
+        intent.operation === "AUTO_OPEN" ? intent.trigger : undefined,
+      );
       const initial = await fetchSupported(context);
       if (initial.archived) {
-        if (ignoreArchived) {
+        if (ignoreArchived || recovery) {
           return { ok: true, changed: false };
         }
         throw new LifecycleFailure("THREAD_NOT_ACTIVE");
+      }
+      if (action === "AUTO_OPEN" && initial.locked) {
+        if (recovery) return { ok: true, changed: false };
+        throw new LifecycleFailure("THREAD_LOCKED");
       }
 
       fallback = "STATE_READ_FAILED";
@@ -1455,6 +1480,9 @@ export function createThreadLifecycleService(
         "STATE_READ_TIMEOUT",
         () => managedThreads.find(guildId, threadId),
       );
+      if (recovery && managed?.lifecycleState !== "CLOSED") {
+        return { ok: true, changed: false };
+      }
       if (managed === undefined) {
         if (action === "OPEN") {
           await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
@@ -1480,11 +1508,21 @@ export function createThreadLifecycleService(
     const { operation: action, actor } = intent;
     let fallback: ThreadFailureCode = "DISCORD_FETCH_FAILED";
     try {
+      // Automatic reconciliation must observe state after the permission boundary, which may
+      // itself fetch Discord while the thread is being archived, locked, or manually renamed.
+      if (action === "AUTO_OPEN") await requirePermissions(context);
       const beforeRename = await fetchSupported(context);
       if (beforeRename.archived) {
+        if (action === "AUTO_OPEN" && intent.trigger === "UNKNOWN_PREVIOUS_STATE") {
+          return { ok: true, changed: false };
+        }
         throw new LifecycleFailure("THREAD_NOT_ACTIVE");
       }
-      await requirePermissions(context, actor.type === "USER" ? actor.id : undefined);
+      if (action === "AUTO_OPEN" && beforeRename.locked) {
+        if (intent.trigger === "UNKNOWN_PREVIOUS_STATE") return { ok: true, changed: false };
+        throw new LifecycleFailure("THREAD_LOCKED");
+      }
+      if (action === "OPEN") await requirePermissions(context, actor.id);
 
       let changed = precedingChangedSameTarget;
       const openedName = removeClosedPrefix(beforeRename.name, managed.appliedPrefix);
@@ -1561,7 +1599,7 @@ export function createThreadLifecycleService(
         ),
       );
     },
-    autoOpen: (guildId, threadId) => {
+    autoOpen: (guildId, threadId, trigger = "CONFIRMED_UNARCHIVE") => {
       return serialize(
         guildId,
         threadId,
@@ -1570,7 +1608,7 @@ export function createThreadLifecycleService(
         (context, precedingChangedSameTarget) =>
           reconcileOpen(
             context,
-            { operation: "AUTO_OPEN", actor: { type: "SYSTEM" } },
+            { operation: "AUTO_OPEN", actor: { type: "SYSTEM" }, trigger },
             precedingChangedSameTarget,
           ),
       );

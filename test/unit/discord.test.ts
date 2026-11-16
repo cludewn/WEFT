@@ -13,7 +13,6 @@ import {
   RESTEvents,
 } from "discord.js";
 import type {
-  AnyThreadChannel,
   ButtonInteraction,
   ClientUser,
   ChatInputCommandInteraction,
@@ -127,11 +126,7 @@ describe("Discord client", () => {
     runtime.client.emit(Events.InteractionCreate, command);
     runtime.client.emit(Events.InteractionCreate, createModal("managed-message:send").interaction);
     runtime.client.emit(Events.MessageCreate, createMessage() as never);
-    runtime.client.emit(
-      Events.ThreadUpdate,
-      createThread({ archived: true }) as never,
-      createThread({ archived: false, locked: false }) as never,
-    );
+    runtime.client.emit(Events.Raw, createRawThreadUpdate());
 
     expect(reply).not.toHaveBeenCalled();
     expect(inGuild).not.toHaveBeenCalled();
@@ -370,34 +365,17 @@ describe("Discord client", () => {
       autoOpen,
     } as unknown as ThreadLifecycleService;
     const client = createDiscordClient(createLogger(), discordDependencies, lifecycle);
-    const activeThread = {
-      id: "thread-id",
-      guildId: "guild-id",
-      type: ChannelType.PublicThread,
-      archived: false,
-      locked: false,
-    } as unknown as AnyThreadChannel;
-
-    client.emit(
-      Events.ThreadUpdate,
-      { ...activeThread, archived: true } as unknown as AnyThreadChannel,
-      activeThread,
-    );
-    client.emit(
-      Events.ThreadUpdate,
-      { ...activeThread, archived: false } as unknown as AnyThreadChannel,
-      activeThread,
-    );
-    client.emit(
-      Events.ThreadUpdate,
-      { ...activeThread, archived: true } as unknown as AnyThreadChannel,
-      { ...activeThread, locked: true } as unknown as AnyThreadChannel,
-    );
+    cacheThread(client, { archived: true });
+    client.emit(Events.Raw, createRawThreadUpdate());
+    cacheThread(client, { archived: false });
+    client.emit(Events.Raw, createRawThreadUpdate());
+    cacheThread(client, { archived: true });
+    client.emit(Events.Raw, createRawThreadUpdate({ locked: true }));
 
     await vi.waitFor(() => {
       expect(autoOpen).toHaveBeenCalledOnce();
     });
-    expect(autoOpen).toHaveBeenCalledWith("guild-id", "thread-id");
+    expect(autoOpen).toHaveBeenCalledWith("guild-id", "thread-id", "CONFIRMED_UNARCHIVE");
     await client.destroy();
   });
 
@@ -414,19 +392,8 @@ describe("Discord client", () => {
       discordDependencies,
       lifecycle,
     );
-    const activeThread = {
-      id: "thread-id",
-      guildId: "guild-id",
-      type: ChannelType.PublicThread,
-      archived: false,
-      locked: false,
-    } as unknown as AnyThreadChannel;
-
-    client.emit(
-      Events.ThreadUpdate,
-      { ...activeThread, archived: true } as unknown as AnyThreadChannel,
-      activeThread,
-    );
+    cacheThread(client, { archived: true });
+    client.emit(Events.Raw, createRawThreadUpdate());
 
     await vi.waitFor(() => expect(autoOpen).toHaveBeenCalledOnce());
     expect(error).not.toHaveBeenCalled();
@@ -444,13 +411,8 @@ describe("Discord client", () => {
       autoOpen,
     } as unknown as ThreadLifecycleService;
     const client = createDiscordClient(logger, discordDependencies, lifecycle);
-    const activeThread = createThread({ archived: false, locked: false });
-
-    client.emit(
-      Events.ThreadUpdate,
-      createThread({ archived: true }) as never,
-      activeThread as never,
-    );
+    cacheThread(client, { archived: true });
+    client.emit(Events.Raw, createRawThreadUpdate());
 
     await vi.waitFor(() => expect(logger.error).toHaveBeenCalledOnce());
     expect(logger.error).toHaveBeenCalledWith(
@@ -1026,8 +988,7 @@ describe("automatic close activity gateway handlers", () => {
       reopenedAt: observedAt,
     });
 
-    // The lifecycle listener remains high-level, but automatic-close re-entry has no second
-    // ThreadUpdate listener that can record the same gateway observation again.
+    // Neither raw observer has a high-level ThreadUpdate fallback for the same update.
     fixture.client.emit(
       Events.ThreadUpdate,
       createThread({ archived: true }) as never,
@@ -1179,7 +1140,7 @@ function registerTestCommandHandler(
   );
 }
 
-function createModalApplicationRuntime() {
+function createModalApplicationRuntime(drainThreadLifecycle?: () => Promise<void>) {
   const done = () => Promise.resolve();
   const stopPgBoss = vi.fn(done);
   const destroyDiscord = vi.fn(done);
@@ -1207,7 +1168,7 @@ function createModalApplicationRuntime() {
     startAutomaticCloseRuntime: done,
     startAuditRetentionRuntime: done,
     quiesce: [],
-    drainThreadLifecycle: done,
+    drainThreadLifecycle: drainThreadLifecycle ?? done,
     drainAuditNotifications: done,
     stopPgBoss,
     destroyDiscord,
@@ -1328,7 +1289,9 @@ async function createActivityFixture(now?: () => Date): Promise<{
     warn: vi.fn(),
     error: vi.fn(),
   } as unknown as Logger;
-  const client = createDiscordClient(logger, discordDependencies);
+  const client = createDiscordClient(logger, discordDependencies, {
+    autoOpen: vi.fn(() => Promise.resolve({ ok: true, changed: false })),
+  } as unknown as ThreadLifecycleService);
   const activity: AutomaticCloseActivityService = {
     recordMessageActivity: vi.fn(() => Promise.resolve()),
     initializeThreadBaseline: vi.fn(() => Promise.resolve()),
@@ -2016,4 +1979,42 @@ describe("localized config show through the production dispatcher", () => {
       await f.client.destroy();
     }
   });
+});
+
+it("gates raw recovery on readiness and drains admitted pending work before shutdown resources", async () => {
+  const retained = Promise.withResolvers<void>();
+  const drain = vi.fn(() => retained.promise);
+  const owner = createModalApplicationRuntime(drain);
+  const lifecycle = {
+    autoOpen: vi.fn(() => Promise.resolve({ ok: false, pending: true } as const)),
+  } as unknown as ThreadLifecycleService;
+  const runtime = createDiscordRuntime(createLogger(), discordDependencies, lifecycle);
+  registerThreadLifecycleEventHandler(
+    runtime.client,
+    lifecycle,
+    createLogger(),
+    owner.runtime.ingress,
+  );
+  runtime.client.emit(Events.Raw, createRawThreadUpdate());
+  expect(lifecycle.autoOpen).not.toHaveBeenCalled();
+  await owner.runtime.start();
+  runtime.client.emit(Events.Raw, createRawThreadUpdate());
+  await vi.waitFor(() =>
+    expect(lifecycle.autoOpen).toHaveBeenCalledExactlyOnceWith(
+      "guild-id",
+      "thread-id",
+      "UNKNOWN_PREVIOUS_STATE",
+    ),
+  );
+  const shutdown = owner.runtime.shutdown("SIGTERM");
+  runtime.client.emit(Events.Raw, createRawThreadUpdate());
+  await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
+  expect(lifecycle.autoOpen).toHaveBeenCalledOnce();
+  expect(owner.destroyDiscord).not.toHaveBeenCalled();
+  expect(owner.closeDatabase).not.toHaveBeenCalled();
+  retained.resolve(undefined);
+  await shutdown;
+  expect(owner.destroyDiscord).toHaveBeenCalledOnce();
+  expect(owner.closeDatabase).toHaveBeenCalledOnce();
+  await runtime.client.destroy();
 });

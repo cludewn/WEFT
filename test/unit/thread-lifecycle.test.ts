@@ -3358,3 +3358,348 @@ describe("prefix-free execution owners with real shared lifecycle", () => {
     await f.service.drain();
   });
 });
+
+describe("conditional automatic unarchive recovery", () => {
+  const unknown = "UNKNOWN_PREVIOUS_STATE";
+
+  it.each(["OPEN", "MISSING"])(
+    "skips an unknown-state candidate with %s management without audit",
+    async (state) => {
+      const f = createFixture({
+        threadName: "[CLOSED] Topic",
+        ...(state === "OPEN" ? { state: createManagedState("OPEN", "[CLOSED]") } : {}),
+      });
+      expect(await f.service.autoOpen(GUILD_ID, THREAD_ID, unknown)).toEqual({
+        ok: true,
+        changed: false,
+      });
+      expect(f.discord.renameThread).not.toHaveBeenCalled();
+      expect(f.managedThreads.markOpen).not.toHaveBeenCalled();
+      expect(f.discord.botCanManage).not.toHaveBeenCalled();
+      expect(f.audits).toEqual([]);
+    },
+  );
+
+  it.each([
+    ["[OLD]", "[OLD] Edited 😀", "Edited 😀"],
+    ["", "  Edited 😀", "  Edited 😀"],
+    ["[OLD]", "Manual edit", "Manual edit"],
+    ["[OLD]", "[OLD] [OLD] Topic", "[OLD] Topic"],
+  ])("recovers CLOSED with saved prefix %j and title %j", async (prefix, name, expected) => {
+    const f = createFixture({
+      prefix: "[NEW]",
+      threadName: name,
+      state: createManagedState("CLOSED", prefix),
+    });
+    expect(await f.service.autoOpen(GUILD_ID, THREAD_ID, unknown)).toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(f.thread.name).toBe(expected);
+    expect(f.state).toMatchObject({ lifecycleState: "OPEN", appliedPrefix: prefix });
+    expect(f.guildSettings.getOrCreate).not.toHaveBeenCalled();
+    expect(f.audits).toEqual([
+      expect.objectContaining({ action: "AUTO_OPEN", actorType: "SYSTEM", outcome: "SUCCESS" }),
+    ]);
+  });
+
+  it("preserves the confirmed OPEN-record contract and the normal no-op", async () => {
+    const f = createFixture({
+      threadName: "[CLOSED] Topic",
+      state: createManagedState("OPEN", "[CLOSED]"),
+    });
+    expect(await f.service.autoOpen(GUILD_ID, THREAD_ID)).toEqual({ ok: true, changed: true });
+    await f.service.drain();
+    expect(await f.service.autoOpen(GUILD_ID, THREAD_ID)).toEqual({ ok: true, changed: false });
+    expect(f.audits).toHaveLength(1);
+  });
+
+  it.each(["CONFIRMED_UNARCHIVE", "UNKNOWN_PREVIOUS_STATE"] as const)(
+    "revalidates locked snapshots for %s without changing manual open",
+    async (trigger) => {
+      for (const lockAt of [1, 2]) {
+        const f = createFixture({
+          threadName: "[CLOSED] Topic",
+          state: createManagedState("CLOSED", "[CLOSED]"),
+        });
+        let reads = 0;
+        vi.mocked(f.discord.fetchThread).mockImplementation(() =>
+          Promise.resolve({ ...f.thread, locked: ++reads >= lockAt }),
+        );
+        await f.service.autoOpen(GUILD_ID, THREAD_ID, trigger);
+        expect(f.discord.renameThread).not.toHaveBeenCalled();
+        expect(f.managedThreads.markOpen).not.toHaveBeenCalled();
+        if (trigger === unknown) expect(f.audits).toEqual([]);
+      }
+      const manual = createFixture({
+        locked: true,
+        threadName: "[CLOSED] Topic",
+        state: createManagedState("CLOSED", "[CLOSED]"),
+      });
+      expect(await manual.service.open(GUILD_ID, THREAD_ID, ACTOR_ID)).toEqual({
+        ok: true,
+        changed: true,
+      });
+    },
+  );
+
+  it.each(["initial", "before rename"])(
+    "skips an unknown recovery archived at %s",
+    async (phase) => {
+      const f = createFixture({ state: createManagedState("CLOSED", "[CLOSED]") });
+      let reads = 0;
+      vi.mocked(f.discord.fetchThread).mockImplementation(() =>
+        Promise.resolve({ ...f.thread, archived: ++reads >= (phase === "initial" ? 1 : 2) }),
+      );
+      expect(await f.service.autoOpen(GUILD_ID, THREAD_ID, unknown)).toEqual({
+        ok: true,
+        changed: false,
+      });
+      expect(f.audits).toEqual([]);
+      expect(f.managedThreads.markOpen).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["permissions", "missing", "fetch", "state"])(
+    "does not mutate after a %s failure",
+    async (failure) => {
+      const f = createFixture({
+        threadName: "[CLOSED] Topic",
+        state: createManagedState("CLOSED", "[CLOSED]"),
+      });
+      if (failure === "permissions") vi.mocked(f.discord.botCanManage).mockResolvedValue(false);
+      if (failure === "missing") vi.mocked(f.discord.fetchThread).mockResolvedValue(undefined);
+      if (failure === "fetch")
+        vi.mocked(f.discord.fetchThread).mockRejectedValue(new Error("Private fetch details"));
+      if (failure === "state")
+        vi.mocked(f.managedThreads.find).mockRejectedValue(new Error("Private DB details"));
+      expect(await f.service.autoOpen(GUILD_ID, THREAD_ID, unknown)).toMatchObject({ ok: false });
+      expect(f.discord.renameThread).not.toHaveBeenCalled();
+      expect(f.managedThreads.markOpen).not.toHaveBeenCalled();
+      expect(f.audits).not.toContainEqual(expect.objectContaining({ outcome: "SUCCESS" }));
+    },
+  );
+
+  it("rechecks CLOSED after a queued manual open without inheriting its changed audit", async () => {
+    const f = createFixture({
+      threadName: "[CLOSED] Topic",
+      state: createManagedState("CLOSED", "[CLOSED]"),
+    });
+    const gate = deferred<void>();
+    const rename = f.discord.renameThread;
+    f.discord.renameThread = vi.fn<ThreadLifecycleDiscord["renameThread"]>((guild, thread, name) =>
+      gate.promise.then(() => rename(guild, thread, name)),
+    );
+    const manual = f.service.open(GUILD_ID, THREAD_ID, ACTOR_ID);
+    await vi.waitFor(() => expect(f.discord.renameThread).toHaveBeenCalledOnce());
+    const recovery = f.service.autoOpen(GUILD_ID, THREAD_ID, unknown);
+    gate.resolve(undefined);
+    await manual;
+    expect(await recovery).toEqual({ ok: true, changed: false });
+    expect(f.audits).toEqual([expect.objectContaining({ action: "OPEN" })]);
+    expect(f.discord.renameThread).toHaveBeenCalledOnce();
+  });
+
+  it.each(["manual", "scheduled", "automatic", "bulk"])(
+    "serializes unknown recovery with %s close",
+    async (owner) => {
+      const f = createFixture({ deadlineMs: 1_000 });
+      const gate = deferred<void>();
+      const archive = f.discord.archiveThread;
+      f.discord.archiveThread = vi.fn<ThreadLifecycleDiscord["archiveThread"]>(
+        (guild, thread, name) => gate.promise.then(() => archive(guild, thread, name)),
+      );
+      const close =
+        owner === "scheduled"
+          ? f.service.closeAsSystem(GUILD_ID, THREAD_ID, "scheduled-unarchive-race")
+          : owner === "automatic"
+            ? f.service.autoCloseAsSystem(GUILD_ID, THREAD_ID, "automatic-unarchive-race")
+            : f.service.close(
+                GUILD_ID,
+                THREAD_ID,
+                ACTOR_ID,
+                undefined,
+                owner === "bulk"
+                  ? {
+                      checkSelection: () => Promise.resolve({ ...f.thread }),
+                      canAdmit: () => true,
+                      onAttemptStarted: () => undefined,
+                      onLogicalSettled: () => undefined,
+                    }
+                  : undefined,
+              );
+      await vi.waitFor(() => expect(f.discord.archiveThread).toHaveBeenCalledOnce());
+      const recovery = f.service.autoOpen(GUILD_ID, THREAD_ID, unknown);
+      gate.resolve(undefined);
+      await close;
+      expect(await recovery).toEqual({ ok: true, changed: false });
+      expect(f.state?.lifecycleState).toBe("CLOSED");
+      expect(f.discord.renameThread).not.toHaveBeenCalled();
+      expect(f.audits).toHaveLength(1);
+    },
+  );
+
+  it.each(["unknown only", "confirmed first", "confirmed last"])(
+    "retains eligibility through pending finalization: %s",
+    async (mode) => {
+      const f = createFixture({
+        threadName: "[CLOSED] Topic",
+        state: createManagedState("CLOSED", "[CLOSED]"),
+        deadlineMs: 30,
+        mutationWaitMs: 5,
+      });
+      const auditGate = deferred<void>();
+      const record = f.auditStore.record;
+      f.auditStore.record = vi.fn<ThreadAuditStore["record"]>((audit) =>
+        audit.action === "OPEN" ? auditGate.promise.then(() => record(audit)) : record(audit),
+      );
+      const manual = f.service.open(GUILD_ID, THREAD_ID, ACTOR_ID);
+      await vi.waitFor(() => expect(f.auditStore.record).toHaveBeenCalledOnce());
+      expect(await manual).toEqual({ ok: false, pending: true });
+      // OPEN was persisted, but the final audit still owns the guard. A later manual title edit
+      // makes a lost recovery condition observable as an incorrect second rename.
+      f.thread.name = "[CLOSED] New manual title";
+      const triggers =
+        mode === "confirmed first"
+          ? (["CONFIRMED_UNARCHIVE", unknown] as const)
+          : mode === "confirmed last"
+            ? ([unknown, "CONFIRMED_UNARCHIVE"] as const)
+            : ([unknown] as const);
+      for (const trigger of triggers)
+        expect(await f.service.autoOpen(GUILD_ID, THREAD_ID, trigger)).toEqual({
+          ok: false,
+          pending: true,
+        });
+      expect(f.discord.renameThread).toHaveBeenCalledOnce();
+      let drained = false;
+      const drain = f.service.drain().then(() => {
+        drained = true;
+      });
+      await Promise.resolve();
+      expect(drained).toBe(false);
+      auditGate.resolve(undefined);
+      await drain;
+      expect(f.discord.renameThread).toHaveBeenCalledTimes(mode === "unknown only" ? 1 : 2);
+      expect(f.audits.map((audit) => audit.action)).toEqual(
+        mode === "unknown only" ? ["OPEN"] : ["OPEN", "AUTO_OPEN"],
+      );
+      expect(f.thread.name).toBe(
+        mode === "unknown only" ? "[CLOSED] New manual title" : "New manual title",
+      );
+    },
+  );
+
+  it("rechecks unknown CLOSED after pending close and drains deferred rename finalization", async () => {
+    const f = createFixture({ deadlineMs: 30, mutationWaitMs: 5 });
+    const closeAudit = deferred<void>();
+    const renameGate = deferred<void>();
+    const record = f.auditStore.record;
+    f.auditStore.record = vi.fn<ThreadAuditStore["record"]>((audit) =>
+      audit.action === "CLOSE" ? closeAudit.promise.then(() => record(audit)) : record(audit),
+    );
+    const close = f.service.close(GUILD_ID, THREAD_ID, ACTOR_ID);
+    await vi.waitFor(() => expect(f.auditStore.record).toHaveBeenCalledOnce());
+    expect(await close).toEqual({ ok: false, pending: true });
+    f.thread.archived = false;
+    const rename = f.discord.renameThread;
+    f.discord.renameThread = vi.fn<ThreadLifecycleDiscord["renameThread"]>((guild, thread, name) =>
+      renameGate.promise.then(() => rename(guild, thread, name)),
+    );
+    expect(await f.service.autoOpen(GUILD_ID, THREAD_ID, unknown)).toEqual({
+      ok: false,
+      pending: true,
+    });
+    let drained = false;
+    const drain = f.service.drain().then(() => {
+      drained = true;
+    });
+    closeAudit.resolve(undefined);
+    await vi.waitFor(() => expect(f.discord.renameThread).toHaveBeenCalledOnce());
+    expect(drained).toBe(false);
+    renameGate.resolve(undefined);
+    await drain;
+    expect(f.state?.lifecycleState).toBe("OPEN");
+    expect(f.audits.map((audit) => audit.action)).toEqual(["CLOSE", "AUTO_OPEN"]);
+  });
+
+  it("keeps rename response loss and audit retries on one finalization owner", async () => {
+    const f = createFixture({
+      threadName: "[CLOSED] Topic",
+      state: createManagedState("CLOSED", "[CLOSED]"),
+    });
+    f.discord.renameThread = vi.fn<ThreadLifecycleDiscord["renameThread"]>(
+      (_guild, _thread, name) => {
+        f.thread.name = name;
+        return Promise.reject(new Error("Mutation response lost"));
+      },
+    );
+    const record = f.auditStore.record;
+    let first = true;
+    f.auditStore.record = vi.fn<ThreadAuditStore["record"]>(async (audit) => {
+      await record(audit);
+      if (first) {
+        first = false;
+        throw new Error("Audit response lost");
+      }
+    });
+    expect(await f.service.autoOpen(GUILD_ID, THREAD_ID, unknown)).toEqual({
+      ok: false,
+      pending: true,
+    });
+    await f.service.drain();
+    expect(f.state?.lifecycleState).toBe("OPEN");
+    expect(f.audits).toHaveLength(1);
+    expect(f.auditStore.record).toHaveBeenCalledTimes(2);
+    expect(f.discord.renameThread).toHaveBeenCalledOnce();
+  });
+
+  it.each(["state rejection", "audit rejection", "state timeout", "audit timeout"])(
+    "preserves no-rename %s semantics",
+    async (failure) => {
+      const f = createFixture({ state: createManagedState("CLOSED", ""), deadlineMs: 30 });
+      const gate = deferred<ManagedThread>();
+      const auditGate = deferred<void>();
+      if (failure === "state rejection")
+        vi.mocked(f.managedThreads.markOpen).mockRejectedValue(new Error("DB write failed"));
+      if (failure === "audit rejection")
+        vi.mocked(f.auditStore.record).mockRejectedValue(new Error("Audit failed"));
+      if (failure === "state timeout")
+        vi.mocked(f.managedThreads.markOpen).mockReturnValue(gate.promise);
+      if (failure === "audit timeout")
+        vi.mocked(f.auditStore.record).mockReturnValue(auditGate.promise);
+      const code =
+        failure === "state rejection"
+          ? "STATE_WRITE_FAILED"
+          : failure === "audit rejection"
+            ? "AUDIT_WRITE_FAILED"
+            : failure === "state timeout"
+              ? "STATE_WRITE_OUTCOME_UNKNOWN"
+              : "AUDIT_WRITE_OUTCOME_UNKNOWN";
+      expect(await f.service.autoOpen(GUILD_ID, THREAD_ID, unknown)).toEqual({ ok: false, code });
+      expect(f.discord.renameThread).not.toHaveBeenCalled();
+      gate.resolve(createManagedState("OPEN", ""));
+      auditGate.resolve(undefined);
+      await f.service.drain();
+      expect(f.managedThreads.markOpen).toHaveBeenCalledOnce();
+    },
+  );
+});
+
+it.each(["CONFIRMED_UNARCHIVE", "UNKNOWN_PREVIOUS_STATE"] as const)(
+  "observes locking during the final permission check before automatic rename: %s",
+  async (trigger) => {
+    const f = createFixture({
+      threadName: "[CLOSED] Topic",
+      state: createManagedState("CLOSED", "[CLOSED]"),
+    });
+    let checks = 0;
+    vi.mocked(f.discord.botCanManage).mockImplementation(() => {
+      if (++checks === 2) f.thread.locked = true;
+      return Promise.resolve(true);
+    });
+    await f.service.autoOpen(GUILD_ID, THREAD_ID, trigger);
+    expect(f.discord.renameThread).not.toHaveBeenCalled();
+    expect(f.managedThreads.markOpen).not.toHaveBeenCalled();
+    if (trigger === "UNKNOWN_PREVIOUS_STATE") expect(f.audits).toEqual([]);
+  },
+);

@@ -1698,8 +1698,51 @@ Policy evaluation and `last_activity_at = max(existing, reopened_at)` occur in o
 statement; an equal or stale observation changes neither parent nor timestamps. This path does not
 consult the bot-message policy, perform a REST fallback, remove exclusions, enable parents, or
 delete retirement. Re-entry and nearby message writes may arrive in either order because both
-persistence operations are monotonic. Lifecycle auto-open remains a separate high-level
-`ThreadUpdate` listener with independent bounded failure handling.
+persistence operations are monotonic. Lifecycle auto-open uses a separate raw listener with
+independent ingress, Promise ownership, and bounded failure handling; neither observer waits for
+the other to persist or succeed. The activity observer still accepts locked re-entry and applies
+its own parent/exclusion policy.
+
+Issue #159 makes raw `THREAD_UPDATE` the only automatic-open ingress. In installed discord.js
+14.27.0, `WebSocketManager.attachEvents` synchronously emits raw before `handlePacket` invokes
+`ChannelUpdate`. A cache miss adds the thread without returning old/updated objects, so the
+high-level `ThreadUpdate` event is absent. Gateway regression tests drive that installed dispatch
+path without a live socket and assert raw/cache/high-level ordering. Production code does not call
+discord.js internals. Keep these tests when updating discord.js.
+
+The lifecycle listener validates raw active/unlocked supported-thread facts and synchronously
+classifies the previous cache state before any asynchronous work. It retains primitive identity
+and transition facts, not a mutable ThreadChannel reference. A compatible archived thread produces
+`CONFIRMED_UNARCHIVE`; a missing/unknown previous archive state produces
+`UNKNOWN_PREVIOUS_STATE`; known active updates and incompatible cached resources are ignored.
+There is no high-level auto-open fallback, preventing one dispatch from entering lifecycle twice.
+Serialization alone does not prevent duplicate audits because `precedingChangedSameTarget` may
+propagate a change to a subsequent operation.
+
+Unknown-state recovery enters the existing per-thread queue, checks the pending mutation guard,
+fetches current Discord state, and reads management state through the existing bounded boundary.
+Only a current `CLOSED` record may continue. Missing/OPEN recovery candidates return unchanged
+without a success audit, even if the preceding operation changed the same target. Confirmed
+unarchives and explicit open retain their existing managed-state contracts. Automatic open checks
+locked state on the initial and final snapshots; explicit open does not acquire that restriction.
+The final automatic snapshot is fetched after the last Bot permission check so a lock or title
+change during that check is observed before rename or OPEN persistence.
+The current supported guild/thread and Bot permissions remain owned by the Discord boundary.
+
+Pending automatic-open intents retain their trigger through deferred replay. Coalesced intents
+use the confirmed contract only when an admitted confirmed intent exists; otherwise the replay
+still requires CLOSED. Replay re-enters serialization, rechecks the guard and current state, and
+retains logical ownership through further pending work. Finalization still persists managed state
+and the stable-ID final audit before releasing the mutation guard and scheduling deferred work.
+Ingress closes at shutdown; already-admitted deferred work drains before Discord and PostgreSQL.
+
+Both triggers reuse saved-prefix transformation and `AUTO_OPEN` / `SYSTEM` auditing. CLOSED metadata
+does not establish historical archive success. Rename response loss, reconciliation classifications,
+and background state/audit retries remain unchanged. Without a rename, the existing bounded DB/audit
+path and `STATE_WRITE_OUTCOME_UNKNOWN` / `AUDIT_WRITE_OUTCOME_UNKNOWN` results remain unchanged;
+raw persistence work is retained for drain without adding a new replay mechanism. No startup-wide
+or periodic closed-thread scan is added, and changes occurring entirely offline are not guaranteed
+to be reconciled automatically.
 
 Migration 0008 adds only the automatic-close retirement table and permits `AUTO_CLOSE` in the
 thread lifecycle audit action constraint. Phase 6D-2 adds no five-minute loop, startup execution
