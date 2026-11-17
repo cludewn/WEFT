@@ -35,6 +35,7 @@ For feature guides, commands, configuration, updates, backup, and recovery, see 
 ## Getting started
 
 Deploy WEFT from a complete source checkout using Docker Compose, with one active application instance and PostgreSQL 18.
+One WEFT instance can serve multiple Discord servers, with configuration stored separately for each server.
 
 Requirements:
 
@@ -81,9 +82,9 @@ cp -n .env.example .env
 chmod 600 .env
 ```
 
-`cp -n` preserves an existing `.env`. Edit the file to set `DATABASE_NAME`, `DATABASE_USER`, a strong `DATABASE_PASSWORD`, `DISCORD_TOKEN`, and `DISCORD_APPLICATION_ID`. For server-specific command registration, set `DISCORD_GUILD_ID` to the target server ID. Keep the file private and do not commit it.
+`cp -n` preserves an existing `.env`. Edit the file to set `DATABASE_NAME`, `DATABASE_USER`, a strong `DATABASE_PASSWORD`, `DISCORD_TOKEN`, and `DISCORD_APPLICATION_ID`. For Guild command registration only, uncomment `DISCORD_GUILD_ID` and set it to the target server ID. Keep the file private and do not commit it.
 
-Optional settings and environment configuration details are covered in the [configuration reference](https://github.com/cludewn/WEFT/wiki/Installation-and-Setup#configuration-reference).
+Leave `DATABASE_SSL`, `LOG_LEVEL`, and `HEALTH_PORT` commented out to use their defaults (`false`, `info`, and `3000`). `TEST_DATABASE_*` settings are unnecessary for normal operation. PostgreSQL integration tests require all six test settings explicitly, including `TEST_DATABASE_SSL` (no default), and a dedicated test database; never use a production database. Host and container connection details are covered in the [configuration reference](https://github.com/cludewn/WEFT/wiki/Installation-and-Setup#configuration-reference).
 
 ### 3. Build the image and run database migrations
 
@@ -97,17 +98,21 @@ docker compose run --rm app node dist/migrate.js
 
 ### 4. Register Discord commands
 
-Run this command on the host to register commands for `DISCORD_GUILD_ID` (Guild scope). Host commands do not load `.env` automatically, so it is loaded explicitly:
+Global registration is recommended for normal operation, including use across multiple servers. It does not require `DISCORD_GUILD_ID`. Run this command on the host; host-side Node.js and pnpm commands do not load `.env` automatically, so it is loaded explicitly:
+
+```sh
+node --env-file=.env --import tsx src/deploy-commands.ts --global
+```
+
+For development or registration limited to a specific server, uncomment and set `DISCORD_GUILD_ID`, then use Guild registration. The CLI still defaults to Guild scope when `--global` is omitted:
 
 ```sh
 node --env-file=.env --import tsx src/deploy-commands.ts
 ```
 
-For Global registration instead, use the following command; `DISCORD_GUILD_ID` is not required:
+Registration scope controls command availability; `DISCORD_GUILD_ID` does not restrict where the bot runs. Global registration still requires installing the bot into each server and granting the appropriate permissions above.
 
-```sh
-node --env-file=.env --import tsx src/deploy-commands.ts --global
-```
+Global and Guild registrations are independent: registering one scope does not delete existing commands in the other. Commands with the same name in both scopes can cause confusion or duplicate entries.
 
 Application startup does not register commands, so complete this step before starting WEFT.
 

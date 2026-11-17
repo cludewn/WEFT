@@ -15,7 +15,7 @@ This guide takes you from a Discord application to a running WEFT instance. Self
 | Node.js 24 with Corepack on the host                            | Runs command-registration tools; use the pnpm version pinned in `package.json`. |
 | Ability to manage a Discord application and server installation | Creates the bot and grants required access.                                     |
 
-Use one active WEFT instance. Web administration, direct-message operation, cluster mode and a general moderation suite are not supported.
+Use one active WEFT instance. It can serve multiple Discord servers, with configuration stored separately for each server. Web administration, direct-message operation, cluster mode and a general moderation suite are not supported.
 
 The order is **create/install the Discord bot → prepare private settings → build/start PostgreSQL → migrate → register commands → start WEFT → verify → choose server settings**.
 
@@ -63,8 +63,8 @@ chmod 600 .env
 
 `cp -n` preserves an existing `.env`; update that file rather than overwriting it. In a private editor,
 set `DATABASE_NAME`, `DATABASE_USER` and a strong `DATABASE_PASSWORD`. Replace `DISCORD_TOKEN` and
-`DISCORD_APPLICATION_ID` with the bot token and Application ID obtained above. Set `DISCORD_GUILD_ID`
-to the server ID if you will register commands for one server. Keep all credentials private: never
+`DISCORD_APPLICATION_ID` with the bot token and Application ID obtained above. For Guild command
+registration only, uncomment `DISCORD_GUILD_ID` and set it to the server ID. Keep all credentials private: never
 commit the file, paste its contents into an issue, or print the entire configuration.
 
 For host-versus-container connection details and optional settings, see the [configuration reference below](#configuration-reference). Finish the private settings before deployment.
@@ -96,21 +96,28 @@ additional migration tools are needed inside the runtime container.
 
 ### 2. Register Discord commands
 
-From the checkout root, use Node.js 24 to load the private `.env` created above and register commands:
-
-```sh
-node --env-file=.env --import tsx src/deploy-commands.ts
-```
-
-By default, this registers commands for the server identified by `DISCORD_GUILD_ID` (Guild scope).
-For global registration, append `--global` to the same command:
+Global registration is recommended for normal operation, including use across multiple servers.
+It does not require `DISCORD_GUILD_ID`. From the checkout root, use Node.js 24 to load the private
+`.env` created above and register commands:
 
 ```sh
 node --env-file=.env --import tsx src/deploy-commands.ts --global
 ```
 
-Registration overwrites the selected scope; Guild and Global scopes are independent. Runtime restart
-does not register commands. On updates, redeploy each scope used.
+For development or registration limited to a specific server, uncomment and set `DISCORD_GUILD_ID`,
+then use Guild registration. The CLI still defaults to Guild scope when `--global` is omitted:
+
+```sh
+node --env-file=.env --import tsx src/deploy-commands.ts
+```
+
+Registration scope controls command availability; `DISCORD_GUILD_ID` does not restrict where the bot
+runs. Global registration still requires installing the bot into each server and granting the
+appropriate permissions described above.
+
+Registration overwrites the selected scope. Guild and Global scopes are independent: registering one
+does not delete existing commands in the other. Commands with the same name in both scopes can cause
+confusion or duplicate entries. Runtime restart does not register commands. On updates, redeploy each scope used.
 
 These commands run on the host. Compose’s container environment is not passed to them; `--env-file`
 explicitly loads the checkout’s private file. Existing host environment variables take precedence
@@ -163,20 +170,26 @@ Docker Compose reads the checkout’s `.env` for variable substitution and passe
 in `compose.yaml` into each container. Variables already exported in the host shell take precedence
 over `.env` during substitution, so check for conflicting settings without printing secrets.
 Host-side Node.js and pnpm commands do **not** automatically read `.env`; use an environment manager
-or the explicit file-loading command in the registration step. `TEST_DATABASE_*` entries are not used for deployment.
+or the explicit file-loading command in the registration step.
 Use literal values in settings shared by Compose and Node.js: Node.js does not expand Compose-style
 `${...}` references. Quote values containing special characters according to the
 [Compose file syntax](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/#env-file-syntax)
 and [Node.js file syntax](https://nodejs.org/download/release/v24.11.0/docs/api/cli.html#--env-filefile).
 
-| Setting                                                                       | Requirement                                                                                  |
-| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| DATABASE_HOST, DATABASE_PORT, DATABASE_NAME, DATABASE_USER, DATABASE_PASSWORD | Required. For host connections, use the intended PostgreSQL address and a port from 1–65535. |
-| DATABASE_SSL                                                                  | Optional; the default is false. Setting true requires certificate-verified TLS.              |
-| DISCORD_TOKEN, DISCORD_APPLICATION_ID                                         | Required for runtime. Use the Application ID, not Bot User ID, for the latter.               |
-| DISCORD_GUILD_ID                                                              | Used only for default guild command deployment. It does not restrict runtime to one server.  |
-| LOG_LEVEL                                                                     | Optional; the default is info.                                                               |
-| HEALTH_PORT                                                                   | Optional; the default is 3000. This sets the container-local health listener port.           |
+| Setting                                                                       | Requirement                                                                                                     |
+| ----------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| DATABASE_HOST, DATABASE_PORT, DATABASE_NAME, DATABASE_USER, DATABASE_PASSWORD | Required. For host connections, use the intended PostgreSQL address and a port from 1–65535.                    |
+| DATABASE_SSL                                                                  | Optional; the default is false. Setting true requires certificate-verified TLS.                                 |
+| DISCORD_TOKEN, DISCORD_APPLICATION_ID                                         | Required for runtime. Use the Application ID, not Bot User ID, for the latter.                                  |
+| DISCORD_GUILD_ID                                                              | Required only for Guild command registration (the CLI default); unnecessary for Global registration or runtime. |
+| LOG_LEVEL                                                                     | Optional; the default is info.                                                                                  |
+| HEALTH_PORT                                                                   | Optional; the default is 3000. This sets the container-local health listener port.                              |
+
+Leave `DATABASE_SSL`, `LOG_LEVEL`, and `HEALTH_PORT` commented out in `.env` to use these defaults.
+`TEST_DATABASE_*` settings are unnecessary for normal operation. PostgreSQL integration tests require
+all six settings explicitly: `TEST_DATABASE_HOST`, `TEST_DATABASE_PORT`, `TEST_DATABASE_NAME`,
+`TEST_DATABASE_USER`, `TEST_DATABASE_PASSWORD`, and `TEST_DATABASE_SSL`. None has a default, including
+`TEST_DATABASE_SSL`. Use a dedicated test database, never a production database.
 
 Compose sets the app container’s `DATABASE_HOST` to `postgres` and `DATABASE_PORT` to `5432`,
 regardless of those two values in `.env`. For commands connecting from the host, use `127.0.0.1`
