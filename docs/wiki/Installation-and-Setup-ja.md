@@ -15,7 +15,7 @@ Discordアプリの準備からWEFTの起動までを説明します。セルフ
 | ホストのNode.js 24とCorepack                      | コマンド登録ツールを実行します。pnpmは`package.json`に固定された版を使用します。 |
 | Discordアプリの管理とサーバーへの導入ができる権限 | ボットを作成し、必要なアクセスを付与します。                                     |
 
-同時に稼働するWEFTは1台です。Web管理画面、DM操作、クラスタ運用、汎用モデレーション機能には対応しません。
+同時に稼働するWEFTは1台です。1つのインスタンスで複数のDiscordサーバーに対応でき、設定はサーバーごとに保存されます。Web管理画面、DM操作、クラスタ運用、汎用モデレーション機能には対応しません。
 
 **Discordアプリの作成・導入→非公開設定→ビルド・PostgreSQL起動→マイグレーション→コマンド登録→WEFT起動→確認→サーバー設定**の順で進めます。
 
@@ -64,7 +64,7 @@ chmod 600 .env
 `cp -n`は既存の`.env`を上書きしません。すでにファイルがある場合は、その設定を更新してください。
 非公開のエディターで`DATABASE_NAME`、`DATABASE_USER`、十分に強い`DATABASE_PASSWORD`を設定します。
 `DISCORD_TOKEN`と`DISCORD_APPLICATION_ID`には、先ほど取得したボットトークンとApplication IDを設定します。
-サーバー単位でコマンドを登録する場合は、`DISCORD_GUILD_ID`にサーバーIDを設定してください。
+Guild範囲でコマンドを登録する場合だけ、`DISCORD_GUILD_ID`のコメントを外し、サーバーIDを設定してください。
 認証情報を含むファイルをコミットしたり、内容をIssueへ貼ったり、設定全体を出力したりしないでください。
 
 ホストとコンテナの接続先の違い・任意設定は、末尾の[設定リファレンス](#configuration-reference)を参照してください。非公開設定を終えてから次へ進みます。
@@ -95,19 +95,21 @@ docker compose run --rm app node dist/migrate.js
 
 ### 2. Discordコマンドを登録する
 
-チェックアウトのルートで、Node.js 24を使って先ほど作成した非公開の`.env`を読み込み、コマンドを登録します。
-
-```sh
-node --env-file=.env --import tsx src/deploy-commands.ts
-```
-
-既定では`DISCORD_GUILD_ID`で指定したサーバーへ登録します（Guild範囲）。全サーバー向けのGlobal範囲へ登録する場合は、同じコマンドに`--global`を付けます。
+通常運用や複数サーバーでの利用にはGlobal登録を推奨します。`DISCORD_GUILD_ID`は不要です。チェックアウトのルートで、Node.js 24を使って先ほど作成した非公開の`.env`を読み込み、コマンドを登録します。
 
 ```sh
 node --env-file=.env --import tsx src/deploy-commands.ts --global
 ```
 
-選択した登録範囲を上書きし、Guild範囲とGlobal範囲は独立しています。アプリの再起動では登録されません。更新時は使用した各範囲で再登録してください。
+開発用や特定サーバーだけへの登録には、`DISCORD_GUILD_ID`のコメントを外して設定し、Guild登録を使用します。`--global`を省略した場合のCLIの既定動作は、従来どおりGuild登録です。
+
+```sh
+node --env-file=.env --import tsx src/deploy-commands.ts
+```
+
+登録範囲はコマンドを利用できる範囲を決めます。`DISCORD_GUILD_ID`はBotの稼働先を制限しません。Global登録でも、各サーバーへのBot導入と、前述の適切な権限の付与が必要です。
+
+選択した登録範囲を上書きします。Guild範囲とGlobal範囲は独立しており、一方への登録で他方の既存コマンドは削除されません。同名コマンドが両範囲にあると、混乱や重複表示につながる可能性があります。アプリの再起動では登録されません。更新時は使用した各範囲で再登録してください。
 
 これらはホスト上で実行します。Composeのコンテナ内の環境変数は渡されないため、`--env-file`でチェックアウトの非公開ファイルを明示的に読み込みます。既存のホスト環境変数はファイルより優先されます。Guild登録には`DISCORD_TOKEN`、`DISCORD_APPLICATION_ID`、`DISCORD_GUILD_ID`が必要です。Global登録ではサーバーIDは不要です。コマンド登録ではPostgreSQLへ接続しません。
 
@@ -156,19 +158,23 @@ readinessは確認時点の稼働状態を示します。将来のAPI操作の�
 Docker Composeはチェックアウトの`.env`を変数の展開に使い、`compose.yaml`に定義された変数を各コンテナへ渡します。
 ホストのシェルですでにエクスポートされた変数がある場合は、その値が`.env`より優先されます。秘密情報を出力せず、設定の競合がないことを確認してください。
 ホストのNode.js・pnpmコマンドは`.env`を**自動では読み込みません**。環境管理ツールを使うか、コマンド登録の手順に記載した、ファイルを明示的に読み込む方法を使います。
-`TEST_DATABASE_*`の項目は導入時には使用しません。
 ComposeとNode.jsで共用する設定には、値を直接記述してください。Node.jsはCompose形式の`${...}`を展開しません。
 特殊文字を含む値は、[Composeのファイル構文](https://docs.docker.com/compose/how-tos/environment-variables/variable-interpolation/#env-file-syntax)と
 [Node.jsのファイル構文](https://nodejs.org/download/release/v24.11.0/docs/api/cli.html#--env-filefile)に従って引用符で囲みます。
 
-| 設定                                                                          | 設定する値・使用条件                                                                              |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| DATABASE_HOST、DATABASE_PORT、DATABASE_NAME、DATABASE_USER、DATABASE_PASSWORD | 必須です。ホストからは、対象DBのアドレスと1～65535のポートを指定します。                          |
-| DATABASE_SSL                                                                  | 任意です。既定値はfalseで、trueでは証明書検証付きTLSが必要です。                                  |
-| DISCORD_TOKEN、DISCORD_APPLICATION_ID                                         | 実行時に必須です。後者にはBot User IDではなくApplication IDを指定します。                         |
-| DISCORD_GUILD_ID                                                              | 既定のサーバー単位のコマンド登録で使います。WEFTの実行先を1サーバーへ制限する設定ではありません。 |
-| LOG_LEVEL                                                                     | 任意です。既定値はinfoです。                                                                      |
-| HEALTH_PORT                                                                   | 任意です。既定値は3000で、コンテナ内のヘルス監視用HTTPサーバーのポートを指定します。              |
+| 設定                                                                          | 設定する値・使用条件                                                                 |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| DATABASE_HOST、DATABASE_PORT、DATABASE_NAME、DATABASE_USER、DATABASE_PASSWORD | 必須です。ホストからは、対象DBのアドレスと1～65535のポートを指定します。             |
+| DATABASE_SSL                                                                  | 任意です。既定値はfalseで、trueでは証明書検証付きTLSが必要です。                     |
+| DISCORD_TOKEN、DISCORD_APPLICATION_ID                                         | 実行時に必須です。後者にはBot User IDではなくApplication IDを指定します。            |
+| DISCORD_GUILD_ID                                                              | Guild登録（CLIの既定動作）の場合だけ必須です。Global登録や通常起動では不要です。     |
+| LOG_LEVEL                                                                     | 任意です。既定値はinfoです。                                                         |
+| HEALTH_PORT                                                                   | 任意です。既定値は3000で、コンテナ内のヘルス監視用HTTPサーバーのポートを指定します。 |
+
+`DATABASE_SSL`、`LOG_LEVEL`、`HEALTH_PORT`は、`.env`でコメントアウトしたままで上記の既定値を使用できます。
+通常運用では`TEST_DATABASE_*`は不要です。PostgreSQL統合テストでは、`TEST_DATABASE_HOST`、`TEST_DATABASE_PORT`、
+`TEST_DATABASE_NAME`、`TEST_DATABASE_USER`、`TEST_DATABASE_PASSWORD`、`TEST_DATABASE_SSL`の6項目すべてを明示的に設定します。
+`TEST_DATABASE_SSL`を含め、どの項目にも既定値はありません。専用のテストDBを使用し、本番DBは使用しないでください。
 
 Composeは`.env`内の値にかかわらず、アプリコンテナの`DATABASE_HOST`を`postgres`、`DATABASE_PORT`を`5432`に設定します。
 ホストからDBへ接続するコマンドでは、`127.0.0.1`と`DATABASE_PORT`で指定したホスト側のポート（既定5432）を使います。

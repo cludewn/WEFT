@@ -35,6 +35,7 @@ Bot名義で投稿したメッセージを、権限を持つ複数の管理者�
 ## 導入
 
 WEFTのソースコードを取得し、Docker Composeを使って導入します。対応構成は、同時に稼働するWEFTアプリ1台とPostgreSQL 18です。
+1つのWEFTインスタンスで複数のDiscordサーバーに対応でき、設定はサーバーごとに保存されます。
 
 必要なものは次のとおりです。
 
@@ -81,9 +82,9 @@ cp -n .env.example .env
 chmod 600 .env
 ```
 
-`cp -n`は既存の`.env`を上書きしません。ファイルを編集し、`DATABASE_NAME`、`DATABASE_USER`、十分に強い`DATABASE_PASSWORD`、`DISCORD_TOKEN`、`DISCORD_APPLICATION_ID`を設定します。サーバー単位でコマンドを登録する場合は、`DISCORD_GUILD_ID`に対象サーバーIDを指定します。ファイルは非公開で保管し、コミットしないでください。
+`cp -n`は既存の`.env`を上書きしません。ファイルを編集し、`DATABASE_NAME`、`DATABASE_USER`、十分に強い`DATABASE_PASSWORD`、`DISCORD_TOKEN`、`DISCORD_APPLICATION_ID`を設定します。Guild範囲でコマンドを登録する場合だけ、`DISCORD_GUILD_ID`のコメントを外し、対象サーバーIDを指定します。ファイルは非公開で保管し、コミットしないでください。
 
-任意設定や環境変数の詳細は、[設定リファレンス](https://github.com/cludewn/WEFT/wiki/Installation-and-Setup-ja#configuration-reference)を参照してください。
+`DATABASE_SSL`、`LOG_LEVEL`、`HEALTH_PORT`はコメントアウトしたままで、既定値（`false`、`info`、`3000`）を使用できます。通常運用では`TEST_DATABASE_*`は不要です。PostgreSQL統合テストでは、`TEST_DATABASE_SSL`（既定値なし）を含む6項目すべての明示的な設定と、専用のテストDBが必要です。本番DBは使用しないでください。ホストとコンテナの接続先の違いは、[設定リファレンス](https://github.com/cludewn/WEFT/wiki/Installation-and-Setup-ja#configuration-reference)を参照してください。
 
 ### 3. イメージをビルドし、DBマイグレーションを実行する
 
@@ -97,17 +98,21 @@ docker compose run --rm app node dist/migrate.js
 
 ### 4. Discordコマンドを登録する
 
-ホスト上で次を実行し、`DISCORD_GUILD_ID`で指定したサーバーへ登録します（Guild範囲）。ホスト側のコマンドは`.env`を自動で読み込まないため、明示的に読み込みます。
+通常運用や複数サーバーでの利用にはGlobal登録を推奨します。`DISCORD_GUILD_ID`は不要です。ホスト上で次を実行してください。ホスト側のNode.js・pnpmコマンドは`.env`を自動で読み込まないため、明示的に読み込みます。
+
+```sh
+node --env-file=.env --import tsx src/deploy-commands.ts --global
+```
+
+開発用や特定サーバーだけへの登録には、`DISCORD_GUILD_ID`のコメントを外して設定し、Guild登録を使用します。`--global`を省略した場合のCLIの既定動作は、従来どおりGuild登録です。
 
 ```sh
 node --env-file=.env --import tsx src/deploy-commands.ts
 ```
 
-代わりにGlobal範囲へ登録する場合は、次を使用します。`DISCORD_GUILD_ID`は不要です。
+登録範囲はコマンドを利用できる範囲を決めます。`DISCORD_GUILD_ID`はBotの稼働先を制限しません。Global登録でも、各サーバーへのBot導入と、前述の適切な権限の付与が必要です。
 
-```sh
-node --env-file=.env --import tsx src/deploy-commands.ts --global
-```
+GlobalとGuildの登録は独立しており、一方への登録で他方の既存コマンドは削除されません。同名コマンドが両範囲にあると、混乱や重複表示につながる可能性があります。
 
 アプリ起動ではコマンドが登録されないため、この手順を終えてからWEFTを起動してください。
 
