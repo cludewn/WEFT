@@ -1,0 +1,228 @@
+name: Container image
+
+on:
+  pull_request:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: weft-image-${{ github.event.release.tag_name || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.repository == 'cludewn/WEFT' && github.event_name == 'release' &&
+       github.event.action == 'published' && !github.event.release.draft &&
+       !github.event.release.prerelease)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      sha: ${{ steps.source.outputs.sha }}
+      image-id: ${{ steps.archive.outputs.image-id }}
+      archive-sha: ${{ steps.archive.outputs.archive-sha }}
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Check out event commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Validate release version and main ancestry
+        if: github.event_name == 'release'
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: bash scripts/check-image-release.sh
+
+      - name: Record source revision
+        id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Run standard checks for release source
+        if: github.event_name == 'release'
+        run: |
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm format:check
+          corepack pnpm lint
+          corepack pnpm typecheck
+          corepack pnpm test
+          corepack pnpm build
+
+      - name: Build production image without registry credentials
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          IMAGE_VERSION: ${{ steps.release.outputs.tag || 'pr-validation' }}
+        run: |
+          docker build --target runtime --tag weft:validated \
+            --label org.opencontainers.image.source=https://github.com/cludewn/WEFT \
+            --label "org.opencontainers.image.revision=$SOURCE_SHA" \
+            --label "org.opencontainers.image.version=$IMAGE_VERSION" \
+            --label org.opencontainers.image.licenses=MIT .
+
+      - name: Verify runtime image offline
+        run: bash scripts/verify-image.sh weft:validated
+
+      - name: Archive the verified release image
+        if: github.event_name == 'release'
+        id: archive
+        run: |
+          docker save --output "$RUNNER_TEMP/weft-image.tar" weft:validated
+          echo "image-id=$(docker image inspect --format '{{.Id}}' weft:validated)" >> "$GITHUB_OUTPUT"
+          echo "archive-sha=$(sha256sum "$RUNNER_TEMP/weft-image.tar" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload the verified release image
+        if: github.event_name == 'release'
+        id: upload
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: verified-image-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/weft-image.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  publish:
+    needs: verify
+    if: >-
+      github.repository == 'cludewn/WEFT' && github.event_name == 'release' &&
+      github.event.action == 'published' && !github.event.release.draft &&
+      !github.event.release.prerelease && needs.verify.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    env:
+      IMAGE_TAG: ${{ needs.verify.outputs.tag }}
+      SOURCE_SHA: ${{ needs.verify.outputs.sha }}
+      IMAGE_ID: ${{ needs.verify.outputs.image-id }}
+      ARCHIVE_SHA: ${{ needs.verify.outputs.archive-sha }}
+    steps:
+      # No source checkout, dependency installation, build, or container execution in this job.
+      - name: Download this run's verified image by artifact ID
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          artifact-ids: ${{ needs.verify.outputs.artifact-id }}
+          path: ${{ runner.temp }}/verified-image
+          merge-multiple: true
+
+      - name: Check archive integrity and image identity before authentication
+        run: |
+          [[ "$IMAGE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          test "$IMAGE_TAG" != v0.9.0
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$IMAGE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$ARCHIVE_SHA" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$ARCHIVE_SHA" "$RUNNER_TEMP/verified-image/weft-image.tar" | sha256sum --check --status
+          docker load --input "$RUNNER_TEMP/verified-image/weft-image.tar"
+          test "$(docker image inspect --format '{{.Id}}' weft:validated)" = "$IMAGE_ID"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "$IMAGE_ID")" = https://github.com/cludewn/WEFT
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE_ID")" = "$SOURCE_SHA"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE_ID")" = "$IMAGE_TAG"
+          docker tag "$IMAGE_ID" "ghcr.io/cludewn/weft:$IMAGE_TAG"
+
+      - name: Authenticate with the job token and publish the verified image
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKER_CONFIG: ${{ runner.temp }}/weft-docker-auth
+        run: |
+          trap 'docker logout ghcr.io >/dev/null 2>&1; rm -rf "$DOCKER_CONFIG"' EXIT
+          printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          # CLI failure does not establish absence. Require an explicit registry response.
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import sys
+          from http.client import HTTPException
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import quote
+          from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+          def stop(message):
+              print(message, file=sys.stderr)
+              sys.exit(1)
+
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          opener = build_opener(NoRedirect())
+
+          def get(url, authorization, accept="application/json"):
+              request = Request(url, headers={
+                  "Authorization": authorization,
+                  "Accept": accept,
+              })
+              try:
+                  response = opener.open(request, timeout=30)
+              except HTTPError as error:
+                  response = error
+              with response:
+                  body = response.read(65537)
+                  if len(body) > 65536:
+                      stop("Registry response exceeded the limit; refusing to push.")
+                  length = response.headers.get("Content-Length")
+                  if length is not None and (not length.isascii() or not length.isdecimal() or int(length) != len(body)):
+                      stop("Registry response had an invalid or incomplete Content-Length; refusing to push.")
+                  return response.code, body
+
+          try:
+              credentials = base64.b64encode(
+                  (os.environ["GITHUB_ACTOR"] + ":" + os.environ["GHCR_TOKEN"]).encode()
+              ).decode()
+              status, body = get(
+                  "https://ghcr.io/token?service=ghcr.io&scope=repository:cludewn/weft:pull",
+                  "Basic " + credentials,
+              )
+              if status != 200:
+                  stop(f"Registry token request failed (HTTP {status}); refusing to push.")
+              payload = json.loads(body)
+              token = payload.get("token") if isinstance(payload, dict) else None
+              if not isinstance(token, str) or not token or any(c.isspace() for c in token):
+                  stop("Registry token response was invalid; refusing to push.")
+              status, body = get(
+                  "https://ghcr.io/v2/cludewn/weft/manifests/" + quote(os.environ["IMAGE_TAG"], safe=""),
+                  "Bearer " + token,
+                  ", ".join([
+                      "application/vnd.oci.image.manifest.v1+json",
+                      "application/vnd.oci.image.index.v1+json",
+                      "application/vnd.docker.distribution.manifest.v2+json",
+                      "application/vnd.docker.distribution.manifest.list.v2+json",
+                  ]),
+              )
+              if status == 200:
+                  stop("Version tag already exists; refusing to overwrite it.")
+              if status != 404:
+                  stop(f"Registry did not confirm tag absence (HTTP {status}); refusing to push.")
+              payload = json.loads(body)
+              errors = payload.get("errors") if isinstance(payload, dict) else None
+              if not isinstance(errors, list) or not errors or any(
+                  not isinstance(error, dict) or error.get("code") not in ("MANIFEST_UNKNOWN", "NAME_UNKNOWN")
+                  for error in errors
+              ):
+                  stop("Registry did not explicitly report manifest or repository absence; refusing to push.")
+          except (HTTPException, URLError, OSError, ValueError, KeyError, TypeError):
+              stop("Registry check failed or returned an invalid response; refusing to push.")
+          PY
+          docker push "ghcr.io/cludewn/weft:$IMAGE_TAG"
+          docker image inspect --format '{{json .RepoDigests}}' "ghcr.io/cludewn/weft:$IMAGE_TAG" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Source: %s\nVersion: %s\nImage ID: %s\n' "$SOURCE_SHA" "$IMAGE_TAG" "$IMAGE_ID" >> "$GITHUB_STEP_SUMMARY"
