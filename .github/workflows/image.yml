@@ -180,6 +180,9 @@ jobs:
                   body = response.read(65537)
                   if len(body) > 65536:
                       stop("Registry response exceeded the limit; refusing to push.")
+                  length = response.headers.get("Content-Length")
+                  if length is not None and (not length.isascii() or not length.isdecimal() or int(length) != len(body)):
+                      stop("Registry response had an invalid or incomplete Content-Length; refusing to push.")
                   return response.code, body
 
           try:
@@ -213,10 +216,10 @@ jobs:
               payload = json.loads(body)
               errors = payload.get("errors") if isinstance(payload, dict) else None
               if not isinstance(errors, list) or not errors or any(
-                  not isinstance(error, dict) or error.get("code") != "MANIFEST_UNKNOWN"
+                  not isinstance(error, dict) or error.get("code") not in ("MANIFEST_UNKNOWN", "NAME_UNKNOWN")
                   for error in errors
               ):
-                  stop("Registry did not explicitly report MANIFEST_UNKNOWN; refusing to push.")
+                  stop("Registry did not explicitly report manifest or repository absence; refusing to push.")
           except (HTTPException, URLError, OSError, ValueError, KeyError, TypeError):
               stop("Registry check failed or returned an invalid response; refusing to push.")
           PY

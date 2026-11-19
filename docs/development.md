@@ -1218,6 +1218,12 @@ Discord verification; executable or dependency-classification changes require th
 
 ## Standard verification
 
+Run verification on a POSIX environment with Bash and Python 3 available on `PATH`, in addition to
+the required Node.js 24 and pnpm toolchain. The image-workflow unit tests resolve the `python3`
+executable from the developer's original `PATH` before installing their fixture shim. Python is used
+only for workflow verification, is not added to the WEFT runtime image, and needs no external services
+or credentials. A missing or non-Python-3 `python3` executable is a test setup error.
+
 The project must provide these commands:
 
     pnpm lint

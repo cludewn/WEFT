@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 const root = resolve(import.meta.dirname, "../..");
 const workflow = readFileSync(join(root, ".github/workflows/image.yml"), "utf8");
@@ -20,6 +20,23 @@ function fixture() {
   const bin = join(directory, "bin");
   mkdirSync(bin);
   return { directory, bin, path: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin` };
+}
+
+function resolvePython3(searchPath?: string): string {
+  const result = spawnSync(
+    "python3",
+    ["-I", "-c", "import sys; assert sys.version_info[0] == 3; print(sys.executable)"],
+    {
+      encoding: "utf8",
+      timeout: 5000,
+      ...(searchPath === undefined ? {} : { env: { PATH: searchPath } }),
+    },
+  );
+  const executable = result.stdout?.trim() ?? "";
+  if (result.error || result.status !== 0 || !isAbsolute(executable)) {
+    throw new Error("Python 3 is required for image-workflow tests. Install python3 on PATH.");
+  }
+  return executable;
 }
 
 describe("image release validation", () => {
@@ -185,16 +202,27 @@ describe("registry tag check before publication", () => {
     status?: number;
     body?: unknown;
     raw?: string;
+    contentLength?: number | string;
     failure?: "network" | "timeout" | "truncated";
   };
   const missing = { status: 404, body: { errors: [{ code: "MANIFEST_UNKNOWN" }] } };
   const token = { status: 200, body: { token: "fixture-bearer-token" } };
+  let pythonExecutable: string;
+  beforeAll(() => {
+    // Resolve from the developer's original PATH before constructing any fixture shim.
+    pythonExecutable = resolvePython3();
+  });
   const publishRun = publication
     .split("      - name: Authenticate with the job token and publish the verified image\n")[1]!
     .split("        run: |\n")[1]!
     .replace(/^ {10}/gm, "");
 
-  function check(manifest: Reply = missing, tokenReply: Reply = token, script = publishRun) {
+  function check(
+    manifest: Reply = missing,
+    tokenReply: Reply = token,
+    script = publishRun,
+    python = pythonExecutable,
+  ) {
     const { directory, bin, path } = fixture();
     const calls = join(directory, "calls");
     writeFileSync(calls, "");
@@ -217,7 +245,7 @@ esac
 `,
       { mode: 0o700 },
     );
-    writeFileSync(join(bin, "python3"), '#!/bin/sh\nexec /usr/bin/python3 "$REGISTRY_FIXTURE"\n', {
+    writeFileSync(join(bin, "python3"), '#!/bin/sh\nexec "$FIXTURE_PYTHON" "$REGISTRY_FIXTURE"\n', {
       mode: 0o700,
     });
     // Replace only HTTP I/O; execute the workflow's actual Python and shell code.
@@ -225,15 +253,12 @@ esac
     writeFileSync(
       join(directory, "registry.py"),
       `import base64, io, json, os, sys
-from http.client import IncompleteRead
+from http.client import HTTPResponse, IncompleteRead
 from urllib.error import HTTPError, URLError
 from urllib.request import OpenerDirector
 
 with open("responses.json") as file:
     replies = json.load(file)
-
-class Response(io.BytesIO):
-    code = 200
 
 def fake_open(self, request, timeout):
     assert timeout == 30
@@ -262,9 +287,18 @@ def fake_open(self, request, timeout):
         raise IncompleteRead(b"fixture-bearer-token")
     body = reply.get("raw", json.dumps(reply.get("body"))).encode()
     status = reply.get("status", 200)
+    length = reply.get("contentLength", len(body))
+    class Socket:
+        def makefile(self, mode):
+            return io.BytesIO(
+                f"HTTP/1.1 {status} Fixture\\r\\nContent-Length: {length}\\r\\n\\r\\n".encode() + body
+            )
+    response = HTTPResponse(Socket())
+    response.begin()
+    response.code = status
     if status != 200:
-        raise HTTPError(url, status, "fixture-bearer-token", {}, io.BytesIO(body))
-    return Response(body)
+        raise HTTPError(url, status, "fixture-bearer-token", response.headers, response)
+    return response
 
 OpenerDirector.open = fake_open
 exec(compile(sys.stdin.read(), "workflow-publication", "exec"))
@@ -287,6 +321,7 @@ exec(compile(sys.stdin.read(), "workflow-publication", "exec"))
           DOCKER_CONFIG: join(directory, "docker-auth"),
           GITHUB_STEP_SUMMARY: join(directory, "summary"),
           FIXTURE_CALLS: calls,
+          FIXTURE_PYTHON: python,
           REGISTRY_FIXTURE: join(directory, "registry.py"),
         },
       },
@@ -295,6 +330,24 @@ exec(compile(sys.stdin.read(), "workflow-publication", "exec"))
     expect(result.stdout + result.stderr).not.toMatch(/fixture-(?:bearer|job)-token/);
     return { result, calls: readFileSync(calls, "utf8") };
   }
+
+  it("uses Python 3 from PATH outside system directories, including paths with shell metacharacters", () => {
+    const { directory } = fixture();
+    const pythonBin = join(directory, "developer's Python bin");
+    mkdirSync(pythonBin);
+    symlinkSync(pythonExecutable, join(pythonBin, "python3"));
+    const python = resolvePython3(pythonBin);
+    expect(python).toBe(join(pythonBin, "python3"));
+    const { result } = check(missing, token, publishRun, python);
+    expect(result.status, result.stderr).toBe(0);
+  });
+
+  it("reports a clear prerequisite error when Python 3 is missing from PATH", () => {
+    const { bin } = fixture();
+    expect(() => resolvePython3(bin)).toThrow(
+      "Python 3 is required for image-workflow tests. Install python3 on PATH.",
+    );
+  });
 
   it("demonstrates that the applied CLI suggestion proceeds after an ambiguous inspection failure", () => {
     const { result, calls } = check(
@@ -311,8 +364,12 @@ docker push "ghcr.io/cludewn/weft:$IMAGE_TAG"
     expect(calls).toContain("push ghcr.io/cludewn/weft:v1.0.0");
   });
 
-  it("pushes only after an authenticated, explicit manifest-not-found response", () => {
-    const { result, calls } = check();
+  it.each([
+    missing,
+    { status: 404, body: { errors: [{ code: "NAME_UNKNOWN" }] } },
+    { status: 404, body: { errors: [{ code: "NAME_UNKNOWN" }, { code: "MANIFEST_UNKNOWN" }] } },
+  ])("pushes only after an authenticated, explicit absence response: %#", (reply) => {
+    const { result, calls } = check(reply);
     expect(result.status, result.stderr).toBe(0);
     expect(calls.indexOf("registry token")).toBeLessThan(calls.indexOf("registry manifest"));
     expect(calls.indexOf("registry manifest")).toBeLessThan(calls.indexOf("push "));
@@ -320,18 +377,42 @@ docker push "ghcr.io/cludewn/weft:$IMAGE_TAG"
     expect(calls).toContain("logout ghcr.io");
   });
 
+  it("rejects valid absence JSON shorter than the declared Content-Length", () => {
+    const { result, calls } = check({
+      ...missing,
+      contentLength: Buffer.byteLength(JSON.stringify(missing.body)) + 100,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("invalid or incomplete Content-Length");
+    expect(calls).toContain("registry manifest");
+    expect(calls).not.toContain("push ");
+  });
+
+  it("rejects a valid token JSON body shorter than the declared Content-Length", () => {
+    const { result, calls } = check(missing, {
+      ...token,
+      contentLength: Buffer.byteLength(JSON.stringify(token.body)) + 100,
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("invalid or incomplete Content-Length");
+    expect(calls).not.toMatch(/registry manifest|push /);
+  });
+
   it.each([
     { status: 200, body: {} },
     { status: 401, body: { errors: [{ code: "UNAUTHORIZED" }] } },
     { status: 403, body: { errors: [{ code: "DENIED" }] } },
-    { status: 404, body: { errors: [{ code: "NAME_UNKNOWN" }] } },
     { status: 404, body: { errors: [{ code: "MANIFEST_UNKNOWN" }, { code: "DENIED" }] } },
+    { status: 404, body: { errors: [{ code: "NAME_UNKNOWN" }, { code: "DENIED" }] } },
+    { status: 404, body: { errors: [{ code: "UNAUTHORIZED" }] } },
     { status: 404, body: { errors: [] } },
     { status: 404, body: { errors: [null] } },
     { status: 404, body: { errors: "MANIFEST_UNKNOWN" } },
     { status: 404, body: [] },
     { status: 404, raw: "<html>Not found</html>" },
     { status: 404, raw: "x".repeat(65537) },
+    { ...missing, contentLength: "invalid" },
+    { ...missing, contentLength: -1 },
     { status: 302, body: missing.body },
     { status: 429, body: missing.body },
     { status: 500, body: missing.body },
@@ -426,7 +507,7 @@ describe("container workflow publication boundary", () => {
     expect(publication.indexOf("docker login")).toBeLessThan(publication.indexOf("docker push"));
     expect(publication).toContain('docker push "ghcr.io/cludewn/weft:$IMAGE_TAG"');
     expect(publication).toContain('stop("Version tag already exists; refusing to overwrite it.")');
-    expect(publication).toContain('error.get("code") != "MANIFEST_UNKNOWN"');
+    expect(publication).toContain('error.get("code") not in ("MANIFEST_UNKNOWN", "NAME_UNKNOWN")');
     expect(publication).toContain("build_opener(NoRedirect())");
     expect(publication.indexOf("python3 - <<'PY'")).toBeLessThan(
       publication.indexOf("docker push"),

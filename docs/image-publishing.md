@@ -56,18 +56,23 @@ publication is not a transaction with the workflow or GitHub Release.
 
 After Docker login, the publisher uses Python 3's standard library on the Ubuntu runner to request
 a repository-scoped pull token and GET the exact tag's manifest from GHCR over HTTPS. Only HTTP 404
-with a nonempty JSON `errors` array containing exclusively `MANIFEST_UNKNOWN` permits the push.
+with a nonempty JSON `errors` array containing only `MANIFEST_UNKNOWN` or `NAME_UNKNOWN` permits the push.
 HTTP 200 blocks an existing tag. Token acquisition errors, HTTP 401/403, timeouts, transport errors,
 redirects, rate limits, server errors, malformed responses, and other error codes all stop publication.
 Requests use a 30-second socket timeout and a bounded response size; raw responses and credentials are not
-logged. `docker manifest inspect` failure alone cannot distinguish these cases from tag absence.
+logged. Fixed-length responses must contain exactly the bytes declared by `Content-Length`, even
+when a shorter body would otherwise parse as valid JSON. The 64 KiB body limit still applies.
+`docker manifest inspect` failure alone cannot distinguish these cases from tag absence.
 The response interpretation follows the OCI Distribution Specification's
 [manifest endpoint and error codes](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md).
 
-This is a conservative check, not a claim that every GHCR failure can be classified. In particular,
-`NAME_UNKNOWN`, an unstructured 404, or denial when the package has never been created does not
-establish tag absence for this workflow. Such a first publication stops for investigation of registry
-access and response semantics. Do not bypass the check or add credentials to force it through.
+The OCI specification defines `MANIFEST_UNKNOWN` as a missing manifest and `NAME_UNKNOWN` as a
+repository not known to the registry. An explicit authenticated 404 with either absence code supports
+the first publication when the package does not exist yet. Token acquisition and repository access
+must still succeed far enough to obtain that response. An unstructured 404, authorization denial, or
+any other error remains a stop condition. Actual GHCR first-publication responses and permissions are
+unverified locally and must be checked during the first authorized release. Do not bypass the check
+or add credentials to force it through.
 
 The existing per-tag concurrency group serializes runs of this workflow for the same release tag.
 It does not lock GHCR or other writers. There is still a check-to-push (TOCTOU) window: another writer
@@ -93,7 +98,8 @@ docker build --target runtime -t weft:image-check .
 bash scripts/verify-image.sh weft:image-check
 ```
 
-After an approved release actually succeeds, substitute its exact tag for `vX.Y.Z`:
+Once an approved release's image is present, substitute its exact tag for `vX.Y.Z`. These commands
+also apply to the recovery checks below when a push succeeded but later bookkeeping failed:
 
 ```sh
 docker buildx imagetools inspect ghcr.io/cludewn/weft:vX.Y.Z
@@ -102,7 +108,7 @@ docker image inspect ghcr.io/cludewn/weft:vX.Y.Z --format '{{json .RepoDigests}}
 bash scripts/verify-image.sh ghcr.io/cludewn/weft:vX.Y.Z
 ```
 
-Compare the registry digest with the successful publication run's summary. Check
+Compare the registry digest with the publication summary or the original `docker push` output. Check
 `org.opencontainers.image.source=https://github.com/cludewn/WEFT`, the revision against the release
 tag's commit and run summary, and the version against the tag and `package.json`. The source label
 links the GHCR package to this repository. OCI labels and run records describe origin; they are not
@@ -116,13 +122,26 @@ remain as specified by the existing Dockerfile; rebuilding the same source can c
 ## Failure and first-publication checks
 
 A GitHub Release can be visible before its image finishes building or even when publication fails.
-Do not announce image availability until the run succeeds and the registry is checked. Release edits,
-ordinary pushes, and promoting an already published prerelease do not trigger this workflow again.
+Normally, announce availability only after the run succeeds and the registry is checked. If the
+manifest was accepted but later bookkeeping failed, availability can instead be confirmed through
+the recovery checks below; the workflow itself remains failed. Release edits, ordinary pushes, and
+promoting an already published prerelease do not trigger this workflow again.
 After diagnosing a failure, inspect the exact version's registry state and digest before deciding
 whether a retry is needed. An existing tag stops a rerun, including when the previous push succeeded
-but a later summary step failed. Verify that existing image against the release and preserve its
-digest; do not delete the published tag or republish it as routine recovery. If the published image
-is wrong, prepare a corrected version through the normal review process.
+but a later summary step failed. Before confirming that image as available:
+
+- Confirm that the original verification job passed for the approved release commit.
+- Resolve and record the existing registry digest. Compare it with the original push output or
+  summary. If that record is missing, compare the pulled image ID with the retained verified image
+  artifact. Do not substitute the archive checksum or image ID for the registry manifest digest.
+- Pull and inspect the image by that digest. Check its source label, revision against the release
+  commit, and version against the release tag and that commit's `package.json`.
+- Run the offline probe against the digest reference and confirm the intended package visibility.
+- Record the digest and these verification results as operator-confirmed recovery, separately from
+  the failed workflow result. If the evidence is incomplete or inconsistent, do not claim availability.
+
+Preserve the existing tag and digest; do not delete or republish them as routine recovery. If the
+published image is wrong, prepare a corrected version through the normal review process.
 
 When absence is explicitly confirmed, rerun the original failed workflow; if the one-day image
 artifact has expired, rerun all jobs. Rerunning all jobs rebuilds, but publication still requires
