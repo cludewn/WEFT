@@ -146,10 +146,80 @@ jobs:
         run: |
           trap 'docker logout ghcr.io >/dev/null 2>&1; rm -rf "$DOCKER_CONFIG"' EXIT
           printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
-          if docker manifest inspect "ghcr.io/cludewn/weft:$IMAGE_TAG" >/dev/null 2>&1; then
-            echo "ghcr.io/cludewn/weft:$IMAGE_TAG already exists; refusing to overwrite it." >&2
-            exit 1
-          fi
+          # CLI failure does not establish absence. Require an explicit registry response.
+          python3 - <<'PY'
+          import base64
+          import json
+          import os
+          import sys
+          from http.client import HTTPException
+          from urllib.error import HTTPError, URLError
+          from urllib.parse import quote
+          from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+          def stop(message):
+              print(message, file=sys.stderr)
+              sys.exit(1)
+
+          class NoRedirect(HTTPRedirectHandler):
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  return None
+
+          opener = build_opener(NoRedirect())
+
+          def get(url, authorization, accept="application/json"):
+              request = Request(url, headers={
+                  "Authorization": authorization,
+                  "Accept": accept,
+              })
+              try:
+                  response = opener.open(request, timeout=30)
+              except HTTPError as error:
+                  response = error
+              with response:
+                  body = response.read(65537)
+                  if len(body) > 65536:
+                      stop("Registry response exceeded the limit; refusing to push.")
+                  return response.code, body
+
+          try:
+              credentials = base64.b64encode(
+                  (os.environ["GITHUB_ACTOR"] + ":" + os.environ["GHCR_TOKEN"]).encode()
+              ).decode()
+              status, body = get(
+                  "https://ghcr.io/token?service=ghcr.io&scope=repository:cludewn/weft:pull",
+                  "Basic " + credentials,
+              )
+              if status != 200:
+                  stop(f"Registry token request failed (HTTP {status}); refusing to push.")
+              payload = json.loads(body)
+              token = payload.get("token") if isinstance(payload, dict) else None
+              if not isinstance(token, str) or not token or any(c.isspace() for c in token):
+                  stop("Registry token response was invalid; refusing to push.")
+              status, body = get(
+                  "https://ghcr.io/v2/cludewn/weft/manifests/" + quote(os.environ["IMAGE_TAG"], safe=""),
+                  "Bearer " + token,
+                  ", ".join([
+                      "application/vnd.oci.image.manifest.v1+json",
+                      "application/vnd.oci.image.index.v1+json",
+                      "application/vnd.docker.distribution.manifest.v2+json",
+                      "application/vnd.docker.distribution.manifest.list.v2+json",
+                  ]),
+              )
+              if status == 200:
+                  stop("Version tag already exists; refusing to overwrite it.")
+              if status != 404:
+                  stop(f"Registry did not confirm tag absence (HTTP {status}); refusing to push.")
+              payload = json.loads(body)
+              errors = payload.get("errors") if isinstance(payload, dict) else None
+              if not isinstance(errors, list) or not errors or any(
+                  not isinstance(error, dict) or error.get("code") != "MANIFEST_UNKNOWN"
+                  for error in errors
+              ):
+                  stop("Registry did not explicitly report MANIFEST_UNKNOWN; refusing to push.")
+          except (HTTPException, URLError, OSError, ValueError, KeyError, TypeError):
+              stop("Registry check failed or returned an invalid response; refusing to push.")
+          PY
           docker push "ghcr.io/cludewn/weft:$IMAGE_TAG"
           docker image inspect --format '{{json .RepoDigests}}' "ghcr.io/cludewn/weft:$IMAGE_TAG" >> "$GITHUB_STEP_SUMMARY"
           printf 'Source: %s\nVersion: %s\nImage ID: %s\n' "$SOURCE_SHA" "$IMAGE_TAG" "$IMAGE_ID" >> "$GITHUB_STEP_SUMMARY"

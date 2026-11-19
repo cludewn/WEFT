@@ -54,6 +54,27 @@ cannot reach this job. Any earlier step failure prevents login and push. A regis
 during push can leave uploaded blobs or an already accepted manifest even if the job reports failure;
 publication is not a transaction with the workflow or GitHub Release.
 
+After Docker login, the publisher uses Python 3's standard library on the Ubuntu runner to request
+a repository-scoped pull token and GET the exact tag's manifest from GHCR over HTTPS. Only HTTP 404
+with a nonempty JSON `errors` array containing exclusively `MANIFEST_UNKNOWN` permits the push.
+HTTP 200 blocks an existing tag. Token acquisition errors, HTTP 401/403, timeouts, transport errors,
+redirects, rate limits, server errors, malformed responses, and other error codes all stop publication.
+Requests use a 30-second socket timeout and a bounded response size; raw responses and credentials are not
+logged. `docker manifest inspect` failure alone cannot distinguish these cases from tag absence.
+The response interpretation follows the OCI Distribution Specification's
+[manifest endpoint and error codes](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md).
+
+This is a conservative check, not a claim that every GHCR failure can be classified. In particular,
+`NAME_UNKNOWN`, an unstructured 404, or denial when the package has never been created does not
+establish tag absence for this workflow. Such a first publication stops for investigation of registry
+access and response semantics. Do not bypass the check or add credentials to force it through.
+
+The existing per-tag concurrency group serializes runs of this workflow for the same release tag.
+It does not lock GHCR or other writers. There is still a check-to-push (TOCTOU) window: another writer
+outside that concurrency group can publish after the check and before this push. No registry-side
+atomic create-if-absent operation is used, so this guard does not guarantee complete tag immutability.
+Restrict registry writers and retain digest references; do not describe the preflight as an atomic lock.
+
 Authentication uses the job's short-lived `GITHUB_TOKEN` over `--password-stdin` with a temporary
 Docker configuration, removed on exit. No long-lived registry secret is needed. Actions are pinned
 to full commit SHAs. Their official release tags and action manifests were checked for these pins:
@@ -97,10 +118,22 @@ remain as specified by the existing Dockerfile; rebuilding the same source can c
 A GitHub Release can be visible before its image finishes building or even when publication fails.
 Do not announce image availability until the run succeeds and the registry is checked. Release edits,
 ordinary pushes, and promoting an already published prerelease do not trigger this workflow again.
-After diagnosing a failure, rerun the original failed workflow; if the one-day image artifact has
-expired, rerun all jobs. Do not move a release tag to repair a version mismatch: prepare a corrected
-release through the normal review process. Rerunning all jobs rebuilds and can replace that version's
-image, so inspect existing registry state and preserve the original digest before retrying a push.
+After diagnosing a failure, inspect the exact version's registry state and digest before deciding
+whether a retry is needed. An existing tag stops a rerun, including when the previous push succeeded
+but a later summary step failed. Verify that existing image against the release and preserve its
+digest; do not delete the published tag or republish it as routine recovery. If the published image
+is wrong, prepare a corrected version through the normal review process.
+
+When absence is explicitly confirmed, rerun the original failed workflow; if the one-day image
+artifact has expired, rerun all jobs. Rerunning all jobs rebuilds, but publication still requires
+the same absence check. Authentication, transport, or unexpected-response failures require diagnosis
+and a new check; they are never permission to push. A failure during push leaves the outcome uncertain
+until the registry is inspected. Do not move a release tag to repair a version mismatch.
+
+This protection applies to runs whose release commit contains this guard. A rerun retains the
+original event's SHA and ref; later workflow changes do not retrofit earlier runs. Do not retry an
+older unguarded publication run as a recovery shortcut. See GitHub's
+[rerun behavior](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
 
 During the first authorized publication, separately verify package repository association, package
 visibility, anonymous pull if intended to be public, the digest and labels, and the offline probe.
